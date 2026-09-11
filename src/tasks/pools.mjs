@@ -1,6 +1,6 @@
 import { POOL_MANAGER, AI, GENESIS_BLOCK, DYNAMIC_FEE_FLAG, LONG_HOOK } from "../config.mjs";
 import { getLogsRange, getLogsByTopicSet, padAddr } from "../rpc.mjs";
-import { TOPICS, decodeInitialize, decodeSwap, priceFromSqrt } from "../decode.mjs";
+import { TOPICS, decodeInitialize, decodeSwap, priceFromSqrt, fmtUnits } from "../decode.mjs";
 import { resolveTokens } from "../tokens.mjs";
 
 /**
@@ -37,10 +37,12 @@ export async function discoverPools(latest, opts = {}) {
   log(`  ${swaps.length} swaps in window`);
 
   const act = new Map();
+  const decoded = [];
   for (const l of swaps) {
     const s = decodeSwap(l);
+    decoded.push(s);
     let a = act.get(s.poolId);
-    if (!a) act.set(s.poolId, (a = { n: 0, absAI: 0n, last: null, senders: new Set() }));
+    if (!a) act.set(s.poolId, (a = { n: 0, last: null, senders: new Set() }));
     a.n++;
     a.last = s;
     a.senders.add(s.sender);
@@ -90,5 +92,23 @@ export async function discoverPools(latest, opts = {}) {
       p.priceInPairToken = p.aiIsCurrency0 ? price : (price ? 1 / price : 0);
     }
   }
-  return { all, active };
+  /* Build the routing index here rather than in the flow task. This scan already
+     covered EVERY pool containing AI over the window, so cross-routing can be
+     measured across all active bridges instead of only the handful indexed in
+     depth -- a rotation through an obscure pair is still a rotation through AI.
+     Flat per tx: [block, poolIdx, aiAmount, poolIdx, aiAmount, ...], indices
+     pointing into `all`. */
+  const pos = new Map(all.map((p, i) => [p.poolId, i]));
+  const txIndex = new Map();
+  for (const s of decoded) {
+    const i = pos.get(s.poolId);
+    if (i === undefined) continue;
+    const ai = fmtUnits(all[i].aiIsCurrency0 ? s.amount0 : s.amount1, 18);
+    let arr = txIndex.get(s.tx);
+    if (!arr) txIndex.set(s.tx, (arr = [s.block]));
+    arr.push(i, ai);
+  }
+  log(`  routing index: ${txIndex.size.toLocaleString()} transactions across all active AI pools`);
+
+  return { all, active, txIndex, routingFrom: from };
 }

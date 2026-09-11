@@ -8,6 +8,7 @@
   "scripts": {
     "index": "node src/indexer.mjs",
     "index:fast": "node src/indexer.mjs --skip-backfill",
+    "verify": "node src/verify.mjs",
     "serve": "node src/serve.mjs",
     "dev": "npm run index:fast && npm run serve"
   },

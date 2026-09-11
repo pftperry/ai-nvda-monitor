@@ -18,10 +18,10 @@ export function analyseRouting(txIndex, pools, tm) {
   const daily = new Map();        // day -> { direct, cross }
   const hubCounterparties = new Map();
 
-  // Each value is a flat array: [block, poolIdx, ai, pair, poolIdx, ai, pair, ...]
+  // Each value is a flat array: [block, poolIdx, aiAmount, poolIdx, aiAmount, ...]
   for (const [, flat] of txIndex) {
     const block = flat[0];
-    const nLegs = (flat.length - 1) / 3;
+    const nLegs = (flat.length - 1) / 2;
     const day = tm.dayBucket(block);
     let row = daily.get(day);
     if (!row) daily.set(day, (row = { t: day, direct: 0, cross: 0, crossTx: 0, directTx: 0 }));
@@ -38,7 +38,7 @@ export function analyseRouting(txIndex, pools, tm) {
     nMultiTx++;
     let received = 0, spent = 0;
     const inLegs = [], outLegs = [];
-    for (let k = 1; k < flat.length; k += 3) {
+    for (let k = 1; k < flat.length; k += 2) {
       const l = { p: flat[k], ai: flat[k + 1] };
       if (l.ai > 0) { received += l.ai; inLegs.push(l); }
       else { spent += -l.ai; outLegs.push(l); }

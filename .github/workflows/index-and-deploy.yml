@@ -50,6 +50,10 @@ jobs:
             node src/indexer.mjs
           fi
 
+      # A silently-wrong index is worse than a failed one, so bad data never ships.
+      - name: Verify invariants
+        run: node src/verify.mjs
+
       - name: Commit refreshed data
         run: |
           git config user.name  "github-actions[bot]"

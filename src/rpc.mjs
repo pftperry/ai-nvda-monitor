@@ -96,6 +96,16 @@ export async function getLogsRange(filter, from, to, opts = {}) {
   const out = [];
   let cursor = from;
   let size = chunk;
+
+  /* The growth policy matters more than it looks. Doubling after every success
+     makes the scan fail on roughly every other iteration, and a failure is not
+     cheap: the node scans the whole range before reporting that it exceeded the
+     cap, so an eager retry loop spends most of its wall clock on queries that
+     return nothing. Instead: remember the smallest size known to fail, stay well
+     clear of it, and only grow after several consecutive successes. */
+  let minBad = Infinity;
+  let wins = 0;
+
   while (cursor <= to) {
     const end = Math.min(cursor + size - 1, to);
     try {
@@ -103,15 +113,17 @@ export async function getLogsRange(filter, from, to, opts = {}) {
       out.push(...logs);
       if (onProgress) onProgress(end, to, out.length);
       cursor = end + 1;
-      // creep back up after a successful large read
-      if (size < chunk) size = Math.min(chunk, size * 2);
+      wins++;
+      if (wins >= 4 && size < chunk) {
+        const grown = Math.floor(size * 1.4);
+        if (grown < minBad * 0.7) { size = Math.min(chunk, grown); wins = 0; }
+      }
     } catch (e) {
       if (!(e instanceof TooManyLogs) && !/timed out/i.test(e.message)) throw e;
-      if (end === cursor) {
-        // a single block exceeds the cap: unsplittable, take what we can
-        throw new Error(`single block ${cursor} exceeds log cap`);
-      }
+      if (end === cursor) throw new Error(`single block ${cursor} exceeds the log cap`);
+      minBad = Math.min(minBad, size);
       size = Math.max(1, Math.floor(size / 2));
+      wins = 0;
     }
   }
   return out;

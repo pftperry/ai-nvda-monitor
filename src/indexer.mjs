@@ -30,7 +30,7 @@ const tm = await loadTimeMap(store, latest);
 console.log(`  ${tm.toJSON().length} anchors; head = ${new Date(tm.at(latest) * 1000).toISOString()}`);
 
 step("Discovering AI pools");
-const { all, active } = await discoverPools(latest, {
+const { all, active, txIndex, routingFrom } = await discoverPools(latest, {
   activityWindow: quick ? 600_000 : 2_000_000,
   nameTop: quick ? 40 : 120,
 });
@@ -51,13 +51,11 @@ const prev = new Map((priorFlow?.pools || []).map((p) => [p.poolId, p]));
 if (prev.size) console.log(`  resuming from stored series for ${prev.size} pools (--rebuild to force a full re-scan)`);
 
 step(`Indexing buy/sell flow for top ${selected.length} pools`);
-const flow = await indexFlow(selected, latest, tm, {
-  routingWindow: quick ? 600_000 : 2_000_000,
-  prev,
-});
+const flow = await indexFlow(selected, latest, tm, { prev });
 
 step("Measuring real cross-routing (κ)");
-const routing = analyseRouting(flow.txIndex, flow.perPool, tm);
+// Measured across every active AI pool, not just the ones indexed in depth.
+const routing = analyseRouting(txIndex, all, tm);
 console.log(`  measured cross-routing = ${(routing.measuredKappaRatio * 100).toFixed(2)}% of direct volume -> regime "${routing.impliedRegime}"`);
 console.log(`  ${routing.transactions.crossRouting.toLocaleString()} cross-routing txs of ${routing.transactions.multiLeg.toLocaleString()} multi-leg`);
 
@@ -102,7 +100,7 @@ writeData("meta.json", {
 writeData("pools.json", { updatedAt: now, pools: active.slice(0, 250) });
 writeData("flow.json", { updatedAt: now, windows, pools: flowOut });
 writeData("burns.json", burns);
-writeData("routing.json", { updatedAt: now, windowFrom: flow.routingStart, ...routing });
+writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, ...routing });
 writeData("bridges.json", { updatedAt: now, ...bridges });
 writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape });
 

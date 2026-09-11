@@ -198,6 +198,43 @@ function lineChart(host, rows, o) {
   xLabels(f, rows, o.xKey, o.xFmt || tsFmt);
 }
 
+/** Two or more lines on ONE shared y-scale (never a second axis). */
+function multiLine(host, rows, o) {
+  if (rows.length < 2) { host.innerHTML = '<p class="muted" style="padding:20px 0">Not enough data in range.</p>'; return; }
+  const f = frame(host, { height: o.height || 210 });
+  const all = rows.flatMap((r) => o.series.map((s) => r[s.key])).filter((v) => isFinite(v));
+  let min = o.zeroBase ? 0 : Math.min(...all), max = Math.max(...all);
+  max += (max - min) * 0.08 || 1;
+  yAxis(f, min, max, o.fmt || compact);
+  const X = (i) => f.padL + (i / (rows.length - 1)) * f.iw;
+  const Y = (v) => f.padT + f.ih - ((v - min) / (max - min || 1)) * f.ih;
+  for (const s of o.series) {
+    const d = rows.map((r, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(r[s.key] || 0).toFixed(1)}`).join(" ");
+    if (o.area) f.svg.appendChild(mk("path", { d: `${d} L${X(rows.length - 1)} ${Y(min)} L${X(0)} ${Y(min)} Z`, fill: s.color, opacity: ".10" }));
+    f.svg.appendChild(mk("path", { d, fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  }
+  const ch = mk("line", { class: "crosshair", y1: f.padT, y2: f.padT + f.ih, x1: 0, x2: 0, opacity: 0 });
+  f.svg.appendChild(ch);
+  // a 2px surface ring keeps overlapping markers separable where the lines cross
+  const dots = o.series.map((s) => {
+    const c = mk("circle", { r: 5, fill: s.color, stroke: "var(--surface-1)", "stroke-width": 2, opacity: 0 });
+    f.svg.appendChild(c); return c;
+  });
+  const hit = mk("rect", { x: f.padL, y: f.padT, width: f.iw, height: f.ih, fill: "transparent" });
+  onPointer(hit, host, ({ x }) => {
+    const i = Math.round(Math.max(0, Math.min(1, (x - f.padL) / f.iw)) * (rows.length - 1));
+    const r = rows[i]; if (!r) return;
+    const px = X(i);
+    ch.setAttribute("x1", px); ch.setAttribute("x2", px); ch.setAttribute("opacity", 1);
+    o.series.forEach((s, k) => {
+      dots[k].setAttribute("cx", px); dots[k].setAttribute("cy", Y(r[s.key] || 0)); dots[k].setAttribute("opacity", 1);
+    });
+    showTip(f, host, px, Y(r[o.series[0].key] || 0), o.tip(r));
+  }, () => { hideTip(f); ch.setAttribute("opacity", 0); dots.forEach((d) => d.setAttribute("opacity", 0)); });
+  f.svg.appendChild(hit);
+  xLabels(f, rows, o.xKey, o.xFmt || dayFmt);
+}
+
 /** Simple vertical bars, one series. */
 function barChart(host, rows, o) {
   if (!rows.length) { host.innerHTML = '<p class="muted" style="padding:20px 0">No data in range.</p>'; return; }
@@ -476,6 +513,16 @@ function renderBurn() {
     tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>burned ${compact(r.burnAI)} AI</div>
       <div class="k">${r.burnEvents} burn events · cumulative ${compact(r.cumBurnAI)}</div>`,
   });
+  table($("#tBurn"), [
+    { h: "Day", f: (r) => dayFmt(r.t) },
+    { h: "AI burned", f: (r) => nf(r.burnAI, 0) },
+    { h: "Burn events", f: (r) => `${r.burnEvents}` },
+    { h: "AI locked", f: (r) => nf(r.lockAI, 0) },
+    { h: "NVDA in", f: (r) => nf(r.nvdaIn, 3) },
+    { h: "Cum. burned", f: (r) => compact(r.cumBurnAI) },
+    { h: "Cum. NVDA", f: (r) => nf(r.cumNvda, 2) },
+  ], b.daily.slice().reverse().slice(0, 40));
+
   lineChart($("#cReserve"), b.daily, {
     xKey: "t", yKey: "cumNvda", color: "var(--series-3)", area: true, zeroBase: true, xFmt: dayFmt,
     fmt: (v) => nf(v, 0),
@@ -516,11 +563,16 @@ function renderFloat() {
     { k: "Effective float", v: b.effectiveFloat, rev: "—" },
   ]);
 
-  lineChart($("#cRemoval"), b.daily, {
-    xKey: "t", yKey: "cumBurnAI", color: "var(--series-1)", area: true, zeroBase: true, xFmt: dayFmt,
+  multiLine($("#cRemoval"), b.daily, {
+    xKey: "t", zeroBase: true, area: true,
+    series: [
+      { key: "cumBurnAI", color: "var(--series-1)" },
+      { key: "cumLockAI", color: "var(--series-2)" },
+    ],
     tip: (r) => `<div class="k">${dayFmt(r.t)}</div>
       <div><span style="color:var(--series-1)">●</span> burned ${compact(r.cumBurnAI)} AI</div>
-      <div><span style="color:var(--series-2)">●</span> locked ${compact(r.cumLockAI)} AI</div>`,
+      <div><span style="color:var(--series-2)">●</span> locked ${compact(r.cumLockAI)} AI</div>
+      <div class="k">removed ${compact(r.cumBurnAI + r.cumLockAI)} AI total</div>`,
   });
 
   const s = b.observedSplit || { burn: 1, lock: 1, platform: 0.5 };
@@ -619,7 +671,7 @@ function renderMethod() {
       genuine directional demand. This makes κ an observed quantity rather than an assumption.</p>
 
       <p><b style="color:var(--text-primary)">Timestamps.</b> Swap logs on this chain carry a zeroed
-      <code>blockTimestamp</code>, so block times are sampled at ${(m.genesisBlock ? 250000 : 0).toLocaleString()}-block
+      <code>blockTimestamp</code>, so block times are sampled at 250,000-block
       intervals and interpolated. Block production is steady near 0.102 s, keeping error far
       inside the one-hour buckets.</p>
 

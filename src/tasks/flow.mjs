@@ -1,24 +1,21 @@
-import { POOL_MANAGER, GENESIS_BLOCK } from "../config.mjs";
+import { POOL_MANAGER } from "../config.mjs";
 import { getLogsRange } from "../rpc.mjs";
 import { TOPICS, decodeSwap, priceFromSqrt, fmtUnits } from "../decode.mjs";
 
 const r6 = (x) => (x === 0 ? 0 : +x.toPrecision(6));
 
 /**
- * Per-pool buy/sell flow, plus the transaction-level index that makes real
- * cross-routing measurable.
+ * Per-pool buy/sell flow, bucketed hourly from every Swap log in the pool's life.
  *
- * Both products come from one scan pass: swap logs are expensive to fetch, so the
- * hourly aggregation and the tx grouping consume the same stream.
+ * Runs are incremental: the previous run's series is passed back in and only new
+ * blocks are fetched, which is what makes a scheduled refresh viable against 59
+ * days of history.
  */
 export async function indexFlow(pools, latest, tm, opts = {}) {
   const log = opts.log || console.log;
-  const routingWindow = opts.routingWindow ?? 2_000_000; // ~2.4 days
-  const routingStart = Math.max(GENESIS_BLOCK, latest - routingWindow);
   const prev = opts.prev || new Map();   // poolId -> stored series from the last run
 
   const perPool = [];
-  const txIndex = new Map();   // txHash -> [{ p, ai, pair, block }]
   const tape = [];
 
   for (let idx = 0; idx < pools.length; idx++) {
@@ -44,7 +41,7 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
 
     const logs = resumeFrom > latest ? [] : await getLogsRange(
       { address: POOL_MANAGER, topics: [TOPICS.SWAP, p.poolId] },
-      resumeFrom, latest, { chunk: 4_000_000 }
+      resumeFrom, latest, { chunk: 2_000_000 }
     );
 
     for (const l of logs) {
@@ -76,15 +73,9 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
       }
       lastPrice = price; lastLiq = s.liquidity; lastFee = s.fee;
 
-      /* Routing index, kept as a FLAT numeric array per tx: [block, poolIdx, ai,
-         pair, poolIdx, ai, pair, ...]. An array of small objects here costs several
-         hundred MB across a multi-day window of a chain doing ~40k AI swaps a day;
-         flat numbers keep it in tens of MB. */
-      if (s.block >= routingStart) {
-        let arr = txIndex.get(s.tx);
-        if (!arr) txIndex.set(s.tx, (arr = [s.block]));
-        arr.push(idx, ai, pair);
-      }
+      // A short live tape, kept only for the handful of pools shown in the UI.
+      // (Cross-routing is measured in the pool-discovery task instead, which already
+      // scans every AI pool over its window.)
       if (idx < 4) {
         tape.push({ t: tm.at(s.block), pool: idx, buy: isBuy, ai: r6(Math.abs(ai)), pair: r6(Math.abs(pair)), price: r6(price), tx: s.tx });
       }
@@ -115,7 +106,7 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
   }
 
   tape.sort((a, b) => b.t - a.t);
-  return { perPool, txIndex, tape: tape.slice(0, 400), routingStart };
+  return { perPool, tape: tape.slice(0, 400) };
 }
 
 /** Rolling buy/sell imbalance over the trailing `hours` window. */
