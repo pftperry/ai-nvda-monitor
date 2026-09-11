@@ -1,0 +1,78 @@
+name: Index and deploy
+
+on:
+  schedule:
+    # every 30 minutes; GitHub may delay this under load
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Indexing mode"
+        required: false
+        default: "full"
+        type: choice
+        options: [full, quick]
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: index-and-deploy
+  cancel-in-progress: false
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Resumable cursor state (block -> time anchors) so repeat runs stay cheap.
+      - name: Restore indexer cache
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: indexer-state-${{ github.run_id }}
+          restore-keys: indexer-state-
+
+      - name: Index chain data
+        run: |
+          if [ "${{ github.event.inputs.mode }}" = "quick" ]; then
+            node src/indexer.mjs --quick
+          else
+            node src/indexer.mjs
+          fi
+
+      - name: Commit refreshed data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/data
+          if git diff --staged --quiet; then
+            echo "No data change."
+          else
+            git commit -m "chore(data): refresh on-chain index [skip ci]"
+            git push
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: index
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

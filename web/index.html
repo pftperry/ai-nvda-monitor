@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI / NVDA Monitor — Robinhood Chain</title>
+<meta name="description" content="Live buy/sell flow, burn and cross-routing monitor for the Artificial Inu (AI) / NVDA Uniswap v4 pair on Robinhood Chain.">
+<!-- iOS: allow Add to Home Screen to run chrome-less, and match the status bar to the page -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="AI/NVDA">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#fcfcfb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1a1a19" media="(prefers-color-scheme: dark)">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='25' font-size='26'>🔥</text></svg>">
+</head>
+<body>
+
+<!-- header + tabs stick as ONE unit, so the tab row needs no hardcoded offset and
+     cannot detach when the header wraps to two lines on a narrow screen -->
+<div class="topbar">
+<header>
+  <div class="hdr-in">
+    <div class="brand"><span class="dot" id="liveDot" title="live"></span> AI / NVDA Monitor</div>
+    <div class="hdr-stats" id="hdrStats">
+      <div class="hs"><b id="hPrice">—</b><span>AI / NVDA</span></div>
+      <div class="hs"><b id="hUsd">—</b><span>AI USD</span></div>
+      <div class="hs"><b id="hSupply">—</b><span>Supply</span></div>
+      <div class="hs"><b id="hBlock">—</b><span>Head block</span></div>
+    </div>
+  </div>
+</header>
+
+<nav class="tabs">
+  <div class="inner" role="tablist">
+    <button class="tab" role="tab" id="tab-flow"     aria-controls="p-flow"     aria-selected="true">Flow &amp; Burn</button>
+    <button class="tab" role="tab" id="tab-float"    aria-controls="p-float"    aria-selected="false">Float &amp; Lockup</button>
+    <button class="tab" role="tab" id="tab-bridges"  aria-controls="p-bridges"  aria-selected="false">Bridges &amp; Routing</button>
+    <button class="tab" role="tab" id="tab-method"   aria-controls="p-method"   aria-selected="false">Method</button>
+  </div>
+</nav>
+</div>
+
+<div class="wrap">
+  <div id="boot" class="loading">Loading on-chain data…</div>
+  <div id="bootErr"></div>
+
+  <!-- ───────────────────────── Flow & Burn ───────────────────────── -->
+  <section class="panel" id="p-flow" role="tabpanel" aria-labelledby="tab-flow" hidden>
+    <div class="controls">
+      <label class="muted" for="poolSel" style="font-size:12.5px">Pool</label>
+      <select id="poolSel"></select>
+      <div class="seg" id="rangeSeg" role="group" aria-label="Time range">
+        <button data-h="24"  aria-pressed="true">24h</button>
+        <button data-h="72"  aria-pressed="false">3d</button>
+        <button data-h="168" aria-pressed="false">7d</button>
+        <button data-h="720" aria-pressed="false">30d</button>
+        <button data-h="0"   aria-pressed="false">All</button>
+      </div>
+    </div>
+
+    <div class="grid g4" id="flowTiles"></div>
+
+    <h2 class="section-title">Order flow</h2>
+    <div class="card">
+      <h3>Hourly buy / sell volume, in AI</h3>
+      <p class="sub">Bars above the axis are AI bought (leaving the pool); below are AI sold. Derived from Uniswap v4 <code>Swap</code> logs — every trade, not a sample.</p>
+      <div class="legend">
+        <span><i style="background:var(--buy)"></i>Bought AI</span>
+        <span><i style="background:var(--sell)"></i>Sold AI</span>
+      </div>
+      <div class="chart" id="cFlow"></div>
+    </div>
+
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card">
+        <h3>Cumulative net flow</h3>
+        <p class="sub">Running sum of AI bought minus AI sold. A rising line means traders are net absorbing AI.</p>
+        <div class="chart" id="cNet"></div>
+      </div>
+      <div class="card">
+        <h3>Price</h3>
+        <p class="sub">Pool price from <code>sqrtPriceX96</code>, in quote units per AI. Shown on its own axis — never overlaid on flow.</p>
+        <div class="chart" id="cPrice"></div>
+      </div>
+    </div>
+
+    <h2 class="section-title">Burn engine</h2>
+    <div class="grid g4" id="burnTiles"></div>
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card">
+        <h3>Daily AI burned</h3>
+        <p class="sub">AI sent irreversibly to <code>0x0</code> by the fee splitter. Burn rate is a direct read on fee-paying volume.</p>
+        <div class="chart" id="cBurn"></div>
+      </div>
+      <div class="card">
+        <h3>NVDA reserve accretion</h3>
+        <p class="sub">Cumulative NVDA stock-token balance accumulated by the community vault.</p>
+        <div class="chart" id="cReserve"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>Rolling flow imbalance</h3>
+      <p class="sub">Imbalance is (bought − sold) ÷ (bought + sold) in AI terms. The table is the accessible view of the charts above.</p>
+      <div class="scroll"><table id="tRollup"></table></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>Recent tape</h3>
+      <p class="sub">Most recent swaps across the indexed AI pools.</p>
+      <div class="scroll"><table id="tTape"></table></div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── Float & Lockup ───────────────────────── -->
+  <section class="panel" id="p-float" role="tabpanel" aria-labelledby="tab-float" hidden>
+    <div class="grid g4" id="floatTiles"></div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>Where the supply actually is</h3>
+      <p class="sub">Genesis supply decomposed into what is gone for good, what is immobilised, and what can actually trade.</p>
+      <div class="chart" id="cWaterfall"></div>
+      <div class="scroll" style="margin-top:12px"><table id="tSupply"></table></div>
+    </div>
+
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card">
+        <h3>Permanent removal over time</h3>
+        <p class="sub">Cumulative AI burned and AI locked in the vault. Both legs are irreversible.</p>
+        <div class="legend">
+          <span><i style="background:var(--series-1)"></i>Burned</span>
+          <span><i style="background:var(--series-2)"></i>Vault-locked</span>
+        </div>
+        <div class="chart" id="cRemoval"></div>
+      </div>
+      <div class="card">
+        <h3>Observed fee split</h3>
+        <p class="sub">Measured from transfers, not assumed. Each leg is a share of total AI fees taken by the hook.</p>
+        <div class="chart" id="cSplit"></div>
+        <div class="hint" id="splitNote"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── Bridges & Routing ───────────────────────── -->
+  <section class="panel" id="p-bridges" role="tabpanel" aria-labelledby="tab-bridges" hidden>
+    <div class="grid g4" id="routeTiles"></div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>Measured cross-routing intensity</h3>
+      <p class="sub">
+        Cross-routed AI as a share of direct volume. The valuation thesis assigns this by
+        assumption; here it is counted from transactions where AI is a pass-through hop.
+        Markers show that model's four scenario levels.
+      </p>
+      <div class="chart" id="cGauge"></div>
+    </div>
+
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card">
+        <h3>Direct vs cross-routed volume</h3>
+        <p class="sub">Daily AI volume split by whether AI was the destination or merely the bridge.</p>
+        <div class="legend">
+          <span><i style="background:var(--series-1)"></i>Direct</span>
+          <span><i style="background:var(--series-2)"></i>Cross-routed</span>
+        </div>
+        <div class="chart" id="cRouting"></div>
+      </div>
+      <div class="card">
+        <h3>New AI bridges per day</h3>
+        <p class="sub">First-time pool creations against AI that went on to trade. Formation rate is the thesis signal.</p>
+        <div class="chart" id="cFormation"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>AI-pair share by token</h3>
+      <p class="sub">For each token, the share of its total measured on-chain volume that settles on its AI bridge rather than its other venues.</p>
+      <div class="scroll"><table id="tBridges"></table></div>
+    </div>
+
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card">
+        <h3>Top routes through AI</h3>
+        <p class="sub">Observed pass-through paths, by routed AI volume.</p>
+        <div class="scroll"><table id="tRoutes"></table></div>
+      </div>
+      <div class="card">
+        <h3>Busiest AI counterparties</h3>
+        <p class="sub">Direct (non-routed) AI volume by paired token.</p>
+        <div class="scroll"><table id="tCounter"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── Method ───────────────────────── -->
+  <section class="panel" id="p-method" role="tabpanel" aria-labelledby="tab-method" hidden>
+    <div class="card">
+      <h3>How this is measured</h3>
+      <p class="sub">Every number on this site comes from Robinhood Chain logs via public RPC. Nothing is modelled or estimated unless it says so.</p>
+      <div id="methodBody"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>Contracts</h3>
+      <p class="sub">Each address was established by tracing real transfers, not from a directory.</p>
+      <div class="kv" id="contractKv"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>Self-checks</h3>
+      <p class="sub">Assertions that must hold if the indexing is correct.</p>
+      <div id="checks"></div>
+    </div>
+  </section>
+
+  <footer>
+    <div id="footMeta"></div>
+  </footer>
+</div>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>

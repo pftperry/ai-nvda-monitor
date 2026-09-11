@@ -1,0 +1,15 @@
+{
+  "name": "ai-nvda-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Live on-chain flow, burn and routing monitor for the Artificial Inu (AI) / NVDA pair on Robinhood Chain",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "index": "node src/indexer.mjs",
+    "index:fast": "node src/indexer.mjs --skip-backfill",
+    "serve": "node src/serve.mjs",
+    "dev": "npm run index:fast && npm run serve"
+  },
+  "dependencies": {}
+}

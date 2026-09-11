@@ -1,0 +1,237 @@
+/* Tokens.
+   Light is the base definition; dark is a selected set of steps from the same
+   ramps, declared under both the OS media query and the explicit theme stamp so
+   a manual toggle wins in either direction. */
+:root {
+  color-scheme: light;
+  --plane:        #f9f9f7;
+  --surface-1:    #fcfcfb;
+  --surface-2:    #f3f3f0;
+  --border:       #e2e1dc;
+  --border-strong:#cbcac3;
+  --text-primary: #0b0b0b;
+  --text-secondary:#52514e;
+  --text-muted:   #85847e;
+
+  /* diverging: buy <-> sell. blue/red with a gray midpoint, which stays
+     readable under deuteranopia in a way green/red does not. */
+  --buy:          #2a78d6;
+  --sell:         #e34948;
+  --mid:          #f0efec;
+
+  /* categorical, fixed slot order: blue, orange, aqua */
+  --series-1:     #2a78d6;
+  --series-2:     #eb6834;
+  --series-3:     #1baf7a;
+
+  --good:         #0ca30c;
+  --warning:      #fab219;
+  --critical:     #d03b3b;
+
+  --grid:         #ececE7;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, Inter, system-ui, sans-serif;
+  --r: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane:        #0d0d0d;
+    --surface-1:    #1a1a19;
+    --surface-2:    #222221;
+    --border:       #2e2e2c;
+    --border-strong:#42423f;
+    --text-primary: #ffffff;
+    --text-secondary:#c3c2b7;
+    --text-muted:   #8f8e85;
+    --buy:          #3987e5;
+    --sell:         #e66767;
+    --mid:          #383835;
+    --series-1:     #3987e5;
+    --series-2:     #d95926;
+    --series-3:     #199e70;
+    --grid:         #2a2a28;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface-1:#1a1a19; --surface-2:#222221;
+  --border:#2e2e2c; --border-strong:#42423f;
+  --text-primary:#fff; --text-secondary:#c3c2b7; --text-muted:#8f8e85;
+  --buy:#3987e5; --sell:#e66767; --mid:#383835;
+  --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --grid:#2a2a28;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+html {
+  /* stop iOS Safari from inflating text in landscape */
+  -webkit-text-size-adjust: 100%;
+}
+body {
+  background: var(--plane); color: var(--text-primary);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  /* kill the 300ms tap delay without disabling pinch-zoom */
+  touch-action: manipulation;
+  overflow-x: hidden;
+}
+a { color: var(--series-1); }
+.wrap {
+  max-width: 1280px; margin: 0 auto;
+  padding: 0 max(16px, env(safe-area-inset-left)) calc(72px + env(safe-area-inset-bottom));
+}
+
+/* Header + tabs stick together as one unit */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  background: var(--surface-1);
+  padding-top: env(safe-area-inset-top);
+}
+header { border-bottom: 1px solid var(--border); background: var(--surface-1); }
+.hdr-in { max-width: 1280px; margin: 0 auto; padding: 12px max(16px, env(safe-area-inset-left)); display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: center; }
+.brand { font-weight: 650; letter-spacing: -.01em; font-size: 15px; display: flex; align-items: center; gap: 9px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
+.dot.stale { background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 22%, transparent); }
+.hdr-stats { display: flex; gap: 22px; margin-left: auto; flex-wrap: wrap; }
+.hs { display: flex; flex-direction: column; gap: 1px; }
+.hs b { font: 600 15px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+.hs span { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
+.up { color: var(--buy); } .down { color: var(--sell); }
+
+/* Tabs — scroll horizontally on narrow screens rather than wrapping or squeezing */
+nav.tabs {
+  display: flex; border-bottom: 1px solid var(--border); background: var(--surface-1);
+  padding: 0 max(16px, env(safe-area-inset-left));
+  overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+nav.tabs::-webkit-scrollbar { display: none; }
+nav.tabs .inner { max-width: 1280px; margin: 0 auto; width: 100%; display: flex; gap: 4px; }
+.tab {
+  appearance: none; background: none; border: 0; border-bottom: 2px solid transparent;
+  padding: 13px 14px; font: 500 14px var(--sans); color: var(--text-secondary); cursor: pointer;
+  white-space: nowrap; min-height: 44px; /* iOS minimum touch target */
+}
+.tab:hover { color: var(--text-primary); }
+.tab[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--series-1); font-weight: 600; }
+.panel[hidden] { display: none !important; }
+
+/* Cards and layout */
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--r); padding: 16px; }
+.card > h3 { margin: 0 0 2px; font-size: 13.5px; font-weight: 620; letter-spacing: -.005em; }
+.card > p.sub { margin: 0 0 14px; font-size: 12px; color: var(--text-muted); }
+.grid { display: grid; gap: 14px; }
+.g4 { grid-template-columns: repeat(4, 1fr); }
+.g3 { grid-template-columns: repeat(3, 1fr); }
+.g2 { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 980px) { .g4, .g3, .g2 { grid-template-columns: repeat(2, 1fr); } }
+/* On a phone, keep stat tiles two-up: one-up would turn the header into a
+   scroll marathon before any chart is visible. Charts go full width. */
+@media (max-width: 620px) {
+  .g4, .g3 { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .g2 { grid-template-columns: 1fr; }
+}
+.section-title { margin: 26px 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--text-muted); font-weight: 620; }
+
+/* Stat tiles */
+.tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--r); padding: 14px 15px; }
+.tile .lbl { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 7px; }
+.tile .val { font: 650 25px/1.1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.tile .note { font-size: 11.5px; color: var(--text-secondary); margin-top: 6px; }
+
+/* Charts */
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.axis text { font: 10.5px var(--mono); fill: var(--text-muted); }
+.gridline { stroke: var(--grid); stroke-width: 1; }
+.zeroline { stroke: var(--border-strong); stroke-width: 1; }
+.tip {
+  position: absolute; pointer-events: none; z-index: 5; opacity: 0; transition: opacity .08s;
+  background: var(--surface-1); border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 7px 9px; font: 11.5px/1.55 var(--mono); color: var(--text-primary);
+  box-shadow: 0 6px 20px rgba(0,0,0,.18); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.tip.on { opacity: 1; }
+.tip .k { color: var(--text-muted); }
+.crosshair { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 3 3; }
+
+/* Legend */
+.legend { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 10px; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.legend span { font-size: 12px; color: var(--text-secondary); }
+
+/* Controls */
+.controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+select, .btn {
+  appearance: none; background: var(--surface-2); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 6px; padding: 9px 11px;
+  /* 16px: anything smaller makes iOS Safari zoom the page on focus */
+  font: 16px var(--sans); cursor: pointer; min-height: 44px; max-width: 100%;
+}
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { appearance: none; background: var(--surface-2); border: 0; border-right: 1px solid var(--border); padding: 10px 13px; font: 13px var(--mono); color: var(--text-secondary); cursor: pointer; min-height: 44px; }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--series-1); color: #fff; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font: 12.5px var(--mono); font-variant-numeric: tabular-nums; }
+th { text-align: right; font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); padding: 7px 9px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+td { padding: 7px 9px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+tbody tr:hover { background: var(--surface-2); }
+/* momentum scrolling for the wide tables, with an edge hint that there is more */
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.scroll::-webkit-scrollbar { height: 5px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+.bar-cell { position: relative; min-width: 130px; }
+.bar-cell .fill { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); height: 13px; border-radius: 0 3px 3px 0; background: color-mix(in srgb, var(--series-1) 34%, transparent); }
+.bar-cell span { position: relative; }
+
+/* Misc */
+.badge { display: inline-flex; align-items: center; gap: 5px; font: 600 11px var(--sans); padding: 3px 8px; border-radius: 20px; text-transform: uppercase; letter-spacing: .04em; }
+.badge.ok { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
+.badge.bad { background: color-mix(in srgb, var(--critical) 15%, transparent); color: var(--critical); }
+.mono { font-family: var(--mono); }
+code { font: 12px var(--mono); background: var(--surface-2); padding: 1.5px 5px; border-radius: 4px; word-break: break-all; }
+.muted { color: var(--text-muted); }
+footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-muted); }
+footer h4 { color: var(--text-secondary); font-size: 12px; margin: 16px 0 7px; text-transform: uppercase; letter-spacing: .05em; }
+.kv { display: grid; grid-template-columns: 210px 1fr; gap: 4px 14px; font: 11.5px var(--mono); }
+.kv div:nth-child(odd) { color: var(--text-muted); }
+.loading { padding: 40px; text-align: center; color: var(--text-muted); }
+.err { border-left: 3px solid var(--critical); padding: 10px 14px; background: color-mix(in srgb, var(--critical) 7%, transparent); border-radius: 4px; margin: 12px 0; font-size: 13px; }
+.hint { font-size: 11.5px; color: var(--text-muted); margin-top: 8px; }
+.gauge-scale { display: flex; justify-content: space-between; font: 10.5px var(--mono); color: var(--text-muted); margin-top: 5px; }
+
+/* ── Phone ────────────────────────────────────────────────────────────────
+   Primary viewing surface is an iPhone, so this block is load-bearing, not a
+   courtesy fallback: denser tiles, smaller hero numbers, and a tooltip that is
+   pinned rather than floating (a finger-following tooltip sits under the finger). */
+@media (max-width: 620px) {
+  body { font-size: 13.5px; }
+  .brand { font-size: 14px; }
+  .hdr-in { padding: 10px 16px; gap: 10px 16px; }
+  .hdr-stats { gap: 0; margin-left: 0; width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  .hs b { font-size: 14px; }
+  .hs span { font-size: 10px; }
+  .card { padding: 13px; border-radius: 10px; }
+  .card > h3 { font-size: 13px; }
+  .card > p.sub { font-size: 11.5px; margin-bottom: 11px; }
+  .tile { padding: 11px 12px; }
+  .tile .lbl { font-size: 10px; margin-bottom: 5px; }
+  .tile .val { font-size: 19px; }
+  .tile .note { font-size: 10.5px; line-height: 1.4; }
+  .section-title { margin: 20px 0 10px; font-size: 11px; }
+  .controls { gap: 7px; }
+  .controls select { flex: 1 1 100%; }
+  .legend { gap: 12px; margin-bottom: 8px; }
+  .legend span { font-size: 11.5px; }
+  /* pin the tooltip to the top of the chart so it is never under the finger */
+  .tip { font-size: 11px; padding: 6px 8px; left: 0 !important; top: 0 !important; max-width: 100%; white-space: normal; }
+  table { font-size: 11.5px; }
+  th { font-size: 10px; padding: 6px 7px; }
+  td { padding: 6px 7px; }
+  .kv { grid-template-columns: 1fr; gap: 1px 0; }
+  .kv div:nth-child(odd) { margin-top: 7px; }
+  footer { font-size: 11.5px; }
+}
