@@ -47,7 +47,13 @@ jobs:
       # after it resumes from the committed cursor and only scans new blocks.
       # Flow depth is bounded by --top because per-pool backfill dominates the clock,
       # while ranking, routing and bridge windows stay at full width.
+      # continue-on-error is deliberate. The public RPC throttles datacenter IPs
+      # much harder than residential ones, so a scheduled run can lose a race it
+      # would win locally. A failed refresh must not take the published site down:
+      # the last committed data is still perfectly good, just older.
       - name: Index chain data
+        id: index
+        continue-on-error: true
         timeout-minutes: 300
         run: |
           case "${{ github.event.inputs.mode }}" in
@@ -58,9 +64,12 @@ jobs:
 
       # A silently-wrong index is worse than a failed one, so bad data never ships.
       - name: Verify invariants
+        id: verify
+        if: steps.index.outcome == 'success'
         run: node src/verify.mjs
 
       - name: Commit refreshed data
+        if: steps.index.outcome == 'success' && steps.verify.outcome == 'success'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -71,6 +80,15 @@ jobs:
             git commit -m "chore(data): refresh on-chain index [skip ci]"
             git push
           fi
+
+      - name: Report refresh outcome
+        run: |
+          echo "index: ${{ steps.index.outcome }}"
+          if [ "${{ steps.index.outcome }}" != "success" ]; then
+            echo "::warning::Indexing did not complete; publishing the last good data instead."
+          fi
+          # Only a total absence of data is fatal -- there would be nothing to serve.
+          test -f web/data/meta.json || { echo "::error::No indexed data exists yet."; exit 1; }
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

@@ -10,11 +10,24 @@ const endpoint = () => RPCS[rpcIdx % RPCS.length];
 class TooManyLogs extends Error {}
 export { TooManyLogs };
 
+/* Adaptive pacing. The endpoint throttles a datacenter IP far harder than a
+   residential one -- the same scan that runs clean locally gets rate-limited on a
+   CI runner -- so the client slows itself down when it sees pushback and speeds
+   back up when it stops. A fixed delay cannot serve both environments. */
+let paceMs = LIMITS.politeDelayMs;
+const PACE_MAX = 4000;
+const slowDown = () => { paceMs = Math.min(PACE_MAX, Math.max(200, Math.round(paceMs * 1.8))); };
+const speedUp = () => { paceMs = Math.max(LIMITS.politeDelayMs, Math.round(paceMs * 0.97)); };
+export const pace = () => paceMs;
+
+const jitter = (ms) => ms * (0.75 + Math.random() * 0.5);
+
 /**
- * Single JSON-RPC call. Retries transient failures with backoff.
- * Throws TooManyLogs immediately so callers can subdivide instead of waiting.
+ * Single JSON-RPC call. Retries transient failures with capped exponential
+ * backoff. Throws TooManyLogs immediately so callers can subdivide rather than
+ * wait out a condition that will never resolve on its own.
  */
-export async function rpc(method, params, tries = 8) {
+export async function rpc(method, params, tries = 12) {
   let last;
   for (let i = 0; i < tries; i++) {
     callCount++;
@@ -25,23 +38,43 @@ export async function rpc(method, params, tries = 8) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: callCount, method, params }),
       });
-      if (res.status === 429) { await sleep(1500 * (i + 1)); continue; }
-      j = await res.json();
+      if (res.status === 429 || res.status === 503 || res.status === 502) {
+        slowDown();
+        const ra = Number(res.headers.get("retry-after"));
+        last = new Error(`HTTP ${res.status}`);
+        await sleep(jitter(ra > 0 ? ra * 1000 : Math.min(30000, 1000 * 2 ** i)));
+        continue;
+      }
+      const text = await res.text();
+      try { j = JSON.parse(text); }
+      catch {
+        // an HTML error page or a truncated body: transient, worth retrying
+        last = new Error(`non-JSON response (HTTP ${res.status}): ${text.slice(0, 120)}`);
+        slowDown();
+        await sleep(jitter(Math.min(30000, 1000 * 2 ** i)));
+        continue;
+      }
     } catch (e) {
-      last = e; rpcIdx++; await sleep(800 * (i + 1)); continue;
+      last = e; rpcIdx++; slowDown();
+      await sleep(jitter(Math.min(30000, 1000 * 2 ** i)));
+      continue;
     }
     if (j.error) {
       const msg = j.error.message || "";
       if (/exceeds limit/i.test(msg)) throw new TooManyLogs(msg);
-      if (/timed out|too many|rate|capacity/i.test(msg) || String(j.error.code) === "429") {
-        last = new Error(msg); await sleep(1200 * (i + 1)); continue;
+      if (/timed out|too many|rate|capacity|busy/i.test(msg) || String(j.error.code) === "429") {
+        last = new Error(msg); slowDown();
+        await sleep(jitter(Math.min(30000, 1000 * 2 ** i)));
+        continue;
       }
       throw new Error(`${method}: ${JSON.stringify(j.error)}`);
     }
-    if (LIMITS.politeDelayMs) await sleep(LIMITS.politeDelayMs);
+    speedUp();
+    if (paceMs) await sleep(paceMs);
     return j.result;
   }
-  throw last || new Error(`${method}: retries exhausted`);
+  // Surfacing the underlying cause matters: "retries exhausted" alone is unactionable.
+  throw new Error(`${method}: gave up after ${tries} attempts — last error: ${last ? last.message : "unknown"}`);
 }
 
 /** Batched JSON-RPC. Falls back to sequential calls if the node rejects batching. */
@@ -56,7 +89,11 @@ export async function rpcBatch(calls) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (res.status === 429) { await sleep(1500 * (attempt + 1)); continue; }
+      if (res.status === 429 || res.status >= 500) {
+        slowDown();
+        await sleep(jitter(Math.min(30000, 1000 * 2 ** attempt)));
+        continue;
+      }
       const j = await res.json();
       if (!Array.isArray(j)) break;
       const out = new Array(calls.length);
@@ -65,10 +102,11 @@ export async function rpcBatch(calls) {
         if (r.error && /timed out|too many|rate/i.test(r.error.message || "")) retryable = true;
         out[r.id] = r.error ? null : r.result;
       }
-      if (retryable) { await sleep(1200 * (attempt + 1)); continue; }
-      await sleep(LIMITS.politeDelayMs);
+      if (retryable) { slowDown(); await sleep(jitter(Math.min(30000, 1000 * 2 ** attempt))); continue; }
+      speedUp();
+      await sleep(paceMs);
       return out;
-    } catch { await sleep(800 * (attempt + 1)); }
+    } catch { slowDown(); await sleep(jitter(Math.min(20000, 1000 * 2 ** attempt))); }
   }
   const out = [];
   for (const c of calls) { try { out.push(await rpc(c.method, c.params)); } catch { out.push(null); } }
@@ -131,7 +169,9 @@ export async function getLogsRange(filter, from, to, opts = {}) {
 
 /** eth_getLogs where a topic position is an OR-list, split into server-safe groups. */
 export async function getLogsByTopicSet(address, topic0, topic1Set, from, to, opts = {}) {
-  const groupSize = opts.groupSize || 400;
+  // Smaller OR-groups mean more queries but far lighter ones, which a throttled
+  // endpoint tolerates much better than a few heavy scans.
+  const groupSize = opts.groupSize ?? 150;
   const out = [];
   const ids = [...topic1Set];
   for (let i = 0; i < ids.length; i += groupSize) {

@@ -40,7 +40,7 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
       meta.set(p.poolId, { tIsC0, isAIPool: (tIsC0 ? p.currency1 : p.currency0) === AI });
     }
     const ids = [...meta.keys()];
-    const swaps = await getLogsByTopicSet(POOL_MANAGER, TOPICS.SWAP, ids, from, latest, { groupSize: 300, chunk: window });
+    const swaps = await getLogsByTopicSet(POOL_MANAGER, TOPICS.SWAP, ids, from, latest, { groupSize: 150, chunk: window });
 
     let aiVol = 0, otherVol = 0, aiSwaps = 0, otherSwaps = 0;
     for (const l of swaps) {
