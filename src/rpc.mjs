@@ -15,8 +15,8 @@ export { TooManyLogs };
    CI runner -- so the client slows itself down when it sees pushback and speeds
    back up when it stops. A fixed delay cannot serve both environments. */
 let paceMs = LIMITS.politeDelayMs;
-const PACE_MAX = 4000;
-const slowDown = () => { paceMs = Math.min(PACE_MAX, Math.max(200, Math.round(paceMs * 1.8))); };
+const PACE_MAX = 2000;
+const slowDown = () => { paceMs = Math.min(PACE_MAX, Math.max(200, Math.round(paceMs * 1.4))); };
 // Recover quickly. At 0.97 per success a pace that spiked to 4s needs well over a
 // hundred clean calls to come back down, so a transient stumble taxed the whole run.
 const speedUp = () => { paceMs = Math.max(LIMITS.politeDelayMs, Math.round(paceMs * 0.8)); };
@@ -24,14 +24,46 @@ export const pace = () => paceMs;
 
 const jitter = (ms) => ms * (0.75 + Math.random() * 0.5);
 
+/* Backoff has to be bounded, and shared.
+   Heavy scans push this endpoint into a short penalty window where it answers
+   everything with 429 for a while. Per-call exponential backoff is exactly the
+   wrong response: with 12 tries escalating to 30s, ONE call could burn 211
+   seconds, and a few hundred queued calls then never finish. Worse, each call
+   rediscovers the penalty independently.
+   Instead the penalty is treated as a process-wide condition: after a few
+   consecutive rate-limited responses the client pauses once, long enough for the
+   window to drain, and everyone benefits. Per-call backoff stays short. */
+const BACKOFF_BASE_MS = 400;
+const BACKOFF_MAX_MS = 5_000;
+const COOLDOWN_MS = 15_000;
+const COOLDOWN_AFTER = 3;
+let consecutiveLimited = 0;
+let cooldownUntil = 0;
+
+const backoff = (attempt) => jitter(Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** attempt));
+
+async function noteRateLimited() {
+  slowDown();
+  consecutiveLimited++;
+  if (consecutiveLimited >= COOLDOWN_AFTER && Date.now() > cooldownUntil) {
+    cooldownUntil = Date.now() + COOLDOWN_MS;
+    console.warn(`  endpoint is rate limiting; pausing ${COOLDOWN_MS / 1000}s to let the window drain`);
+    await sleep(COOLDOWN_MS);
+    consecutiveLimited = 0;
+  }
+}
+const noteOk = () => { consecutiveLimited = 0; speedUp(); };
+
 /**
  * Single JSON-RPC call. Retries transient failures with capped exponential
  * backoff. Throws TooManyLogs immediately so callers can subdivide rather than
  * wait out a condition that will never resolve on its own.
  */
-export async function rpc(method, params, tries = 12) {
+export async function rpc(method, params, tries = 8) {
   let last;
   for (let i = 0; i < tries; i++) {
+    // Respect a cooldown another call may have started.
+    if (cooldownUntil > Date.now()) await sleep(cooldownUntil - Date.now());
     callCount++;
     let j;
     try {
@@ -47,10 +79,10 @@ export async function rpc(method, params, tries = 12) {
         signal: AbortSignal.timeout(LIMITS.requestTimeoutMs),
       });
       if (res.status === 429 || res.status === 503 || res.status === 502) {
-        slowDown();
-        const ra = Number(res.headers.get("retry-after"));
         last = new Error(`HTTP ${res.status}`);
-        await sleep(jitter(ra > 0 ? ra * 1000 : Math.min(30000, 1000 * 2 ** i)));
+        await noteRateLimited();
+        const ra = Number(res.headers.get("retry-after"));
+        await sleep(ra > 0 ? Math.min(30_000, ra * 1000) : backoff(i));
         continue;
       }
       const text = await res.text();
@@ -59,25 +91,26 @@ export async function rpc(method, params, tries = 12) {
         // an HTML error page or a truncated body: transient, worth retrying
         last = new Error(`non-JSON response (HTTP ${res.status}): ${text.slice(0, 120)}`);
         slowDown();
-        await sleep(jitter(Math.min(30000, 1000 * 2 ** i)));
+        await sleep(backoff(i));
         continue;
       }
     } catch (e) {
       last = e; rpcIdx++; slowDown();
-      await sleep(jitter(Math.min(30000, 1000 * 2 ** i)));
+      await sleep(backoff(i));
       continue;
     }
     if (j.error) {
       const msg = j.error.message || "";
       if (/exceeds limit/i.test(msg)) throw new TooManyLogs(msg);
       if (/timed out|too many|rate|capacity|busy/i.test(msg) || String(j.error.code) === "429") {
-        last = new Error(msg); slowDown();
-        await sleep(jitter(Math.min(30000, 1000 * 2 ** i)));
+        last = new Error(msg);
+        await noteRateLimited();
+        await sleep(backoff(i));
         continue;
       }
       throw new Error(`${method}: ${JSON.stringify(j.error)}`);
     }
-    speedUp();
+    noteOk();
     if (paceMs) await sleep(paceMs);
     return j.result;
   }
@@ -85,53 +118,29 @@ export async function rpc(method, params, tries = 12) {
   throw new Error(`${method}: gave up after ${tries} attempts — last error: ${last ? last.message : "unknown"}`);
 }
 
-/* This endpoint does not support JSON-RPC batching AT ALL. A batch of any size --
-   even two calls -- comes back HTTP 429 "Too Many Requests" in ~60ms, which is a
-   refusal of the batch format rather than genuine rate limiting.
-   That distinction matters enormously. Treating it as rate limiting made the
-   client burn ~31s of exponential backoff per batch AND ratchet its global pacing
-   up to 4s per call, so the several hundred sequential calls that followed crawled
-   for fifteen minutes. One probe, remembered, avoids all of it. */
-let batchSupported = true;
-
-async function sequentially(calls) {
+/**
+ * Run many calls, one at a time. Despite the name this deliberately does NOT send
+ * a JSON-RPC batch.
+ *
+ * The rate limiter here counts each SUB-REQUEST, not each HTTP request. A 60-call
+ * batch therefore spends sixty requests of budget in a single shot: the batch
+ * itself comes back 429, and -- the expensive part -- every ordinary call that
+ * follows is throttled until the window drains. That one behaviour explains what
+ * looked for hours like an unreliable endpoint. Measured: 39 individual eth_calls
+ * finish in 2.3s (17/s), while the identical work attempted as batches stalls for
+ * minutes behind repeated cooldowns.
+ *
+ * Batching buys nothing against a limiter that counts this way, so we don't. The
+ * name stays because callers only ever wanted "resolve these N things"; how that
+ * is transported is this module's business.
+ */
+export async function rpcBatch(calls) {
+  if (!calls.length) return [];
   const out = [];
   for (const c of calls) {
     try { out.push(await rpc(c.method, c.params)); } catch { out.push(null); }
   }
   return out;
-}
-
-/** Batched JSON-RPC where supported; transparently sequential where not. */
-export async function rpcBatch(calls) {
-  if (!calls.length) return [];
-  if (!batchSupported) return sequentially(calls);
-
-  const body = calls.map((c, i) => ({ jsonrpc: "2.0", id: i, method: c.method, params: c.params }));
-  try {
-    callCount++;
-    const res = await fetch(endpoint(), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(LIMITS.requestTimeoutMs),
-    });
-    const j = await res.json().catch(() => null);
-    if (!Array.isArray(j)) {
-      // Not a transport problem: this node simply will not take batches.
-      batchSupported = false;
-      console.warn("  note: endpoint rejects JSON-RPC batching; using sequential calls");
-      return sequentially(calls);
-    }
-    const out = new Array(calls.length);
-    for (const r of j) out[r.id] = r.error ? null : r.result;
-    speedUp();
-    if (paceMs) await sleep(paceMs);
-    return out;
-  } catch {
-    batchSupported = false;
-    return sequentially(calls);
-  }
 }
 
 export const hexBlock = (n) => "0x" + Number(n).toString(16);
@@ -191,6 +200,11 @@ export async function getLogsRange(filter, from, to, opts = {}) {
       minBad = Math.min(minBad, size);
       size = Math.max(1, Math.floor(size / 2));
       wins = 0;
+      /* A server-side timeout is different from a log-cap breach: the node did real
+         work and gave up, and it answers the next few requests with 429 regardless
+         of how patient the client is. Pausing briefly lets that clear instead of
+         spending retries into a penalty window. */
+      if (/timed out/i.test(e.message)) await sleep(2000);
     }
   }
   return out;

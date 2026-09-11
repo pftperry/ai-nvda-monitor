@@ -41,7 +41,13 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
 
     const logs = resumeFrom > latest ? [] : await getLogsRange(
       { address: POOL_MANAGER, topics: [TOPICS.SWAP, p.poolId] },
-      resumeFrom, latest, { chunk: 2_000_000 }
+      /* 1M blocks is the measured sweet spot for a single pool: it returns ~7,900
+         logs in ~980ms, just under the 10,000 cap, and completes well inside the
+         server's patience. Asking for 4M instead returns "log query timed out" and
+         -- worse -- appears to trip a penalty that answers the next several
+         requests with Too Many Requests in ~60ms. Overshooting is not merely
+         wasted work here; it degrades the endpoint for the requests that follow. */
+      resumeFrom, latest, { chunk: 1_000_000 }
     );
 
     for (const l of logs) {

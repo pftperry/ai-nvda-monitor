@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { rpcBatch } from "./rpc.mjs";
 import { TOKENS } from "./config.mjs";
 
@@ -21,17 +23,38 @@ function decodeAbiString(hex) {
 
 const known = new Map(Object.values(TOKENS).map((t) => [t.address.toLowerCase(), t]));
 
-/** Resolve symbol/decimals for many tokens using batched eth_call. */
-export async function resolveTokens(addresses) {
+/* Symbol and decimals are immutable, so paying for them once is enough.
+   Re-resolving every run meant hundreds of eth_calls for data that cannot have
+   changed -- the largest avoidable cost in a repeat run, and it grows with every
+   new pool the launchpad creates. */
+const CACHE_FILE = path.join(path.resolve(import.meta.dirname, ".."), ".cache", "tokens.json");
+let cache = null;
+const loadCache = () => (cache ??= (() => {
+  try { return JSON.parse(fs.readFileSync(CACHE_FILE, "utf8")); } catch { return {}; }
+})());
+function saveCache() {
+  try {
+    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
+  } catch { /* a cold cache is survivable; failing the run over it is not */ }
+}
+
+/** Resolve symbol/decimals for many tokens, hitting the chain only for new ones. */
+export async function resolveTokens(addresses, opts = {}) {
+  const log = opts.log || (() => {});
+  const c = loadCache();
   const out = new Map();
   const todo = [];
   for (const a0 of addresses) {
     const a = a0.toLowerCase();
     if (out.has(a)) continue;
+    if (c[a]) { out.set(a, { address: a, ...c[a] }); continue; }
     const k = known.get(a);
     if (k) out.set(a, { address: a, symbol: k.symbol, decimals: k.decimals });
     else todo.push(a);
   }
+  if (todo.length) log(`  resolving ${todo.length} new token(s), ${out.size} from cache`);
+
   const BATCH = 30;
   for (let i = 0; i < todo.length; i += BATCH) {
     const group = todo.slice(i, i + BATCH);
@@ -46,8 +69,15 @@ export async function resolveTokens(addresses) {
       const decHex = res[k * 2 + 1];
       let decimals = 18;
       if (decHex && decHex !== "0x") { const d = Number(BigInt(decHex)); if (d >= 0 && d <= 36) decimals = d; }
-      out.set(a, { address: a, symbol: sym || a.slice(0, 8), decimals });
+      const meta = { symbol: sym || a.slice(0, 8), decimals };
+      out.set(a, { address: a, ...meta });
+      c[a] = meta;
     });
+    // Persist as we go: a long resolve that dies partway should not lose its work.
+    saveCache();
+    if (log !== undefined && todo.length > BATCH) {
+      log(`    ${Math.min(i + BATCH, todo.length)}/${todo.length} tokens resolved`);
+    }
   }
   return out;
 }

@@ -79,7 +79,7 @@ export async function discoverPools(latest, opts = {}) {
 
   // Resolve symbols only for pools worth naming.
   const toName = active.slice(0, opts.nameTop ?? 120).map((p) => p.pairToken);
-  const meta = await resolveTokens([...new Set(toName)]);
+  const meta = await resolveTokens([...new Set(toName)], { log });
   for (const p of all) {
     const m = meta.get(p.pairToken);
     p.pairSymbol = m ? m.symbol : null;
