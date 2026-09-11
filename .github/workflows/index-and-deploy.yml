@@ -2,16 +2,17 @@ name: Index and deploy
 
 on:
   schedule:
-    # every 30 minutes; GitHub may delay this under load
-    - cron: "*/30 * * * *"
+    # hourly. GitHub delays scheduled runs under load, and the concurrency group
+    # below means a long backfill is never interrupted by the next tick.
+    - cron: "7 * * * *"
   workflow_dispatch:
     inputs:
       mode:
-        description: "Indexing mode"
+        description: "Indexing depth"
         required: false
-        default: "full"
+        default: "standard"
         type: choice
-        options: [full, quick]
+        options: [standard, quick, deep]
   push:
     branches: [main]
 
@@ -42,13 +43,18 @@ jobs:
           key: indexer-state-${{ github.run_id }}
           restore-keys: indexer-state-
 
+      # The first run backfills ~59 days from scratch and is the slow one; every run
+      # after it resumes from the committed cursor and only scans new blocks.
+      # Flow depth is bounded by --top because per-pool backfill dominates the clock,
+      # while ranking, routing and bridge windows stay at full width.
       - name: Index chain data
+        timeout-minutes: 300
         run: |
-          if [ "${{ github.event.inputs.mode }}" = "quick" ]; then
-            node src/indexer.mjs --quick
-          else
-            node src/indexer.mjs
-          fi
+          case "${{ github.event.inputs.mode }}" in
+            quick) node src/indexer.mjs --quick ;;
+            deep)  node src/indexer.mjs --top 18 ;;
+            *)     node src/indexer.mjs --top 8 ;;
+          esac
 
       # A silently-wrong index is worse than a failed one, so bad data never ships.
       - name: Verify invariants

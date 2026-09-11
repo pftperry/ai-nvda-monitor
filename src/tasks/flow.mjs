@@ -93,7 +93,9 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
     perPool.push({
       poolId: p.poolId, pairSymbol: p.pairSymbol, pairToken: p.pairToken,
       pairDecimals: p.pairDecimals ?? 18, aiIsCurrency0: p.aiIsCurrency0,
-      fee: p.fee, dynamicFee: p.dynamicFee, lastFeePips: lastFee,
+      // Carry these forward: on an incremental run a quiet pool yields no new logs,
+      // and nulling them out would look like the pool had changed character.
+      fee: p.fee, dynamicFee: p.dynamicFee, lastFeePips: lastFee ?? (old?.lastFeePips ?? null),
       hooks: p.hooks, isLongHook: p.isLongHook,
       createdBlock: p.createdBlock, createdAt: tm.at(p.createdBlock),
       totalSwaps: nSwaps, lastPrice: r6(lastPrice ?? 0),
