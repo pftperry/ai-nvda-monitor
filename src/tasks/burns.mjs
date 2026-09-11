@@ -26,7 +26,21 @@ export async function indexBurns(latest, tm, opts = {}) {
   log("  scanning NVDA reserve accretion (Transfer -> community vault)...");
   const nvda = (await scan({ address: NVDA, topics: [TOPICS.TRANSFER, null, padAddr(COMMUNITY_VAULT)] })).map(decodeTransfer);
 
-  log("  scanning AI platform-fee leg...");
+  /* The fee split must be measured on the splitter's OWN outflows, constraining
+     both `from` and `to`. Summing everything that lands on the platform address
+     instead conflates the fee leg with every other transfer that address receives
+     -- which inflates its share by an order of magnitude and turns the "split"
+     into a statement about that wallet's total income rather than about the fee. */
+  log("  scanning the fee splitter's three legs...");
+  const legFrom = (to) =>
+    scan({ address: AI, topics: [TOPICS.TRANSFER, padAddr(FEE_SPLITTER), padAddr(to)] }).then((l) => l.map(decodeTransfer));
+  const legBurn = await legFrom(BURN_ADDRESS);
+  const legLock = await legFrom(COMMUNITY_VAULT);
+  const legPlatform = await legFrom(PLATFORM_FEE_RECIPIENT);
+
+  // Tracked separately and labelled as such: everything the platform address
+  // receives, from any source. Not the fee leg.
+  log("  scanning total AI inflow to the platform address (all sources)...");
   const platform = (await scan({ address: AI, topics: [TOPICS.TRANSFER, null, padAddr(PLATFORM_FEE_RECIPIENT)] })).map(decodeTransfer);
 
   log("  scanning AI mints (Transfer from 0x0)...");
@@ -57,6 +71,8 @@ export async function indexBurns(latest, tm, opts = {}) {
 
   const sum = (a) => a.reduce((s, x) => s + fmtUnits(x.value), 0);
   const totalBurn = sum(burns), totalLock = sum(locks), totalPlatform = sum(platform);
+  // The fee split proper: only what the splitter itself sent to each destination.
+  const feeBurn = sum(legBurn), feeLock = sum(legLock), feePlatform = sum(legPlatform);
 
   // Live state, straight from the chain.
   const [supply, vaultAI, vaultNVDA, pmAI, hookAI, nvdaSupply] = await Promise.all([
@@ -75,7 +91,7 @@ export async function indexBurns(latest, tm, opts = {}) {
 
   // The AI-side fee legs sum to the total AI fee taken. At a 0.70% rate that implies
   // the AI-denominated notional that crossed tolled pools.
-  const totalAIFee = totalBurn + totalLock + totalPlatform;
+  const totalAIFee = feeBurn + feeLock + feePlatform;
   const impliedAILegVolume = totalAIFee / 0.007;
 
   return {
@@ -88,9 +104,13 @@ export async function indexBurns(latest, tm, opts = {}) {
     burned: totalBurn,
     burnEvents: burns.length,
     lockedInVault: totalLock,
-    platformLeg: totalPlatform,
-    observedSplit: totalBurn > 0
-      ? { burn: 1, lock: +(totalLock / totalBurn).toFixed(4), platform: +(totalPlatform / totalBurn).toFixed(4) }
+    // Everything the platform address received, from any source. NOT the fee leg.
+    platformInflowAllSources: totalPlatform,
+    // The fee split proper, measured only on the splitter's own outflows.
+    feeLegs: { burn: feeBurn, lock: feeLock, platform: feePlatform },
+    platformLeg: feePlatform,
+    observedSplit: feeBurn > 0
+      ? { burn: 1, lock: +(feeLock / feeBurn).toFixed(4), platform: +(feePlatform / feeBurn).toFixed(4) }
       : null,
     reconciles,
     reconcileResidual: genesis - totalBurn - totalSupply,

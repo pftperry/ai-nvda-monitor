@@ -85,6 +85,9 @@ const flowOut = flow.perPool.map((p) => ({
 }));
 
 writeData("meta.json", {
+  // Provenance stamp. Only a real indexing run sets this, and verify.mjs refuses
+  // to pass without it -- so test fixtures can never be mistaken for measurements.
+  source: "robinhood-chain-rpc",
   updatedAt: Math.floor(Date.now() / 1000),
   headBlock: latest,
   headTime: now,

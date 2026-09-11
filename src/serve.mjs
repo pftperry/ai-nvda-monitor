@@ -11,6 +11,6 @@ http.createServer((req, res) => {
   let file = path.join(ROOT, url === "/" ? "index.html" : url);
   if (!file.startsWith(ROOT)) { res.writeHead(403).end("forbidden"); return; }
   if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(ROOT, "index.html");
-  res.writeHead(200, { "content-type": TYPES[path.extname(file)] || "application/octet-stream", "cache-control": "no-cache" });
+  res.writeHead(200, { "content-type": TYPES[path.extname(file)] || "application/octet-stream", "cache-control": "no-store, max-age=0" });
   fs.createReadStream(file).pipe(res);
 }).listen(PORT, () => console.log(`AI/NVDA monitor -> http://localhost:${PORT}`));

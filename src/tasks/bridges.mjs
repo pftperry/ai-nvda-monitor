@@ -37,8 +37,19 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
     for (const p of all) {
       if (meta.has(p.poolId)) continue;
       const tIsC0 = p.currency0 === T;
-      meta.set(p.poolId, { tIsC0, isAIPool: (tIsC0 ? p.currency1 : p.currency0) === AI });
+      meta.set(p.poolId, { tIsC0, isAIPool: (tIsC0 ? p.currency1 : p.currency0) === AI, block: p.block });
     }
+
+    /* Native launch vs organic bridge -- the distinction the thesis turns on.
+       A token the launchpad created against AI settles ~100% on its AI pair by
+       construction, which is evidence of how it was minted, not of AI winning
+       flow. A token that had its own venues first and later grew an AI pool is
+       the real evidence. Averaging the two populations together flatters the hub
+       badly, so each row is labelled and the two are summarised separately. */
+    const vals = [...meta.values()];
+    const earliest = Math.min(...vals.map((m) => m.block));
+    const nativeToAI = vals.some((m) => m.block === earliest && m.isAIPool);
+
     const ids = [...meta.keys()];
     const swaps = await getLogsByTopicSet(POOL_MANAGER, TOPICS.SWAP, ids, from, latest, { groupSize: 150, chunk: window });
 
@@ -60,11 +71,25 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
       swapsInAIPools: aiSwaps, swapsElsewhere: otherSwaps,
       bridgeOpenedBlock: c.createdBlock,
       bridgeOpenedAt: tm.at(c.createdBlock),
+      kind: nativeToAI ? "native" : "organic",
+      firstVenueBlock: earliest,
     };
     out.push(row);
-    log(`    ${row.symbol.padEnd(10)} AI-pair share ${(row.aiPairShare * 100).toFixed(1)}%  (${ids.length} venues, ${row.aiVenues} vs AI)`);
+    log(`    ${row.symbol.padEnd(10)} ${row.kind.padEnd(7)} AI-pair share ${(row.aiPairShare * 100).toFixed(1)}%  (${ids.length} venues, ${row.aiVenues} vs AI)`);
   }
   out.sort((x, y) => y.volumeInAIPools - x.volumeInAIPools);
+
+  // Summarise the two populations separately; a blended average is misleading.
+  const summarise = (rows) => {
+    const ai = rows.reduce((s, r) => s + r.volumeInAIPools, 0);
+    const other = rows.reduce((s, r) => s + r.volumeElsewhere, 0);
+    return { tokens: rows.length, volumeInAIPools: r6(ai), volumeElsewhere: r6(other),
+             aiPairShare: ai + other > 0 ? +(ai / (ai + other)).toFixed(4) : 0 };
+  };
+  const byKind = {
+    organic: summarise(out.filter((r) => r.kind === "organic")),
+    native: summarise(out.filter((r) => r.kind === "native")),
+  };
 
   // Bridge formation rate: the thesis treats acceleration here as the core signal.
   const formation = new Map();
@@ -76,6 +101,7 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
   return {
     windowBlocks: window,
     tokens: out,
+    byKind,
     formation: [...formation.entries()].sort((a, b) => a[0] - b[0]).map(([t, n]) => ({ t, newBridges: n })),
   };
 }

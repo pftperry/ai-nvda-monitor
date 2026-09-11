@@ -23,7 +23,17 @@ if (!meta || !burns || !flow) {
   process.exit(1);
 }
 
-console.log("Supply ledger");
+/* Provenance first. Synthetic fixtures were once committed by accident, and
+   plausible-looking fake numbers on a page someone makes decisions from are worse
+   than no page at all. Nothing ships unless it carries the indexer's own stamp. */
+console.log("Provenance");
+check("data carries the indexer's provenance stamp", meta.source === "robinhood-chain-rpc",
+  `source = ${JSON.stringify(meta.source)}`);
+check("data is not marked synthetic", !meta.synthetic);
+check("head block is plausible for this chain", meta.headBlock > 50_000_000,
+  `${meta.headBlock?.toLocaleString?.() ?? meta.headBlock}`);
+
+console.log("\nSupply ledger");
 check("exactly one mint event ever", burns.mintEvents === 1, `${burns.mintEvents} mints`);
 check("genesis supply is 1e9", Math.abs(burns.mintedTotal - 1e9) < 1, `${burns.mintedTotal}`);
 check(
@@ -44,11 +54,24 @@ check("NVDA reserve is non-negative", burns.vault.nvdaBalance >= 0, `${burns.vau
 
 console.log("\nFee mechanics");
 check("observed split is present", !!burns.observedSplit);
+/* Assert the structure, not a remembered ratio. The burn and lock legs are paid
+   in lockstep by the splitter, which is a strong structural claim worth testing;
+   the platform leg's size is a policy choice that could legitimately change, so
+   pinning it to a constant would turn a config change into a false alarm. */
 check(
-  "fee legs are consistent with a 2:2:1 split",
-  burns.observedSplit && Math.abs(burns.observedSplit.lock - 1) < 0.15 && Math.abs(burns.observedSplit.platform - 0.5) < 0.15,
-  burns.observedSplit ? `1 : ${burns.observedSplit.lock} : ${burns.observedSplit.platform}` : "n/a"
+  "burn and vault-lock legs are paid in lockstep",
+  burns.observedSplit && Math.abs(burns.observedSplit.lock - 1) < 0.02,
+  burns.observedSplit ? `lock/burn = ${burns.observedSplit.lock}` : "n/a"
 );
+check("platform leg is a positive, bounded share of the burn leg",
+  burns.observedSplit && burns.observedSplit.platform > 0 && burns.observedSplit.platform < 3,
+  burns.observedSplit ? `platform/burn = ${burns.observedSplit.platform}` : "n/a");
+check("fee legs are measured on the splitter's own outflows",
+  !!burns.feeLegs && burns.feeLegs.burn > 0,
+  burns.feeLegs ? `burn ${burns.feeLegs.burn.toFixed(0)} / lock ${burns.feeLegs.lock.toFixed(0)} / platform ${burns.feeLegs.platform.toFixed(0)} AI` : "missing");
+check("splitter burn leg does not exceed all burns",
+  burns.feeLegs && burns.feeLegs.burn <= burns.burned + 1,
+  burns.feeLegs ? `${burns.feeLegs.burn.toFixed(0)} of ${burns.burned.toFixed(0)}` : "n/a");
 
 console.log("\nPools and flow");
 check("the flagship AI/NVDA pool is indexed",

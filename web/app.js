@@ -125,12 +125,18 @@ function xLabels(f, rows, key, fmt) {
 }
 
 /** Diverging bars: positive up, negative down, shared baseline. */
-function divergingBars(host, rows, o) {
+function _divergingBars(host, rows, o) {
   if (!rows.length) { host.innerHTML = '<p class="muted" style="padding:20px 0">No data in range.</p>'; return; }
   const f = frame(host, { height: o.height || 240 });
   const pos = rows.map((r) => r[o.posKey] || 0);
   const neg = rows.map((r) => r[o.negKey] || 0);
-  const max = Math.max(1e-9, ...pos), min = -Math.max(1e-9, ...neg);
+  /* Symmetric about zero so a gridline lands exactly on the baseline. An
+     independently-scaled axis puts a tick at some arbitrary value next to the
+     zero line, which reads as though the baseline itself were non-zero — fatal
+     for a chart whose whole job is the sign of the imbalance. Equal arms also
+     make "bought above" and "sold below" directly comparable by eye. */
+  const m = Math.max(1e-9, ...pos, ...neg);
+  const max = m, min = -m;
   yAxis(f, min, max, o.fmt || compact);
   const y0 = f.padT + f.ih - ((0 - min) / (max - min)) * f.ih;
   const bw = f.iw / rows.length;
@@ -160,7 +166,7 @@ function divergingBars(host, rows, o) {
 }
 
 /** Line chart with crosshair + tooltip. */
-function lineChart(host, rows, o) {
+function _lineChart(host, rows, o) {
   if (rows.length < 2) { host.innerHTML = '<p class="muted" style="padding:20px 0">Not enough data in range.</p>'; return; }
   const f = frame(host, { height: o.height || 210 });
   const vals = rows.map((r) => r[o.yKey]).filter((v) => isFinite(v));
@@ -199,7 +205,7 @@ function lineChart(host, rows, o) {
 }
 
 /** Two or more lines on ONE shared y-scale (never a second axis). */
-function multiLine(host, rows, o) {
+function _multiLine(host, rows, o) {
   if (rows.length < 2) { host.innerHTML = '<p class="muted" style="padding:20px 0">Not enough data in range.</p>'; return; }
   const f = frame(host, { height: o.height || 210 });
   const all = rows.flatMap((r) => o.series.map((s) => r[s.key])).filter((v) => isFinite(v));
@@ -236,7 +242,7 @@ function multiLine(host, rows, o) {
 }
 
 /** Simple vertical bars, one series. */
-function barChart(host, rows, o) {
+function _barChart(host, rows, o) {
   if (!rows.length) { host.innerHTML = '<p class="muted" style="padding:20px 0">No data in range.</p>'; return; }
   const f = frame(host, { height: o.height || 210 });
   const vals = rows.map((r) => r[o.yKey] || 0);
@@ -267,7 +273,7 @@ function barChart(host, rows, o) {
 }
 
 /** Grouped bars for two series (never stacked on a shared scale ambiguity). */
-function groupedBars(host, rows, o) {
+function _groupedBars(host, rows, o) {
   if (!rows.length) { host.innerHTML = '<p class="muted" style="padding:20px 0">No data in range.</p>'; return; }
   const f = frame(host, { height: o.height || 210 });
   const max = Math.max(1e-9, ...rows.flatMap((r) => o.keys.map((k) => r[k] || 0)));
@@ -299,7 +305,7 @@ function groupedBars(host, rows, o) {
 }
 
 /** Bullet gauge: one measured value against reference thresholds. */
-function bulletGauge(host, { value, max, markers, label, fmt = (v) => pct(v, 1) }) {
+function _bulletGauge(host, { value, max, markers, label, fmt = (v) => pct(v, 1) }) {
   host.innerHTML = "";
   const phone = isPhone();
   const width = Math.max(240, host.clientWidth || 600), height = phone ? 104 : 92;
@@ -326,7 +332,7 @@ function bulletGauge(host, { value, max, markers, label, fmt = (v) => pct(v, 1) 
 }
 
 /** Horizontal share bars with direct labels (the light-mode contrast relief). */
-function shareBars(host, rows, colors) {
+function _shareBars(host, rows, colors) {
   host.innerHTML = "";
   const total = rows.reduce((s, r) => s + r.v, 0) || 1;
   const wrap = el("div", { style: "display:flex;flex-direction:column;gap:10px;margin-top:4px" });
@@ -341,6 +347,43 @@ function shareBars(host, rows, colors) {
   });
   host.appendChild(wrap);
 }
+
+/* Charts must track their container, not the window.
+   Measuring once at draw time is not enough: a chart drawn inside a hidden tab
+   measures zero and keeps a stale viewBox when the tab is shown, and a window
+   resize listener misses container changes that are not window resizes. Both
+   leave the SVG's viewBox disagreeing with its rendered box, and since the SVG
+   is not stretched, the content is scaled down and centred — a chart marooned in
+   the middle of its card. On a phone this fires constantly: rotation, and the
+   address bar collapsing on scroll.
+   So every chart registers how to redraw itself and is observed individually. */
+const drawers = new WeakMap();
+const chartRO = new ResizeObserver((entries) => {
+  for (const e of entries) {
+    const host = e.target;
+    const w = Math.round(e.contentRect.width);
+    if (!w || host.__w === w) continue;   // ignore hidden (0) and no-op reports
+    host.__w = w;
+    const fn = drawers.get(host);
+    if (fn) fn();
+  }
+});
+function draw(host, fn) {
+  if (!host) return;
+  drawers.set(host, fn);
+  host.__w = Math.round(host.clientWidth);
+  fn();
+  chartRO.observe(host);
+}
+const wrapChart = (fn) => (host, ...args) => draw(host, () => fn(host, ...args));
+
+const divergingBars = wrapChart(_divergingBars);
+const lineChart     = wrapChart(_lineChart);
+const multiLine     = wrapChart(_multiLine);
+const barChart      = wrapChart(_barChart);
+const groupedBars   = wrapChart(_groupedBars);
+const bulletGauge   = wrapChart(_bulletGauge);
+const shareBars     = wrapChart(_shareBars);
 
 function table(host, cols, rows) {
   host.innerHTML = "";
@@ -622,9 +665,25 @@ function renderBridges() {
     tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.newBridges} new AI bridge${d.newBridges === 1 ? "" : "s"}</div>`,
   });
 
+  /* Native launches settle ~100% on their AI pair by construction, so blending
+     them with organic bridges would overstate how much flow AI actually wins. */
+  const k = br.byKind || {};
+  $("#bridgeKinds").innerHTML = ["organic", "native"].map((kind) => {
+    const s = k[kind]; if (!s || !s.tokens) return "";
+    const label = kind === "organic"
+      ? "Organic bridges — token existed elsewhere first"
+      : "Native launches — created against AI";
+    return `<div class="tile"><div class="lbl">${label}</div>
+      <div class="val">${pct(s.aiPairShare, 1)}</div>
+      <div class="note">${s.tokens} token${s.tokens === 1 ? "" : "s"} · ${compact(s.volumeInAIPools)} on AI vs ${compact(s.volumeElsewhere)} elsewhere</div></div>`;
+  }).join("") || `<p class="muted">No bridge data in window.</p>`;
+
   const maxShare = Math.max(0.01, ...br.tokens.map((t) => t.aiPairShare));
   table($("#tBridges"), [
     { h: "Token", f: (t) => t.symbol },
+    { h: "Kind", f: (t) => t.kind === "native"
+        ? `<span class="muted" title="launched against AI">native</span>`
+        : `<b>organic</b>` },
     { h: "AI-pair share", attrs: () => ({ class: "bar-cell" }), f: (t) => `<div class="fill" style="width:${(t.aiPairShare / maxShare) * 100}px"></div><span>${pct(t.aiPairShare, 1)}</span>` },
     { h: "Vol in AI pools", f: (t) => compact(t.volumeInAIPools) },
     { h: "Vol elsewhere", f: (t) => compact(t.volumeElsewhere) },
@@ -751,10 +810,20 @@ async function boot() {
   $("#boot").remove();
   $("#p-flow").hidden = false;
 
+  /* A token can have several v4 pools (different fee tier, tick spacing or hook),
+     and more than one of them can be busy — there are two live AI/USDG venues.
+     Labelling both "AI / USDG" would make the picker ambiguous, so collisions get
+     their fee tier and a pool-id stub appended. */
   const sel = $("#poolSel");
+  const symCount = {};
+  for (const p of S.flow.pools) symCount[p.pairSymbol] = (symCount[p.pairSymbol] || 0) + 1;
   S.flow.pools.forEach((p, i) => {
-    const o = el("option", { value: i }, `AI / ${p.pairSymbol || "?"} · ${p.totalSwaps.toLocaleString()} swaps${p.dynamicFee ? " · dynamic fee" : ""}`);
-    sel.appendChild(o);
+    const feeLabel = p.dynamicFee
+      ? `dynamic ${p.lastFeePips ? (p.lastFeePips / 10000).toFixed(2) + "%" : ""}`.trim()
+      : `${(p.fee / 10000).toFixed(2)}%`;
+    const dup = symCount[p.pairSymbol] > 1 ? ` ${p.poolId.slice(0, 8)}…` : "";
+    sel.appendChild(el("option", { value: i },
+      `AI / ${p.pairSymbol || "?"}${dup} · ${feeLabel} · ${p.totalSwaps.toLocaleString()} swaps`));
   });
   sel.addEventListener("change", () => { S.poolIdx = +sel.value; renderFlow(); });
 
@@ -768,8 +837,15 @@ async function boot() {
   renderAll();
   refreshLive();
   setInterval(refreshLive, 20000);
-  let rt;
-  addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(renderAll, 180); });
+  // Charts resize themselves via ResizeObserver; only the phone/desktop layout
+  // switch needs a full re-render, since it changes chart chrome, not just width.
+  let wasPhone = isPhone(), rt;
+  addEventListener("resize", () => {
+    clearTimeout(rt);
+    rt = setTimeout(() => {
+      if (isPhone() !== wasPhone) { wasPhone = isPhone(); renderAll(); }
+    }, 200);
+  });
 }
 
 boot();

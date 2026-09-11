@@ -183,7 +183,14 @@
 
     <div class="card" style="margin-top:14px">
       <h3>AI-pair share by token</h3>
-      <p class="sub">For each token, the share of its total measured on-chain volume that settles on its AI bridge rather than its other venues.</p>
+      <p class="sub">
+        For each token, the share of its total measured on-chain volume that settles on its AI
+        bridge rather than its other venues. Tokens the launchpad created against AI are marked
+        <span class="muted">native</span> and sit near 100% by construction — that is a fact about
+        how they were minted, not evidence of AI winning flow. The <b>organic</b> rows, where a
+        token had its own venues first and grew an AI pool later, are the ones that carry the thesis.
+      </p>
+      <div class="grid g2" id="bridgeKinds" style="margin-bottom:14px"></div>
       <div class="scroll"><table id="tBridges"></table></div>
     </div>
 
