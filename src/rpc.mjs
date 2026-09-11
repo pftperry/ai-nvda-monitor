@@ -169,9 +169,18 @@ export async function getLogsRange(filter, from, to, opts = {}) {
 
 /** eth_getLogs where a topic position is an OR-list, split into server-safe groups. */
 export async function getLogsByTopicSet(address, topic0, topic1Set, from, to, opts = {}) {
-  // Smaller OR-groups mean more queries but far lighter ones, which a throttled
-  // endpoint tolerates much better than a few heavy scans.
-  const groupSize = opts.groupSize ?? 150;
+  /* Use the LARGEST OR-list the node accepts, not the smallest.
+     This is counter-intuitive and I had it backwards: shrinking groups looks like
+     it produces "lighter" queries, but the node scans the whole block range once
+     per query no matter how many topics are OR'd together. Cost therefore tracks
+     (groups x range), not (ids), so halving the group size doubles the total work.
+     Measured: 150 ids over one range took 1344ms, 900 ids over the same range took
+     1563ms -- a 6x bigger id set for 16% more time.
+     The node rejects more than 1000 topics with "exceed max topics" (993 passes,
+     1002 fails), so 960 leaves headroom. The 10,000-log cap is handled by
+     subdividing the block RANGE in getLogsRange, which is the axis that actually
+     costs something. */
+  const groupSize = opts.groupSize ?? 960;
   const out = [];
   const ids = [...topic1Set];
   for (let i = 0; i < ids.length; i += groupSize) {

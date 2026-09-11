@@ -32,7 +32,7 @@ export async function discoverPools(latest, opts = {}) {
   const from = Math.max(GENESIS_BLOCK, latest - activityWindow);
   log(`  measuring swap activity across ${ids.length} pools over ${activityWindow.toLocaleString()} blocks...`);
   const swaps = await getLogsByTopicSet(POOL_MANAGER, TOPICS.SWAP, ids, from, latest, {
-    groupSize: 150, chunk: activityWindow,
+    groupSize: 960, chunk: activityWindow,
   });
   log(`  ${swaps.length} swaps in window`);
 
@@ -136,7 +136,7 @@ export async function buildRoutingIndex(all, active, latest, opts = {}) {
     const ids = active.map((p) => p.poolId);
     log(`  extending routing index back ${(need - from + 1).toLocaleString()} blocks over ${ids.length} active pools...`);
     const logs = await getLogsByTopicSet(POOL_MANAGER, TOPICS.SWAP, ids, from, need, {
-      groupSize: 150, chunk: Math.min(1_000_000, window),
+      groupSize: 960, chunk: Math.min(1_000_000, window),
     });
     buildTxIndex(logs.map(decodeSwap), all, txIndex);
   }

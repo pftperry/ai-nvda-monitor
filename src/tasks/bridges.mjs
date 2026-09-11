@@ -51,7 +51,7 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
     const nativeToAI = vals.some((m) => m.block === earliest && m.isAIPool);
 
     const ids = [...meta.keys()];
-    const swaps = await getLogsByTopicSet(POOL_MANAGER, TOPICS.SWAP, ids, from, latest, { groupSize: 150, chunk: window });
+    const swaps = await getLogsByTopicSet(POOL_MANAGER, TOPICS.SWAP, ids, from, latest, { groupSize: 960, chunk: window });
 
     let aiVol = 0, otherVol = 0, aiSwaps = 0, otherSwaps = 0;
     for (const l of swaps) {
