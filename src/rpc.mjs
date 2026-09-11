@@ -17,7 +17,9 @@ export { TooManyLogs };
 let paceMs = LIMITS.politeDelayMs;
 const PACE_MAX = 4000;
 const slowDown = () => { paceMs = Math.min(PACE_MAX, Math.max(200, Math.round(paceMs * 1.8))); };
-const speedUp = () => { paceMs = Math.max(LIMITS.politeDelayMs, Math.round(paceMs * 0.97)); };
+// Recover quickly. At 0.97 per success a pace that spiked to 4s needs well over a
+// hundred clean calls to come back down, so a transient stumble taxed the whole run.
+const speedUp = () => { paceMs = Math.max(LIMITS.politeDelayMs, Math.round(paceMs * 0.8)); };
 export const pace = () => paceMs;
 
 const jitter = (ms) => ms * (0.75 + Math.random() * 0.5);
@@ -83,41 +85,53 @@ export async function rpc(method, params, tries = 12) {
   throw new Error(`${method}: gave up after ${tries} attempts — last error: ${last ? last.message : "unknown"}`);
 }
 
-/** Batched JSON-RPC. Falls back to sequential calls if the node rejects batching. */
+/* This endpoint does not support JSON-RPC batching AT ALL. A batch of any size --
+   even two calls -- comes back HTTP 429 "Too Many Requests" in ~60ms, which is a
+   refusal of the batch format rather than genuine rate limiting.
+   That distinction matters enormously. Treating it as rate limiting made the
+   client burn ~31s of exponential backoff per batch AND ratchet its global pacing
+   up to 4s per call, so the several hundred sequential calls that followed crawled
+   for fifteen minutes. One probe, remembered, avoids all of it. */
+let batchSupported = true;
+
+async function sequentially(calls) {
+  const out = [];
+  for (const c of calls) {
+    try { out.push(await rpc(c.method, c.params)); } catch { out.push(null); }
+  }
+  return out;
+}
+
+/** Batched JSON-RPC where supported; transparently sequential where not. */
 export async function rpcBatch(calls) {
   if (!calls.length) return [];
+  if (!batchSupported) return sequentially(calls);
+
   const body = calls.map((c, i) => ({ jsonrpc: "2.0", id: i, method: c.method, params: c.params }));
-  for (let attempt = 0; attempt < 5; attempt++) {
+  try {
     callCount++;
-    try {
-      const res = await fetch(endpoint(), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(LIMITS.requestTimeoutMs),
-      });
-      if (res.status === 429 || res.status >= 500) {
-        slowDown();
-        await sleep(jitter(Math.min(30000, 1000 * 2 ** attempt)));
-        continue;
-      }
-      const j = await res.json();
-      if (!Array.isArray(j)) break;
-      const out = new Array(calls.length);
-      let retryable = false;
-      for (const r of j) {
-        if (r.error && /timed out|too many|rate/i.test(r.error.message || "")) retryable = true;
-        out[r.id] = r.error ? null : r.result;
-      }
-      if (retryable) { slowDown(); await sleep(jitter(Math.min(30000, 1000 * 2 ** attempt))); continue; }
-      speedUp();
-      await sleep(paceMs);
-      return out;
-    } catch { slowDown(); await sleep(jitter(Math.min(20000, 1000 * 2 ** attempt))); }
+    const res = await fetch(endpoint(), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(LIMITS.requestTimeoutMs),
+    });
+    const j = await res.json().catch(() => null);
+    if (!Array.isArray(j)) {
+      // Not a transport problem: this node simply will not take batches.
+      batchSupported = false;
+      console.warn("  note: endpoint rejects JSON-RPC batching; using sequential calls");
+      return sequentially(calls);
+    }
+    const out = new Array(calls.length);
+    for (const r of j) out[r.id] = r.error ? null : r.result;
+    speedUp();
+    if (paceMs) await sleep(paceMs);
+    return out;
+  } catch {
+    batchSupported = false;
+    return sequentially(calls);
   }
-  const out = [];
-  for (const c of calls) { try { out.push(await rpc(c.method, c.params)); } catch { out.push(null); } }
-  return out;
 }
 
 export const hexBlock = (n) => "0x" + Number(n).toString(16);
