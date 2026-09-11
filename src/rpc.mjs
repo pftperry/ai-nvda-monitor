@@ -191,7 +191,7 @@ export async function getLogsRange(filter, from, to, opts = {}) {
     const end = Math.min(cursor + size - 1, to);
     try {
       const logs = await rpc("eth_getLogs", [{ ...filter, fromBlock: hexBlock(cursor), toBlock: hexBlock(end) }]);
-      out.push(...logs);
+      for (const l of logs) out.push(l);   // not push(...logs): spreading 10k args risks the stack
       if (onProgress) onProgress(end, to, out.length);
       cursor = end + 1;
       wins++;
@@ -242,7 +242,7 @@ export async function getLogsByTopicSet(address, topic0, topic1Set, from, to, op
   for (let i = 0; i < ids.length; i += groupSize) {
     const group = ids.slice(i, i + groupSize);
     const logs = await getLogsRange({ address, topics: [topic0, group] }, from, to, opts);
-    out.push(...logs);
+    for (const l of logs) out.push(l);
   }
   return out;
 }

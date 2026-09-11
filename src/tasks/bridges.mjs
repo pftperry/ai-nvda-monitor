@@ -46,8 +46,13 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
        flow. A token that had its own venues first and later grew an AI pool is
        the real evidence. Averaging the two populations together flatters the hub
        badly, so each row is labelled and the two are summarised separately. */
+    /* Loop rather than Math.min(...array). Spreading an array into a call passes
+       one argument per element, and a popular token here has thousands of venues,
+       which overflows the call stack -- this exact line killed the bridge step
+       with "Maximum call stack size exceeded" after three tokens had succeeded. */
     const vals = [...meta.values()];
-    const earliest = Math.min(...vals.map((m) => m.block));
+    let earliest = Infinity;
+    for (const m of vals) if (m.block < earliest) earliest = m.block;
     const nativeToAI = vals.some((m) => m.block === earliest && m.isAIPool);
 
     const ids = [...meta.keys()];

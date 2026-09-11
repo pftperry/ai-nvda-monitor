@@ -47,6 +47,14 @@ const ago = (t) => {
 const SVGNS = "http://www.w3.org/2000/svg";
 const mk = (t, a = {}) => { const n = document.createElementNS(SVGNS, t); for (const [k, v] of Object.entries(a)) n.setAttribute(k, v); return n; };
 
+/* Extrema by loop, never Math.min(...array). Spreading an array passes one
+   argument per element, which overflows the call stack on large series -- the
+   "All" range on the flagship pool is already ~1,400 points and grows daily.
+   The same mistake crashed the indexer's bridge step, so it is fixed on both
+   sides rather than only where it happened to bite first. */
+const minOf = (xs, seed = Infinity) => { let m = seed; for (const v of xs) if (v < m) m = v; return m; };
+const maxOf = (xs, seed = -Infinity) => { let m = seed; for (const v of xs) if (v > m) m = v; return m; };
+
 /** Phone layout is the common case here, so charts shrink their chrome for it. */
 const isPhone = () => window.innerWidth <= 620;
 
@@ -135,7 +143,7 @@ function _divergingBars(host, rows, o) {
      zero line, which reads as though the baseline itself were non-zero — fatal
      for a chart whose whole job is the sign of the imbalance. Equal arms also
      make "bought above" and "sold below" directly comparable by eye. */
-  const m = Math.max(1e-9, ...pos, ...neg);
+  const m = Math.max(1e-9, maxOf(pos), maxOf(neg));
   const max = m, min = -m;
   yAxis(f, min, max, o.fmt || compact);
   const y0 = f.padT + f.ih - ((0 - min) / (max - min)) * f.ih;
@@ -170,7 +178,7 @@ function _lineChart(host, rows, o) {
   if (rows.length < 2) { host.innerHTML = '<p class="muted" style="padding:20px 0">Not enough data in range.</p>'; return; }
   const f = frame(host, { height: o.height || 210 });
   const vals = rows.map((r) => r[o.yKey]).filter((v) => isFinite(v));
-  let min = Math.min(...vals), max = Math.max(...vals);
+  let min = minOf(vals), max = maxOf(vals);
   if (o.zeroBase) min = Math.min(0, min);
   const padv = (max - min) * 0.08 || Math.abs(max) * 0.1 || 1;
   min -= padv; max += padv;
@@ -209,7 +217,7 @@ function _multiLine(host, rows, o) {
   if (rows.length < 2) { host.innerHTML = '<p class="muted" style="padding:20px 0">Not enough data in range.</p>'; return; }
   const f = frame(host, { height: o.height || 210 });
   const all = rows.flatMap((r) => o.series.map((s) => r[s.key])).filter((v) => isFinite(v));
-  let min = o.zeroBase ? 0 : Math.min(...all), max = Math.max(...all);
+  let min = o.zeroBase ? 0 : minOf(all), max = maxOf(all);
   max += (max - min) * 0.08 || 1;
   yAxis(f, min, max, o.fmt || compact);
   const X = (i) => f.padL + (i / (rows.length - 1)) * f.iw;
@@ -246,7 +254,7 @@ function _barChart(host, rows, o) {
   if (!rows.length) { host.innerHTML = '<p class="muted" style="padding:20px 0">No data in range.</p>'; return; }
   const f = frame(host, { height: o.height || 210 });
   const vals = rows.map((r) => r[o.yKey] || 0);
-  const max = Math.max(1e-9, ...vals);
+  const max = Math.max(1e-9, maxOf(vals));
   yAxis(f, 0, max, o.fmt || compact);
   const bw = f.iw / rows.length;
   const w = Math.max(1, Math.min(22, bw - 2));
@@ -276,7 +284,7 @@ function _barChart(host, rows, o) {
 function _groupedBars(host, rows, o) {
   if (!rows.length) { host.innerHTML = '<p class="muted" style="padding:20px 0">No data in range.</p>'; return; }
   const f = frame(host, { height: o.height || 210 });
-  const max = Math.max(1e-9, ...rows.flatMap((r) => o.keys.map((k) => r[k] || 0)));
+  const max = Math.max(1e-9, maxOf(rows.flatMap((r) => o.keys.map((k) => r[k] || 0))));
   yAxis(f, 0, max, o.fmt || compact);
   const bw = f.iw / rows.length;
   const each = Math.max(1, (Math.min(24, bw - 2) - 2) / o.keys.length);
@@ -688,7 +696,7 @@ function renderBridges() {
       <div class="note">${s.tokens} token${s.tokens === 1 ? "" : "s"} · ${compact(s.volumeInAIPools)} on AI vs ${compact(s.volumeElsewhere)} elsewhere</div></div>`;
   }).join("") || `<p class="muted">No bridge data in window.</p>`;
 
-  const maxShare = Math.max(0.01, ...br.tokens.map((t) => t.aiPairShare));
+  const maxShare = Math.max(0.01, maxOf(br.tokens.map((t) => t.aiPairShare)));
   table($("#tBridges"), [
     { h: "Token", f: (t) => t.symbol },
     { h: "Kind", f: (t) => t.kind === "native"
