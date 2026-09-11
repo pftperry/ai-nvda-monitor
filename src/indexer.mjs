@@ -15,7 +15,17 @@ const flag = (n) => argv.includes(`--${n}`);
 const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? Number(argv[i + 1]) : d; };
 
 const quick = flag("quick") || flag("skip-backfill");
-const TOP_FLOW = opt("top", quick ? 6 : 18);
+const deep = flag("deep");
+const TOP_FLOW = opt("top", quick ? 6 : deep ? 18 : 8);
+
+/* Depth knobs. Flow is always backfilled to each pool's birth, so "deep" is about
+   the windowed analyses: routing and AI-pair share are measured over a trailing
+   window, and a short one can only show a moment. ~845,649 blocks is a day here. */
+const DAY_BLOCKS = 845_649;
+const ACTIVITY_WINDOW = opt("activity-window", quick ? 400_000 : 600_000);
+const ROUTING_WINDOW = opt("routing-window", quick ? 600_000 : deep ? DAY_BLOCKS * 14 : 2_500_000);
+const BRIDGES_WINDOW = opt("bridges-window", quick ? 400_000 : deep ? DAY_BLOCKS * 7 : 1_500_000);
+const BRIDGES_TOP = opt("bridges", quick ? 4 : deep ? 16 : 8);
 const t0 = Date.now();
 const step = (m) => console.log(`\n[${((Date.now() - t0) / 1000).toFixed(0)}s] ${m}`);
 
@@ -24,6 +34,8 @@ const latest = await blockNumber();
 console.log(`Robinhood Chain (${C.CHAIN_ID}) head block ${latest.toLocaleString()}`);
 console.log(`AI genesis block ${C.GENESIS_BLOCK.toLocaleString()} -> ${(latest - C.GENESIS_BLOCK).toLocaleString()} blocks of history`);
 if (quick) console.log("QUICK MODE: shortened windows, fewer pools");
+if (deep) console.log("DEEP MODE: 18 pools, 14-day routing window, 7-day bridge window");
+console.log(`windows -> activity ${(ACTIVITY_WINDOW / DAY_BLOCKS).toFixed(1)}d · routing ${(ROUTING_WINDOW / DAY_BLOCKS).toFixed(1)}d · bridges ${(BRIDGES_WINDOW / DAY_BLOCKS).toFixed(1)}d · top ${TOP_FLOW} pools · ${BRIDGES_TOP} bridge tokens`);
 
 step("Building block -> time anchors");
 const tm = await loadTimeMap(store, latest);
@@ -32,7 +44,7 @@ console.log(`  ${tm.toJSON().length} anchors; head = ${new Date(tm.at(latest) * 
 step("Discovering AI pools");
 // Ranking needs breadth (all pools) but not depth (a short window suffices).
 const { all, active, seedTxIndex, seedFrom } = await discoverPools(latest, {
-  activityWindow: quick ? 400_000 : 600_000,
+  activityWindow: ACTIVITY_WINDOW,
   nameTop: quick ? 40 : 120,
 });
 
@@ -57,7 +69,7 @@ const flow = await indexFlow(selected, latest, tm, { prev });
 step("Measuring real cross-routing (κ)");
 // Routing wants depth (several days) but only over pools that actually trade.
 const { txIndex, routingFrom } = await buildRoutingIndex(all, active, latest, {
-  window: quick ? 600_000 : 2_500_000,
+  window: ROUTING_WINDOW,
   seed: seedTxIndex, seedFrom,
 });
 const routing = analyseRouting(txIndex, all, tm);
@@ -116,8 +128,8 @@ if (!flag("no-bridges")) {
   step("Analysing bridges and AI-pair share");
   try {
     const bridges = await analyseBridges(active, latest, tm, {
-      window: quick ? 400_000 : 1_500_000,
-      topN: opt("bridges", quick ? 4 : 12),
+      window: BRIDGES_WINDOW,
+      topN: BRIDGES_TOP,
     });
     writeData("bridges.json", { updatedAt: now, ...bridges });
   } catch (e) {
