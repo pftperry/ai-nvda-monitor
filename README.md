@@ -74,10 +74,15 @@ carries fee `0x800000`, which is v4's dynamic-fee sentinel rather than a rate �
 sets the rate per swap. Reading the `fee` field off live `Swap` logs shows it resolving to
 `7000` pips, i.e. 0.70%.
 
-**The fee split is measured, not assumed.** The splitter divides the AI leg
-burn : vault-lock : platform in a ratio of **2 : 2 : 1** — in one 400k-block window the
-vault received 8,459.63 AI and `0x0` received exactly 8,459.63 AI, with 4,229.81 going to
-the platform receiver. The indexer re-measures this every run instead of hardcoding it.
+**The fee split is measured, not assumed — and the filter matters.** The split must be
+read from the splitter's *own outflows*, constraining both `from` and `to`. Summing
+everything that merely lands on the platform address conflates the fee leg with that
+wallet's other income and reports the split as `1 : 1 : 6.06` instead of the truth. Measured
+correctly over one 400k-block window, the vault received 8,459.63 AI and `0x0` received
+exactly 8,459.63 AI, with 4,229.81 going to the platform receiver — burn and lock move in
+lockstep. The indexer re-measures every run rather than hardcoding the ratio, and `verify`
+asserts the lockstep relationship while allowing the platform share to move, since its size
+is a policy choice rather than a structural fact.
 
 **Buy vs sell is easy to get backwards.** In the v4 `Swap` event, `amount0`/`amount1` are
 the *swapper's* deltas, so a positive AI delta means the trader **received** AI — a buy.
@@ -98,7 +103,17 @@ ranking here is by measured activity, never by existence.
 a `BONER → AI → MEME` rotation emits two `Swap` logs under one transaction hash, one where
 the trader receives AI and one where they spend it. AI is a pass-through hop exactly to the
 extent those legs overlap, so `min(AI received, AI spent)` per transaction is routed
-volume. The dashboard reports the measured figure against that model's four scenarios.
+volume, and the remainder is genuine directional demand. The dashboard reports the measured
+figure against that model's four scenarios. A first measurement over a ~0.7-day window put
+it at **37.7% of direct volume**, between the writeup's "bull" (34%) and "extra-bull" (40%)
+assumptions — worth treating as provisional until it has been watched over longer windows.
+
+**Native launches are not bridges.** A token the LONG launchpad created against AI settles
+~100% of its volume on its AI pair by construction — OPEN, HENT and DANGEROUS all measure
+98–99%. That is a fact about how the token was minted, not evidence that AI is winning
+flow. Tokens are therefore labelled `native` or `organic` (had its own venues first, grew
+an AI pool later) and the two populations are summarised separately, because a blended
+average would badly flatter the hub thesis.
 
 **Supply reconciles exactly.** `1,000,000,000 − burned = live totalSupply`. The page
 asserts this on the Method tab and fails loudly if it ever stops holding.

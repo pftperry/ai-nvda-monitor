@@ -632,6 +632,10 @@ function renderFloat() {
 /* ── tab 3: bridges & routing ───────────────────────────────────────────── */
 function renderBridges() {
   const r = S.routing, br = S.bridges;
+  if (!r) {
+    $("#routeTiles").innerHTML = `<p class="muted">Routing analysis not available in this build.</p>`;
+    return;
+  }
   const total = r.directAI + r.crossRoutedAI;
   $("#routeTiles").innerHTML = [
     { lbl: "Measured cross-routing", val: pct(r.measuredKappaRatio, 1), note: `of direct volume — implies "${r.impliedRegime}" regime` },
@@ -659,6 +663,12 @@ function renderBridges() {
       <div class="k">ratio ${pct(d.ratio, 1)}</div>`,
   });
 
+  if (!br) {
+    // Bridge analysis lags or fails independently; say so rather than render blanks.
+    $("#bridgeKinds").innerHTML = `<p class="muted">Bridge analysis is still pending for this run.</p>`;
+    for (const id of ["#cFormation", "#tBridges"]) $(id).innerHTML = "";
+    return;
+  }
   barChart($("#cFormation"), br.formation, {
     xKey: "t", yKey: "newBridges", color: "var(--series-3)",
     fmt: (v) => v.toFixed(0),
@@ -797,8 +807,13 @@ function setupTabs() {
 async function boot() {
   setupTabs();
   try {
-    const [meta, flow, burns, routing, bridges, tape, pools] = await Promise.all(
-      ["meta.json", "flow.json", "burns.json", "routing.json", "bridges.json", "tape.json", "pools.json"].map(loadJSON)
+    // Core three must load. The rest are optional: bridge analysis is the slowest
+    // step and is allowed to lag or fail without blanking the whole dashboard.
+    const [meta, flow, burns] = await Promise.all(
+      ["meta.json", "flow.json", "burns.json"].map(loadJSON)
+    );
+    const [routing, bridges, tape, pools] = await Promise.all(
+      ["routing.json", "bridges.json", "tape.json", "pools.json"].map((f) => loadJSON(f).catch(() => null))
     );
     Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools });
   } catch (e) {

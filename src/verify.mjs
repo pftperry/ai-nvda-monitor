@@ -105,12 +105,12 @@ if (routing) {
 } else check("routing.json present", false);
 
 console.log("\nBridges");
-if (bridges) {
+if (bridges && bridges.tokens) {
   check("AI-pair shares are within [0,1]",
     bridges.tokens.every((t) => t.aiPairShare >= 0 && t.aiPairShare <= 1));
   check("each bridged token has at least one AI venue",
     bridges.tokens.every((t) => t.aiVenues >= 1));
-} else check("bridges.json present", false);
+} else console.log("  --  bridges.json absent (optional)");
 
 console.log(`\n${checks - failures}/${checks} checks passed.`);
 if (failures) {

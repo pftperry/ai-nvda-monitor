@@ -71,12 +71,7 @@ console.log(`  vault holds ${burns.vault.aiBalance.toLocaleString()} AI + ${burn
 console.log(`  observed fee split burn:lock:platform = 1 : ${burns.observedSplit?.lock} : ${burns.observedSplit?.platform}`);
 console.log(`  supply reconciliation: ${burns.reconciles ? "PASS" : "FAIL"} (residual ${burns.reconcileResidual})`);
 
-step("Analysing bridges and AI-pair share");
-const bridges = await analyseBridges(active, latest, tm, {
-  window: quick ? 600_000 : 2_000_000, topN: quick ? 5 : 14,
-});
-
-step("Writing data artifacts");
+step("Writing core data artifacts");
 const now = tm.at(latest);
 const windows = [1, 6, 24, 72];
 const flowOut = flow.perPool.map((p) => ({
@@ -109,8 +104,25 @@ writeData("pools.json", { updatedAt: now, pools: active.slice(0, 250) });
 writeData("flow.json", { updatedAt: now, windows, pools: flowOut });
 writeData("burns.json", burns);
 writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, ...routing });
-writeData("bridges.json", { updatedAt: now, ...bridges });
 writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape });
-
 store.save();
+
+/* Bridges run last, after everything else is already on disk, and cannot take the
+   rest down with them. Per-token venue discovery is by far the most expensive
+   step -- a single popular token can have dozens of venues and a heavy tape -- and
+   it is the least critical surface. Flow, burn and routing must not sit unwritten
+   behind it. The page treats bridges.json as optional for the same reason. */
+if (!flag("no-bridges")) {
+  step("Analysing bridges and AI-pair share");
+  try {
+    const bridges = await analyseBridges(active, latest, tm, {
+      window: quick ? 400_000 : 1_500_000,
+      topN: opt("bridges", quick ? 4 : 12),
+    });
+    writeData("bridges.json", { updatedAt: now, ...bridges });
+  } catch (e) {
+    console.warn(`  bridge analysis failed (${e.message}); leaving previous bridges.json in place`);
+  }
+}
+
 console.log(`\nDone in ${((Date.now() - t0) / 1000).toFixed(0)}s using ${rpcCalls()} RPC calls.`);
