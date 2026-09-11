@@ -15,10 +15,30 @@ and no database: an indexer writes JSON into `web/data/`, and the page is static
 ```
 npm run index      # full backfill (~59 days of history) into web/data/
 npm run index:fast # quick mode: shorter windows, fewer pools
+npm run verify     # assert the invariants below; exits non-zero if any fail
 npm run serve      # http://localhost:8099
 ```
 
-No dependencies — Node 20+ and nothing else.
+No dependencies — Node 20+ and nothing else. Re-running `index` is **incremental**:
+each pool stores a resume cursor, so a refresh only scans blocks since the last run.
+Use `--rebuild` to force a full re-scan.
+
+## Built for a phone
+
+The primary viewing surface is an iPhone, so the mobile path is the designed one
+rather than a fallback:
+
+- Charts size their `viewBox` to real container pixels and re-render on resize. They are
+  deliberately **not** stretched with `preserveAspectRatio="none"`, which distorts every
+  axis glyph.
+- Tooltips work on touch (`touchstart`/`touchmove`), and on a narrow screen they pin to the
+  top of the chart instead of following the finger — which would put them under it.
+  A single overlay picks the nearest bar, because a fingertip is far wider than one bar.
+- 44px minimum touch targets; 16px form controls so iOS Safari does not zoom on focus;
+  `viewport-fit=cover` plus safe-area insets for the notch; momentum scrolling on wide
+  tables; the tab row scrolls horizontally rather than wrapping.
+- Stat tiles stay two-up on a phone so the page does not become a scroll marathon, and
+  `apple-mobile-web-app-*` tags make Add to Home Screen behave like an app.
 
 ## Why it is built this way
 

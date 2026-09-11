@@ -92,23 +92,54 @@ export async function discoverPools(latest, opts = {}) {
       p.priceInPairToken = p.aiIsCurrency0 ? price : (price ? 1 / price : 0);
     }
   }
-  /* Build the routing index here rather than in the flow task. This scan already
-     covered EVERY pool containing AI over the window, so cross-routing can be
-     measured across all active bridges instead of only the handful indexed in
-     depth -- a rotation through an obscure pair is still a rotation through AI.
-     Flat per tx: [block, poolIdx, aiAmount, poolIdx, aiAmount, ...], indices
-     pointing into `all`. */
+  // The ranking window's own swaps seed the routing index for free.
+  const seed = buildTxIndex(decoded, all);
+  return { all, active, seedTxIndex: seed, seedFrom: from };
+}
+
+/** Flat per tx: [block, poolIdx, aiAmount, poolIdx, aiAmount, ...] into `all`. */
+function buildTxIndex(decodedSwaps, all, into = new Map()) {
   const pos = new Map(all.map((p, i) => [p.poolId, i]));
-  const txIndex = new Map();
-  for (const s of decoded) {
+  for (const s of decodedSwaps) {
     const i = pos.get(s.poolId);
     if (i === undefined) continue;
     const ai = fmtUnits(all[i].aiIsCurrency0 ? s.amount0 : s.amount1, 18);
-    let arr = txIndex.get(s.tx);
-    if (!arr) txIndex.set(s.tx, (arr = [s.block]));
+    let arr = into.get(s.tx);
+    if (!arr) into.set(s.tx, (arr = [s.block]));
     arr.push(i, ai);
   }
-  log(`  routing index: ${txIndex.size.toLocaleString()} transactions across all active AI pools`);
+  return into;
+}
 
-  return { all, active, txIndex, routingFrom: from };
+/**
+ * Transaction index for cross-routing, over a longer window than ranking uses.
+ *
+ * Ranking and routing want different things, and conflating them is expensive.
+ * Ranking must consider all ~5,400 pools but only needs a short window; routing
+ * wants several days but only needs the ~470 pools that actually trade. Querying
+ * all 5,400 ids over a multi-day window is the worst of both: each OR-group
+ * breaches the 10,000-log cap repeatedly, and every breach costs a full
+ * server-side scan that returns nothing. Scanning only active pools cuts the
+ * id set by more than 10x and makes each query far more selective.
+ */
+export async function buildRoutingIndex(all, active, latest, opts = {}) {
+  const log = opts.log || console.log;
+  const window = opts.window ?? 2_000_000;
+  const seed = opts.seed;
+  const seedFrom = opts.seedFrom ?? latest;
+  const from = Math.max(GENESIS_BLOCK, latest - window);
+
+  const txIndex = seed || new Map();
+  // The seed already covers [seedFrom, latest]; only fetch what it is missing.
+  const need = Math.min(seedFrom - 1, latest);
+  if (from <= need) {
+    const ids = active.map((p) => p.poolId);
+    log(`  extending routing index back ${(need - from + 1).toLocaleString()} blocks over ${ids.length} active pools...`);
+    const logs = await getLogsByTopicSet(POOL_MANAGER, TOPICS.SWAP, ids, from, need, {
+      groupSize: 300, chunk: Math.min(1_000_000, window),
+    });
+    buildTxIndex(logs.map(decodeSwap), all, txIndex);
+  }
+  log(`  routing index: ${txIndex.size.toLocaleString()} transactions across ${active.length} active AI pools`);
+  return { txIndex, routingFrom: from };
 }

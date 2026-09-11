@@ -4,7 +4,7 @@ import { blockNumber, rpcCalls } from "./rpc.mjs";
 import { hookPermissions } from "./decode.mjs";
 import { Store, writeData, readData } from "./store.mjs";
 import { loadTimeMap } from "./timemap.mjs";
-import { discoverPools } from "./tasks/pools.mjs";
+import { discoverPools, buildRoutingIndex } from "./tasks/pools.mjs";
 import { indexFlow, rollup } from "./tasks/flow.mjs";
 import { analyseRouting } from "./tasks/routing.mjs";
 import { indexBurns } from "./tasks/burns.mjs";
@@ -30,8 +30,9 @@ const tm = await loadTimeMap(store, latest);
 console.log(`  ${tm.toJSON().length} anchors; head = ${new Date(tm.at(latest) * 1000).toISOString()}`);
 
 step("Discovering AI pools");
-const { all, active, txIndex, routingFrom } = await discoverPools(latest, {
-  activityWindow: quick ? 600_000 : 2_000_000,
+// Ranking needs breadth (all pools) but not depth (a short window suffices).
+const { all, active, seedTxIndex, seedFrom } = await discoverPools(latest, {
+  activityWindow: quick ? 400_000 : 600_000,
   nameTop: quick ? 40 : 120,
 });
 
@@ -54,7 +55,11 @@ step(`Indexing buy/sell flow for top ${selected.length} pools`);
 const flow = await indexFlow(selected, latest, tm, { prev });
 
 step("Measuring real cross-routing (κ)");
-// Measured across every active AI pool, not just the ones indexed in depth.
+// Routing wants depth (several days) but only over pools that actually trade.
+const { txIndex, routingFrom } = await buildRoutingIndex(all, active, latest, {
+  window: quick ? 600_000 : 2_500_000,
+  seed: seedTxIndex, seedFrom,
+});
 const routing = analyseRouting(txIndex, all, tm);
 console.log(`  measured cross-routing = ${(routing.measuredKappaRatio * 100).toFixed(2)}% of direct volume -> regime "${routing.impliedRegime}"`);
 console.log(`  ${routing.transactions.crossRouting.toLocaleString()} cross-routing txs of ${routing.transactions.multiLeg.toLocaleString()} multi-leg`);
