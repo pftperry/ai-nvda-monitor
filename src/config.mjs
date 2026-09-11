@@ -56,7 +56,10 @@ export const DYNAMIC_FEE_FLAG = 0x800000;
 export const BLOCKS_PER_DAY = 845_649;
 
 export const LIMITS = {
-  maxLogsPerQuery: 10_000,   // hard server cap; scanner subdivides on breach
+  maxLogsPerQuery: 10_000,   // hard server cap; scanner subdivides the block range on breach
+  maxTopicsPerQuery: 1_000,  // hard server cap; measured: 993 passes, 1002 is rejected
   defaultChunk: 1_000_000,
   politeDelayMs: 120,
+  // Wide log scans are legitimately slow, but nothing may hang forever.
+  requestTimeoutMs: 90_000,
 };

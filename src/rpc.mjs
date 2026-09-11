@@ -33,10 +33,16 @@ export async function rpc(method, params, tries = 12) {
     callCount++;
     let j;
     try {
+      /* A timeout is not optional. fetch() waits forever by default, so one stalled
+         socket silently hangs the entire indexer -- observed as a process pinned at
+         6.8 CPU-seconds and flat memory for fifteen minutes, which looks identical
+         to slow progress until you watch the counters. Retrying a hung request
+         costs one request; not retrying costs the run. */
       const res = await fetch(endpoint(), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: callCount, method, params }),
+        signal: AbortSignal.timeout(LIMITS.requestTimeoutMs),
       });
       if (res.status === 429 || res.status === 503 || res.status === 502) {
         slowDown();
@@ -88,6 +94,7 @@ export async function rpcBatch(calls) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(LIMITS.requestTimeoutMs),
       });
       if (res.status === 429 || res.status >= 500) {
         slowDown();
@@ -152,9 +159,17 @@ export async function getLogsRange(filter, from, to, opts = {}) {
       if (onProgress) onProgress(end, to, out.length);
       cursor = end + 1;
       wins++;
-      if (wins >= 4 && size < chunk) {
-        const grown = Math.floor(size * 1.4);
-        if (grown < minBad * 0.7) { size = Math.min(chunk, grown); wins = 0; }
+      /* Grow on a success streak, and let the failure memory DECAY as we advance.
+         Log density here is wildly uneven -- AI's early history is nearly empty
+         while recent blocks are dense -- so a size that breached the cap in a busy
+         region says nothing about a quiet one. Treating minBad as a permanent
+         ceiling pins the scan to tiny chunks for the remaining tens of millions of
+         sparse blocks, which is what made a 51-chunk scan take hundreds of queries.
+         An occasional re-probe costs one wasted scan and buys back far more. */
+      if (wins >= 3 && size < chunk) {
+        size = Math.min(chunk, Math.floor(size * 1.6));
+        minBad = minBad === Infinity ? Infinity : Math.floor(minBad * 1.5);
+        wins = 0;
       }
     } catch (e) {
       if (!(e instanceof TooManyLogs) && !/timed out/i.test(e.message)) throw e;
