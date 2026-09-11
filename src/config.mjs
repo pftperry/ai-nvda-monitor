@@ -60,6 +60,8 @@ export const LIMITS = {
   maxTopicsPerQuery: 1_000,  // hard server cap; measured: 993 passes, 1002 is rejected
   defaultChunk: 1_000_000,
   politeDelayMs: 120,
+  // eth_getLogs is the scarce resource here; it gets its own, much slower floor.
+  logsDelayMs: 1_200,
   // Wide log scans are legitimately slow, but nothing may hang forever.
   requestTimeoutMs: 90_000,
 };

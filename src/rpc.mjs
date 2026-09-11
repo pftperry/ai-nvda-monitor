@@ -10,17 +10,29 @@ const endpoint = () => RPCS[rpcIdx % RPCS.length];
 class TooManyLogs extends Error {}
 export { TooManyLogs };
 
-/* Adaptive pacing. The endpoint throttles a datacenter IP far harder than a
-   residential one -- the same scan that runs clean locally gets rate-limited on a
-   CI runner -- so the client slows itself down when it sees pushback and speeds
-   back up when it stops. A fixed delay cannot serve both environments. */
+/* Pacing is PER METHOD, because the limiter plainly is.
+   Measured on a quiet connection: eth_call and eth_blockNumber sustain ~17/s with
+   no throttling at all, while eth_getLogs allows only one or two before returning
+   Too Many Requests, and stays degraded for a long while after heavy use. Pacing
+   them together means either crawling through cheap calls or hammering expensive
+   ones; neither is right. Log scans therefore carry their own, much slower floor
+   and their own budget, and cheap calls are not punished for their cost. */
+const isExpensive = (method) => method === "eth_getLogs";
 let paceMs = LIMITS.politeDelayMs;
+let logsPaceMs = LIMITS.logsDelayMs;
 const PACE_MAX = 2000;
-const slowDown = () => { paceMs = Math.min(PACE_MAX, Math.max(200, Math.round(paceMs * 1.4))); };
-// Recover quickly. At 0.97 per success a pace that spiked to 4s needs well over a
-// hundred clean calls to come back down, so a transient stumble taxed the whole run.
-const speedUp = () => { paceMs = Math.max(LIMITS.politeDelayMs, Math.round(paceMs * 0.8)); };
-export const pace = () => paceMs;
+const LOGS_PACE_MAX = 8000;
+const slowDown = (method) => {
+  if (isExpensive(method)) logsPaceMs = Math.min(LOGS_PACE_MAX, Math.max(500, Math.round(logsPaceMs * 1.5)));
+  else paceMs = Math.min(PACE_MAX, Math.max(200, Math.round(paceMs * 1.4)));
+};
+// Recover promptly: at 0.97 per success a spiked pace needed a hundred clean calls
+// to return to normal, so one stumble taxed the rest of the run.
+const speedUp = (method) => {
+  if (isExpensive(method)) logsPaceMs = Math.max(LIMITS.logsDelayMs, Math.round(logsPaceMs * 0.85));
+  else paceMs = Math.max(LIMITS.politeDelayMs, Math.round(paceMs * 0.8));
+};
+export const pace = () => ({ calls: paceMs, logs: logsPaceMs });
 
 const jitter = (ms) => ms * (0.75 + Math.random() * 0.5);
 
@@ -42,8 +54,8 @@ let cooldownUntil = 0;
 
 const backoff = (attempt) => jitter(Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** attempt));
 
-async function noteRateLimited() {
-  slowDown();
+async function noteRateLimited(method) {
+  slowDown(method);
   consecutiveLimited++;
   if (consecutiveLimited >= COOLDOWN_AFTER && Date.now() > cooldownUntil) {
     cooldownUntil = Date.now() + COOLDOWN_MS;
@@ -52,7 +64,7 @@ async function noteRateLimited() {
     consecutiveLimited = 0;
   }
 }
-const noteOk = () => { consecutiveLimited = 0; speedUp(); };
+const noteOk = (method) => { consecutiveLimited = 0; speedUp(method); };
 
 /**
  * Single JSON-RPC call. Retries transient failures with capped exponential
@@ -80,7 +92,7 @@ export async function rpc(method, params, tries = 8) {
       });
       if (res.status === 429 || res.status === 503 || res.status === 502) {
         last = new Error(`HTTP ${res.status}`);
-        await noteRateLimited();
+        await noteRateLimited(method);
         const ra = Number(res.headers.get("retry-after"));
         await sleep(ra > 0 ? Math.min(30_000, ra * 1000) : backoff(i));
         continue;
@@ -90,12 +102,12 @@ export async function rpc(method, params, tries = 8) {
       catch {
         // an HTML error page or a truncated body: transient, worth retrying
         last = new Error(`non-JSON response (HTTP ${res.status}): ${text.slice(0, 120)}`);
-        slowDown();
+        slowDown(method);
         await sleep(backoff(i));
         continue;
       }
     } catch (e) {
-      last = e; rpcIdx++; slowDown();
+      last = e; rpcIdx++; slowDown(method);
       await sleep(backoff(i));
       continue;
     }
@@ -104,14 +116,15 @@ export async function rpc(method, params, tries = 8) {
       if (/exceeds limit/i.test(msg)) throw new TooManyLogs(msg);
       if (/timed out|too many|rate|capacity|busy/i.test(msg) || String(j.error.code) === "429") {
         last = new Error(msg);
-        await noteRateLimited();
+        await noteRateLimited(method);
         await sleep(backoff(i));
         continue;
       }
       throw new Error(`${method}: ${JSON.stringify(j.error)}`);
     }
-    noteOk();
-    if (paceMs) await sleep(paceMs);
+    noteOk(method);
+    const wait = isExpensive(method) ? logsPaceMs : paceMs;
+    if (wait) await sleep(wait);
     return j.result;
   }
   // Surfacing the underlying cause matters: "retries exhausted" alone is unactionable.
