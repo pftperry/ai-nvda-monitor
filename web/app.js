@@ -1478,7 +1478,7 @@ function renderLeak() {
 
   $("#kpiLeak").innerHTML = kpiEl(pctLevel(leakNow, 1),
     first ? `from ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : "", leakNow > (first?.leak ?? 0) ? "down" : "up",
-    "of AI volume pays no fee");
+    `of volume on the ${S.flow.pools.length} deepest-indexed venues pays no fee`);
   if (series.length > 1) {
     multiLine($("#cInvLeak"), series, {
       xKey: "t", zeroBase: true, area: true, xFmt: dayFmt,
@@ -1775,7 +1775,7 @@ function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capP
         hub conversion measures <b>${pctLevel(kappa, 1)}</b>, ${regimeWord(kappa, sc)}; and
         <b>${pctLevel(removed / b.genesisSupply, 2)}</b> of genesis supply is now destroyed or locked, backed by
         <b>${nf(b.vault.nvdaBalance, 1)} NVDA</b> that has never been withdrawn.
-        ${leak ? `The dominant fact right now is that <b>${pctLevel(leak.leakNow, 1)} of AI volume crosses pools that pay the vault nothing</b>, so revenue is falling even though total volume is not — this is venue competition, not weakening demand.` : ""}
+        ${leak ? `The dominant fact right now is that <b>${pctLevel(leak.leakNow, 1)}</b> of the volume on the ${S.flow.pools.length} venues indexed in depth <b>crosses pools that pay the vault nothing</b>, so revenue is falling even though total volume is not — this is venue competition, not weakening demand.` : ""}
         The honest summary: the <i>asset</i> side is compounding quietly and verifiably, while the
         <i>monetary</i> case rests on hub conversion continuing AND on the protocol keeping a toll that
         permissionless pools can undercut at will.
