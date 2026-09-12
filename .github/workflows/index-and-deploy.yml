@@ -22,6 +22,14 @@ permissions:
   pages: write
   id-token: write
 
+# One indexing run at a time, always. Two concurrent runs would write web/data
+# and publish Pages from underneath each other, so the serialisation is not
+# negotiable -- but it has a sharp edge worth knowing before you reach for a
+# manual run. A group holds at most one running and one PENDING run: queue a
+# workflow_dispatch behind a long run, push a commit, and the push takes the
+# pending slot and your dispatch is CANCELLED, not delayed. (That happened to a
+# repair dispatch here.) So: start the manual run, then wait for it before
+# pushing anything.
 concurrency:
   group: index-and-deploy
   cancel-in-progress: false

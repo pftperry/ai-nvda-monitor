@@ -29,7 +29,11 @@ function compact(x, d = 2) {
   if (a === 0) return "0";
   return `${s}${a.toFixed(a < 1 ? 4 : d)}`;
 }
-const pct = (x, d = 1) => (x == null || !isFinite(x) ? "—" : `${x > 0 ? "+" : ""}${(x * 100).toFixed(d)}%`);
+const signed = (x, d) => {
+  const v = +(x * 100).toFixed(d);
+  return (v > 0 ? "+" : "") + v.toFixed(d);
+};
+const pct = (x, d = 1) => (x == null || !isFinite(x) ? "—" : `${signed(x, d)}%`);
 const sig = (x, n = 6) => (x == null || !isFinite(x) || x === 0 ? "—" : x.toPrecision(n).replace(/\.?0+$/, ""));
 const short = (a) => (a ? `${a.slice(0, 8)}…${a.slice(-6)}` : "—");
 /* Times render in Central explicitly rather than in the viewer's local zone.
@@ -187,9 +191,11 @@ function _lineChart(host, rows, o) {
   const f = frame(host, { height: o.height || 210 });
   const vals = rows.map((r) => r[o.yKey]).filter((v) => isFinite(v));
   let min = minOf(vals), max = maxOf(vals);
+  const nonNegative = o.zeroBase && min >= 0;
   if (o.zeroBase) min = Math.min(0, min);
   const padv = (max - min) * 0.08 || Math.abs(max) * 0.1 || 1;
-  min -= padv; max += padv;
+  min = nonNegative ? 0 : min - padv;
+  max += padv;
   yAxis(f, min, max, o.fmt || compact);
   const X = (i) => f.padL + (rows.length === 1 ? f.iw / 2 : (i / (rows.length - 1)) * f.iw);
   const Y = (v) => f.padT + f.ih - ((v - min) / (max - min || 1)) * f.ih;
@@ -841,9 +847,11 @@ function renderBridges() {
   ], r.topRoutes);
 
   table($("#tCounter"), [
-    { h: "Paired token", f: (x) => x.symbol
+    // "?" is what artifacts written before counterparties were keyed by address
+    // used for a token whose symbol() reverts; treat it as unnamed, not as a name.
+    { h: "Paired token", f: (x) => (x.symbol && x.symbol !== "?")
         ? `AI / ${x.symbol}`
-        : `AI / <span class="muted" title="${x.token || "unknown pool"}">unnamed${x.token ? ` · ${x.token.slice(0, 6)}…` : ""}</span>` },
+        : `AI / <span class="muted" title="${x.token || "symbol() did not return a name"}">unnamed${x.token ? ` · ${x.token.slice(0, 6)}…` : ""}</span>` },
     { h: "Direct AI volume", f: (x) => compact(x.ai) },
   ], r.topCounterparties);
 }
@@ -977,7 +985,7 @@ const FEE_RATE = 0.007;          // measured: dynamic fee resolves to 7000 pips
 const DAY = 86400;
 
 /** A level, not a change: no leading sign. Using pct() here reads as a delta. */
-const pctLevel = (x, d = 1) => (x == null || !isFinite(x) ? "—" : `${(x * 100).toFixed(d)}%`);
+const pctLevel = (x, d = 1) => (x == null || !isFinite(x) ? "—" : `${(+(x * 100).toFixed(d)).toFixed(d)}%`);
 
 /**
  * Drop today's bucket, which is still filling.
@@ -1739,13 +1747,15 @@ function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capP
      do, that divergence is information — not something to average away or leave
      for the reader to notice. */
   const L = S.live;
+  const spanWord = (mins) => (mins < 90 ? `${mins} minutes`
+    : `${Math.round(mins / 60)} hour${Math.round(mins / 60) === 1 ? "" : "s"}`);
   const diverges = L && L.swaps > 0 && (L.net >= 0) !== (net7 >= 0);
   const liveLine = !L || !L.swaps ? ""
     : diverges
       ? `<b>Right now that has flipped:</b> the last ${L.minutes} minutes show net
          ${L.net >= 0 ? "buying" : "selling"} of <b>${compact(Math.abs(L.net))} AI</b>, against the week's
-         net ${net7 >= 0 ? "buying" : "selling"}. ${L.minutes < 90 ? "An hour" : Math.round(L.minutes / 60) + " hours"} is
-         not a trend against seven days, but a turn shows here first.`
+         net ${net7 >= 0 ? "buying" : "selling"}. ${spanWord(L.minutes)} is not a trend against
+         seven days, but a turn shows here first.`
       : `The last ${L.minutes} minutes agree with the week: net ${L.net >= 0 ? "buying" : "selling"} of
          <b>${compact(Math.abs(L.net))} AI</b>.`;
 
