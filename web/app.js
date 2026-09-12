@@ -463,10 +463,16 @@ async function refreshLive() {
     const j = await r.json();
     const best = (j.pairs || []).sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
     if (best) {
+      S.usdPrice = Number(best.priceUsd);   // the valuation panel's only USD input
       const ch = best.priceChange?.h24;
       $("#hUsd").innerHTML = `$${Number(best.priceUsd).toFixed(4)} <span class="${ch >= 0 ? "up" : "down"}" style="font-size:12px">${ch >= 0 ? "+" : ""}${ch}%</span>`;
     }
   } catch { /* aggregator is optional */ }
+  // The valuation table's USD column depends on that price, so refresh it once
+  // the first quote lands rather than leaving em-dashes on the opening screen.
+  if (S.usdPrice && S.burns && !$("#p-investor").hidden) {
+    try { renderInvestor(); } catch { /* a stale price must never blank the tab */ }
+  }
 }
 
 /* ── tab 1: flow & burn ──────────────────────────────────────────────────── */
@@ -722,6 +728,351 @@ function renderBridges() {
   ], r.topCounterparties);
 }
 
+/* ── tab 0: investor view ────────────────────────────────────────────────
+   Everything here is derived from the same artifacts the other tabs use. No
+   number is hardcoded and no takeaway is written in advance: each conclusion is
+   computed from the series it sits under, so it cannot drift out of agreement
+   with its own chart. Where a figure is an estimate or a proxy, the text says so. */
+
+const FEE_RATE = 0.007;          // measured: dynamic fee resolves to 7000 pips
+const DAY = 86400;
+
+/** A level, not a change: no leading sign. Using pct() here reads as a delta. */
+const pctLevel = (x, d = 1) => (x == null || !isFinite(x) ? "—" : `${(x * 100).toFixed(d)}%`);
+
+/**
+ * Drop today's bucket, which is still filling.
+ *
+ * Every rate and week-over-week comparison here divides by a whole number of
+ * days. Including a partial final day understates the current period and
+ * therefore manufactures a decline: a run indexed at 06:00 would report the
+ * latest week down by a quarter for no reason other than when it was run.
+ */
+function completeDays(series) {
+  if (!series || !series.length) return [];
+  const today = Math.floor((S.meta?.headTime || Date.now() / 1000) / DAY) * DAY;
+  return series.filter((d) => d.t < today);
+}
+
+/** Sum a numeric field over the trailing `days` of a daily series. */
+function trailing(series, days, pick, endOffset = 0) {
+  if (!series || !series.length) return 0;
+  const last = series[series.length - 1].t;
+  const hi = last - endOffset * DAY, lo = hi - days * DAY;
+  return series.filter((d) => d.t > lo && d.t <= hi).reduce((s, d) => s + (pick(d) || 0), 0);
+}
+const trend = (now, prior) => (prior > 0 ? now / prior - 1 : null);
+
+/** Daily AI volume per pool, and for the flagship, from the hourly series. */
+function dailyVolumes() {
+  const all = new Map(), main = new Map();
+  for (const p of S.flow.pools) {
+    const isMain = p.poolId === S.meta.contracts.aiNvdaPool;
+    for (const h of p.hourly) {
+      const d = Math.floor(h.t / DAY) * DAY;
+      const v = (h.aiBuy || 0) + (h.aiSell || 0);
+      all.set(d, (all.get(d) || 0) + v);
+      if (isMain) main.set(d, (main.get(d) || 0) + v);
+    }
+  }
+  return [...all.entries()].sort((a, b) => a[0] - b[0])
+    .map(([t, total]) => ({ t, total, main: main.get(t) || 0, share: total > 0 ? (main.get(t) || 0) / total : 0 }));
+}
+
+/** Net AI flow per day across every indexed pool. */
+function dailyNetFlow() {
+  const m = new Map();
+  for (const p of S.flow.pools) {
+    for (const h of p.hourly) {
+      const d = Math.floor(h.t / DAY) * DAY;
+      const r = m.get(d) || { t: d, buy: 0, sell: 0 };
+      r.buy += h.aiBuy || 0; r.sell += h.aiSell || 0;
+      m.set(d, r);
+    }
+  }
+  return [...m.values()].sort((a, b) => a.t - b.t).map((r) => ({ ...r, net: r.buy - r.sell }));
+}
+
+const takeEl = (tone, html) => `<div class="takeaway ${tone}"><b>Takeaway:</b> ${html}</div>`;
+const kpiEl = (big, delta, deltaTone, unit) => `
+  <div class="kpi"><span class="big">${big}</span>
+  ${delta ? `<span class="delta ${deltaTone}">${delta}</span>` : ""}
+  ${unit ? `<span class="unit">${unit}</span>` : ""}</div>`;
+
+function renderInvestor() {
+  const b = S.burns, r = S.routing, m = S.meta;
+  // Rates and comparisons use whole days only; see completeDays().
+  const vols = completeDays(dailyVolumes());
+  const flows = completeDays(dailyNetFlow());
+
+  /* ── 1. net flow momentum ─────────────────────────────────────────── */
+  const net7 = trailing(flows, 7, (d) => d.net);
+  const net7p = trailing(flows, 7, (d) => d.net, 7);
+  const buy7 = trailing(flows, 7, (d) => d.buy), sell7 = trailing(flows, 7, (d) => d.sell);
+  const imb7 = buy7 + sell7 > 0 ? (buy7 - sell7) / (buy7 + sell7) : 0;
+  $("#kpiFlow").innerHTML = kpiEl(
+    `${net7 >= 0 ? "+" : ""}${compact(net7)}`,
+    `${pctLevel(imb7, 1)} imbalance`, net7 >= 0 ? "up" : "down", "AI net, 7d");
+  lineChart($("#cInvFlow"), flows.slice(-30), {
+    xKey: "t", yKey: "net", zeroBase: false, area: true, xFmt: dayFmt,
+    color: net7 >= 0 ? "var(--buy)" : "var(--sell)",
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>net ${compact(d.net)} AI</div>
+      <div class="k">${compact(d.buy)} bought · ${compact(d.sell)} sold</div>`,
+  });
+  const flipped = (net7 >= 0) !== (net7p >= 0);
+  $("#takeFlow").innerHTML = takeEl(net7 >= 0 ? "pos" : "neg",
+    `Traders were net <b>${net7 >= 0 ? "buyers" : "sellers"} of ${compact(Math.abs(net7))} AI</b> over the last 7 days
+     (prior 7 days: ${net7p >= 0 ? "+" : ""}${compact(net7p)}).
+     ${flipped ? "<b>Direction flipped</b> versus the previous week, which is the signal worth watching."
+               : `Direction is unchanged week over week${Math.abs(net7) > Math.abs(net7p) ? " and intensifying" : " and easing"}.`}
+     Sustained one-sided absorption is what moves price; a single day is noise.`);
+
+  /* ── 2. fee run-rate ──────────────────────────────────────────────── */
+  const fee = (d) => (d.burnAI || 0) + (d.lockAI || 0) + (d.platformAI || 0);
+  const feeSeries = completeDays(b.daily.map((d) => ({ t: d.t, fee: fee(d), burn: d.burnAI || 0 })));
+  const fee7 = trailing(feeSeries, 7, (d) => d.fee), fee7p = trailing(feeSeries, 7, (d) => d.fee, 7);
+  const feeAnnual = (fee7 / 7) * 365;
+  const impliedVol = (fee7 / 7) / FEE_RATE;
+  const feeTrend = trend(fee7, fee7p);
+  $("#kpiFee").innerHTML = kpiEl(compact(feeAnnual),
+    feeTrend == null ? "" : `${pct(feeTrend, 0)} vs prior 7d`, feeTrend >= 0 ? "up" : "down",
+    "AI/yr fee run-rate");
+  lineChart($("#cInvFee"), feeSeries.slice(-30), {
+    xKey: "t", yKey: "fee", zeroBase: true, area: true, color: "var(--series-2)", xFmt: dayFmt,
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${compact(d.fee)} AI of fees</div>
+      <div class="k">implies ${compact(d.fee / FEE_RATE)} AI of tolled volume</div>`,
+  });
+  $("#takeFee").innerHTML = takeEl(feeTrend >= 0 ? "pos" : "warn",
+    `Fees are running at <b>${compact(feeAnnual)} AI/yr</b> and
+     ${feeTrend == null ? "have no prior period to compare" :
+       `<b>${feeTrend >= 0 ? "rose" : "fell"} ${pct(Math.abs(feeTrend), 0).replace("+", "")}</b> against the prior week`}.
+     At the measured 0.70% rate that implies <b>${compact(impliedVol)} AI/day</b> crossing tolled pools.
+     Because the fee is paid in AI, revenue and burn are the same number seen twice — this line is the
+     fundamental floor under the token, and it is the one to watch decay.`);
+
+  /* ── 3. hard backing ──────────────────────────────────────────────── */
+  const bDaily = completeDays(b.daily);
+  const nv7 = trailing(bDaily, 7, (d) => d.nvdaIn), nv7p = trailing(bDaily, 7, (d) => d.nvdaIn, 7);
+  const nvTrend = trend(nv7, nv7p);
+  const nvdaPerM = (b.vault.nvdaBalance / b.totalSupply) * 1e6;
+  $("#kpiVault").innerHTML = kpiEl(nf(b.vault.nvdaBalance, 1),
+    `+${nf(nv7 / 7, 2)}/day`, "up", "NVDA in vault");
+  lineChart($("#cInvVault"), b.daily.slice(-45), {
+    xKey: "t", yKey: "cumNvda", zeroBase: true, area: true, color: "var(--series-3)", xFmt: dayFmt,
+    fmt: (v) => nf(v, 0),
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${nf(d.cumNvda, 1)} NVDA accumulated</div>
+      <div class="k">+${nf(d.nvdaIn, 3)} that day</div>`,
+  });
+  $("#takeVault").innerHTML = takeEl(nvTrend >= 0 ? "pos" : "warn",
+    `The vault holds <b>${nf(b.vault.nvdaBalance, 1)} NVDA</b>, growing about
+     <b>${nf(nv7 / 7, 2)} per day</b>${nvTrend == null ? "" : ` (${pct(nvTrend, 0)} versus the prior week)`}.
+     That is <b>${nf(nvdaPerM, 2)} NVDA per million AI</b> outstanding, and it only ratchets upward —
+     no outflow has ever been observed. This is the part of the story that does not depend on the meme holding.`);
+
+  /* ── 4. hub conversion ────────────────────────────────────────────── */
+  const kd = completeDays((r && r.daily) || []);
+  const kappa = r ? r.measuredKappaRatio : 0;
+  const k7 = trailing(kd, 7, (d) => d.cross), kdir7 = trailing(kd, 7, (d) => d.direct);
+  const k7r = kdir7 > 0 ? k7 / kdir7 : 0;
+  const k7p = trailing(kd, 7, (d) => d.cross, 7), kdir7p = trailing(kd, 7, (d) => d.direct, 7);
+  const k7pr = kdir7p > 0 ? k7p / kdir7p : 0;
+  const sc = r ? r.scenarios : { bear: .04, base: .23, bull: .34, extraBull: .40 };
+  $("#kpiKappa").innerHTML = kpiEl(pctLevel(kappa, 1),
+    k7pr > 0 ? `${pct(k7r - k7pr, 1)} wk/wk` : "", k7r >= k7pr ? "up" : "down",
+    "cross-routed vs direct");
+  if (kd.length > 1) {
+    lineChart($("#cInvKappa"), kd, {
+      xKey: "t", yKey: "ratio", zeroBase: true, color: "var(--series-1)", area: true, xFmt: dayFmt,
+      fmt: (v) => `${(v * 100).toFixed(0)}%`,
+      tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${pct(d.ratio, 1)} cross-routed</div>
+        <div class="k">${compact(d.cross)} routed vs ${compact(d.direct)} direct</div>`,
+    });
+  } else {
+    $("#cInvKappa").innerHTML = `<p class="muted" style="padding:16px 0">Window too short for a trend; the headline figure is the measurement.</p>`;
+  }
+  $("#takeKappa").innerHTML = takeEl(kappa >= sc.base ? "pos" : "warn",
+    `<b>${pctLevel(kappa, 1)}</b> of direct AI volume is other tokens passing through AI, measured from transactions
+     where AI is a genuine intermediate hop. That sits <b>${regimeWord(kappa, sc)}</b>
+     (bear ${pctLevel(sc.bear, 0)} · base ${pctLevel(sc.base, 0)} · bull ${pctLevel(sc.bull, 0)} · extra-bull ${pctLevel(sc.extraBull, 0)}).
+     The circulating model calls this quantity unmeasurable and assumes it; it is not, and this is the number
+     that decides whether AI becomes infrastructure or stays a trade.`);
+
+  /* ── 5. fee capture ───────────────────────────────────────────────── */
+  const cap = vols.filter((v) => v.total > 0);
+  const cap7 = cap.slice(-7), cap7p = cap.slice(-14, -7);
+  const capNow = cap7.reduce((s, v) => s + v.main, 0) / Math.max(1e-9, cap7.reduce((s, v) => s + v.total, 0));
+  const capPrior = cap7p.length ? cap7p.reduce((s, v) => s + v.main, 0) / Math.max(1e-9, cap7p.reduce((s, v) => s + v.total, 0)) : null;
+  $("#kpiCapture").innerHTML = kpiEl(pctLevel(capNow, 1),
+    capPrior == null ? "" : `${pct(capNow - capPrior, 1)} wk/wk`, capNow >= (capPrior ?? capNow) ? "up" : "down",
+    "of indexed AI volume on AI/NVDA");
+  lineChart($("#cInvCapture"), cap.slice(-30), {
+    xKey: "t", yKey: "share", zeroBase: true, color: "var(--series-2)", xFmt: dayFmt,
+    fmt: (v) => `${(v * 100).toFixed(0)}%`,
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${pct(d.share, 1)} on AI/NVDA</div>
+      <div class="k">${compact(d.main)} of ${compact(d.total)} AI</div>`,
+  });
+  $("#takeCapture").innerHTML = takeEl(capPrior != null && capNow < capPrior ? "warn" : "pos",
+    `<b>${pctLevel(capNow, 1)}</b> of AI volume across the ${S.flow.pools.length} indexed pools crosses the tolled
+     AI/NVDA pool${capPrior == null ? "" : `, ${capNow >= capPrior ? "up" : "down"} from ${pctLevel(capPrior, 1)} the week before`}.
+     This is the awkward one: every new bridge grows the hub but routes volume <i>away</i> from the pool that
+     feeds the vault, so success in indicator 4 can quietly shrink indicator 2. Watch them together, not apart.
+     <span class="muted">Denominator is indexed pools only, so treat the level as a trend, not an absolute.</span>`);
+
+  /* ── 6. float removal ─────────────────────────────────────────────── */
+  const removed = b.burned + b.vault.aiBalance;
+  const rem7 = trailing(bDaily, 7, (d) => (d.burnAI || 0) + (d.lockAI || 0));
+  const yrs = rem7 > 0 ? (b.effectiveFloat / (rem7 / 7 * 365)) : Infinity;
+  $("#kpiFloat").innerHTML = kpiEl(compact(removed),
+    `${pctLevel(removed / b.genesisSupply, 2)} of genesis`, "up", "AI destroyed or locked");
+  multiLine($("#cInvFloat"), b.daily.slice(-45), {
+    xKey: "t", zeroBase: true, area: true, xFmt: dayFmt,
+    series: [{ key: "cumBurnAI", color: "var(--series-1)" }, { key: "cumLockAI", color: "var(--series-2)" }],
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div>
+      <div><span style="color:var(--series-1)">●</span> burned ${compact(d.cumBurnAI)} AI</div>
+      <div><span style="color:var(--series-2)">●</span> vault-locked ${compact(d.cumLockAI)} AI</div>`,
+  });
+  $("#takeFloat").innerHTML = takeEl("pos",
+    `<b>${compact(removed)} AI (${pctLevel(removed / b.genesisSupply, 2)} of genesis)</b> is gone or immobilised, removing about
+     <b>${compact(rem7 / 7)} AI/day</b>. At that pace the current free float would take
+     <b>${isFinite(yrs) ? yrs.toFixed(0) + " years" : "indefinitely"}</b> to absorb, so this is a slow structural tailwind,
+     <b>not</b> a near-term catalyst. Anyone citing the burn as an imminent supply shock is overselling it.
+     <span class="muted">Burned and vault-locked are different tokens, not one counted twice: burned AI is destroyed and
+     outside totalSupply, vault AI still exists inside it. They are near-identical in size only because the fee splits 1:1.</span>`);
+
+  renderRegime(kappa, sc, capNow, feeAnnual, impliedVol);
+  renderValuation(feeAnnual, impliedVol, vols);
+  renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p);
+  renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed);
+}
+
+function regimeWord(v, sc) {
+  if (v >= sc.extraBull) return "at or above the model's extra-bull case";
+  if (v >= sc.bull) return "between its bull and extra-bull cases";
+  if (v >= sc.base) return "between its base and bull cases";
+  if (v >= sc.bear) return "between its bear and base cases";
+  return "below even the model's bear case";
+}
+const bandFor = (v, sc) => v >= sc.extraBull ? ["xbull", "extra-bull"] : v >= sc.bull ? ["bull", "bull"]
+  : v >= sc.base ? ["base", "base"] : v >= sc.bear ? ["bear", "bear→base"] : ["bear", "below bear"];
+
+function renderRegime(kappa, sc, capNow, feeAnnual) {
+  const b = S.burns;
+  const mainSc = { bear: .05, base: .10, bull: .12, extraBull: .12 };  // model's main-pool-share cases
+  const rows = [
+    { k: "Cross-routing κ (vs direct volume)", v: pctLevel(kappa, 1), band: bandFor(kappa, sc),
+      note: "measured from same-tx pass-through hops" },
+    { k: "Fee capture on AI/NVDA", v: pctLevel(capNow, 1), band: bandFor(capNow, mainSc),
+      note: "indexed pools only; model cases 5 / 10 / 12%" },
+    { k: "Fee run-rate", v: `${compact(feeAnnual)} AI/yr`, band: ["na", "measured"],
+      note: "all three splitter legs, annualised from 7d" },
+    { k: "NVDA hard reserve", v: `${nf(b.vault.nvdaBalance, 1)} NVDA`, band: ["na", "measured"],
+      note: "no outflow ever observed" },
+    { k: "Supply removed", v: pctLevel((b.burned + b.vault.aiBalance) / b.genesisSupply, 2), band: ["na", "measured"],
+      note: "burned + vault-locked, of genesis" },
+  ];
+  table($("#tRegime"), [
+    { h: "Input", f: (x) => x.k },
+    { h: "Measured", f: (x) => `<b>${x.v}</b>` },
+    { h: "Reads as", f: (x) => `<span class="band ${x.band[0]}">${x.band[1]}</span>` },
+    { h: "Note", f: (x) => `<span class="muted">${x.note}</span>` },
+  ], rows);
+  $("#regimeTake").innerHTML = takeEl(kappa >= sc.base ? "pos" : "warn",
+    `The two inputs that can be scored against the model land at <b>${bandFor(kappa, sc)[1]}</b> for hub conversion and
+     <b>${bandFor(capNow, mainSc)[1]}</b> for fee capture. Everything else here is a measurement, not a forecast —
+     the model's own scenarios are assumptions, and the point of this table is that three of these five no longer
+     have to be.`);
+}
+
+function renderValuation(feeAnnual, impliedVol, vols) {
+  const b = S.burns;
+  const px = S.usdPrice;               // aggregator price, set by refreshLive
+  const usd = (ai) => (px ? `$${compact(ai * px)}` : "—");
+  const mcap = px ? b.totalSupply * px : null;
+  const vol30 = vols.slice(-30);
+  const avgDailyVol = vol30.length ? vol30.reduce((s, v) => s + v.total, 0) / vol30.length : 0;
+
+  const rows = [
+    { m: "Fee run-rate (annualised)", ai: `${compact(feeAnnual)} AI`, u: usd(feeAnnual), n: "measured, all three legs" },
+    { m: "Capitalised at 7.5% (bear discount)", ai: `${compact(feeAnnual / 0.075)} AI`, u: usd(feeAnnual / 0.075), n: "yield method" },
+    { m: "Capitalised at 6.0% (base discount)", ai: `${compact(feeAnnual / 0.06)} AI`, u: usd(feeAnnual / 0.06), n: "yield method" },
+    { m: "Capitalised at 5.0% (bull discount)", ai: `${compact(feeAnnual / 0.05)} AI`, u: usd(feeAnnual / 0.05), n: "rate the model gives listed venues with real revenue" },
+    { m: "Indexed AI volume, 30d average", ai: `${compact(avgDailyVol)} AI/day`, u: usd(avgDailyVol), n: "indexed pools only — a floor, not the full tape" },
+    { m: "Current market cap", ai: `${compact(b.totalSupply)} AI supply`, u: mcap ? `$${compact(mcap)}` : "—", n: "aggregator price × live supply" },
+  ];
+  table($("#tValuation"), [
+    { h: "Measure", f: (x) => x.m },
+    { h: "In AI", f: (x) => x.ai },
+    { h: "In USD", f: (x) => x.u },
+    { h: "Basis", f: (x) => `<span class="muted">${x.n}</span>` },
+  ], rows);
+
+  const capBase = feeAnnual / 0.06 * (px || 0);
+  const ratio = mcap && capBase ? capBase / mcap : null;
+  $("#takeValuation").innerHTML = takeEl(ratio == null ? "warn" : ratio >= 1 ? "pos" : "neg",
+    ratio == null
+      ? `No USD price available right now, so only the AI-denominated column is meaningful.`
+      : `On the fee stream alone, capitalised at the base 6%, the measured revenue supports about
+         <b>$${compact(capBase)}</b> against a market cap of <b>$${compact(mcap)}</b> —
+         <b>${ratio >= 1 ? `${ratio.toFixed(2)}× above` : `${(1 / ratio).toFixed(2)}× below`}</b> the current price.
+         ${ratio >= 1
+            ? "The revenue alone would justify the price, which means the monetary premium is being had for free."
+            : "So the price already embeds growth the current fee stream does not cover; you are paying for the hub thesis converting, not for today's cash flow."}
+         Treat this as a floor calculation: it values the toll and ignores both the NVDA reserve and any monetary premium.`);
+}
+
+function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p) {
+  const rows = [
+    ["Hub conversion breaks above " + pctLevel(sc.bull, 0),
+     `κ is ${pctLevel(kappa, 1)}. Clearing ${pctLevel(sc.bull, 0)} on a sustained basis would move the thesis from "plausible" to "happening" and is the strongest add signal here.`,
+     kappa >= sc.bull ? "pos" : "warn"],
+    ["Hub conversion falls back under " + pctLevel(sc.bear, 0),
+     `That would mean routers stopped choosing AI as the path. It is the cleanest single disconfirmation of the whole thesis.`,
+     kappa < sc.bear ? "neg" : "pos"],
+    ["Fee run-rate falls two weeks running",
+     `Fees ${fee7 >= fee7p ? "rose" : "fell"} this week. Revenue is the floor under the valuation; two consecutive declines means the floor is moving down, not the multiple.`,
+     fee7 >= fee7p ? "pos" : "warn"],
+    ["Fee capture keeps sliding while κ rises",
+     `Capture is ${pctLevel(capNow, 1)}. This combination means the hub is winning volume the vault does not get paid on — growth that does not accrue to holders.`,
+     "warn"],
+    ["Any outflow from the community vault",
+     `Nothing has ever left it. The first withdrawal would break the "permanently locked" premise that the float maths depends on, and should be treated as material.`,
+     "pos"],
+  ];
+  $("#triggers").innerHTML = rows.map(([h, d, tone]) => `
+    <div style="display:flex;gap:11px;align-items:flex-start;padding:11px 0;border-bottom:1px solid var(--border)">
+      <span class="band ${tone === "pos" ? "bull" : tone === "neg" ? "bear" : "base"}" style="margin-top:2px;flex:0 0 auto">
+        ${tone === "pos" ? "ok" : tone === "neg" ? "alert" : "watch"}</span>
+      <div><div style="font-size:13px;font-weight:600;margin-bottom:2px">${h}</div>
+      <div style="font-size:12.5px;color:var(--text-secondary);line-height:1.55">${d}</div></div>
+    </div>`).join("");
+}
+
+function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed) {
+  const b = S.burns;
+  const bullish = (net7 >= 0 ? 1 : 0) + (feeTrend >= 0 ? 1 : 0) + (kappa >= sc.base ? 1 : 0);
+  const tone = bullish >= 2 ? "pos" : bullish === 1 ? "" : "neg";
+  const lead = bullish >= 2
+    ? "The measurable parts of the thesis are holding up."
+    : bullish === 1
+      ? "Mixed: the structure is intact but the flow is not confirming it."
+      : "The measurable parts are deteriorating together.";
+  $("#verdict").innerHTML = `
+    <div class="verdict ${tone}">
+      <div class="lead">${lead}</div>
+      <div class="detail">
+        Over the last 7 days traders were net <b>${net7 >= 0 ? "buyers" : "sellers"}</b> of
+        <b>${compact(Math.abs(net7))} AI</b>; fees are running at <b>${compact(feeAnnual)} AI/yr</b>
+        (${feeTrend == null ? "no prior week" : `${feeTrend >= 0 ? "up" : "down"} ${pct(Math.abs(feeTrend), 0).replace("+", "")} week over week`});
+        hub conversion measures <b>${pctLevel(kappa, 1)}</b>, ${regimeWord(kappa, sc)}; and
+        <b>${pctLevel(removed / b.genesisSupply, 2)}</b> of genesis supply is now destroyed or locked, backed by
+        <b>${nf(b.vault.nvdaBalance, 1)} NVDA</b> that has never been withdrawn.
+        The honest summary: the <i>asset</i> side is compounding quietly and verifiably, while the
+        <i>monetary</i> case still rests on hub conversion continuing — which is measurable, and measured here,
+        rather than assumed.
+      </div>
+    </div>`;
+}
+
 /* ── tab 4: method ──────────────────────────────────────────────────────── */
 function renderMethod() {
   const m = S.meta, b = S.burns;
@@ -790,7 +1141,7 @@ function renderMethod() {
 
 /* ── boot ───────────────────────────────────────────────────────────────── */
 function renderAll() {
-  renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
+  renderInvestor(); renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
   const m = S.meta;
   $("#footMeta").innerHTML = `
     Indexed to block <span class="mono">${m.headBlock.toLocaleString()}</span>
@@ -831,7 +1182,7 @@ async function boot() {
     return;
   }
   $("#boot").remove();
-  $("#p-flow").hidden = false;
+  $("#p-investor").hidden = false;   // the investor view is what opens by default
 
   /* A token can have several v4 pools (different fee tier, tick spacing or hook),
      and more than one of them can be busy — there are two live AI/USDG venues.

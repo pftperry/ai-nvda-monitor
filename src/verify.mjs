@@ -50,6 +50,18 @@ check(
 check("effective float is positive and below total supply",
   burns.effectiveFloat > 0 && burns.effectiveFloat < burns.totalSupply,
   `${burns.effectiveFloat.toFixed(0)} of ${burns.totalSupply.toFixed(0)}`);
+/* The anti-double-count assertion. Burned AI is destroyed and is NOT part of
+   totalSupply; vault-locked AI still exists and IS. They are near-identical in
+   size only because the fee splits them 1:1, which makes the pair look like one
+   quantity counted twice. This partition proves they are not: the live supply
+   divides exactly into vault + pool inventory + float, with burned outside it. */
+const partition = burns.vault.aiBalance + burns.poolManagerAI + burns.effectiveFloat;
+check("live supply partitions exactly into vault + pool inventory + float",
+  Math.abs(partition - burns.totalSupply) < 1,
+  `${partition.toFixed(2)} vs totalSupply ${burns.totalSupply.toFixed(2)}`);
+check("nothing has ever left the vault",
+  Math.abs(burns.lockedInVault - burns.vault.aiBalance) < 1,
+  `inbound ${burns.lockedInVault.toFixed(2)} vs balance ${burns.vault.aiBalance.toFixed(2)}`);
 check("NVDA reserve is non-negative", burns.vault.nvdaBalance >= 0, `${burns.vault.nvdaBalance}`);
 
 console.log("\nFee mechanics");

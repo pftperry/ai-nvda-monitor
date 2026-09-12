@@ -58,7 +58,10 @@ export async function indexBurns(latest, tm, opts = {}) {
   for (const x of burns)    bump(x.block, "burnAI", fmtUnits(x.value));
   for (const x of locks)    bump(x.block, "lockAI", fmtUnits(x.value));
   for (const x of nvda)     bump(x.block, "nvdaIn", fmtUnits(x.value));
-  for (const x of platform) bump(x.block, "platformAI", fmtUnits(x.value));
+  // The FEE leg only. Using every inflow to the platform address would inflate
+  // the daily fee series with that wallet's unrelated income, and the daily
+  // series is what the revenue run-rate is built from.
+  for (const x of legPlatform) bump(x.block, "platformAI", fmtUnits(x.value));
 
   const series = [...daily.values()].sort((a, b) => a.t - b.t);
   let cb = 0, cl = 0, cn = 0, cp = 0;

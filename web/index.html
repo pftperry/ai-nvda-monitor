@@ -34,7 +34,8 @@
 
 <nav class="tabs">
   <div class="inner" role="tablist">
-    <button class="tab" role="tab" id="tab-flow"     aria-controls="p-flow"     aria-selected="true">Flow &amp; Burn</button>
+    <button class="tab" role="tab" id="tab-investor" aria-controls="p-investor" aria-selected="true">Investor View</button>
+    <button class="tab" role="tab" id="tab-flow"     aria-controls="p-flow"     aria-selected="false">Flow &amp; Burn</button>
     <button class="tab" role="tab" id="tab-float"    aria-controls="p-float"    aria-selected="false">Float &amp; Lockup</button>
     <button class="tab" role="tab" id="tab-bridges"  aria-controls="p-bridges"  aria-selected="false">Bridges &amp; Routing</button>
     <button class="tab" role="tab" id="tab-method"   aria-controls="p-method"   aria-selected="false">Method</button>
@@ -45,6 +46,92 @@
 <div class="wrap">
   <div id="boot" class="loading">Loading on-chain data…</div>
   <div id="bootErr"></div>
+
+  <!-- ───────────────────────── Investor View ───────────────────────── -->
+  <section class="panel" id="p-investor" role="tabpanel" aria-labelledby="tab-investor" hidden>
+    <div id="verdict"></div>
+
+    <h2 class="section-title">Where the measured inputs actually sit</h2>
+    <div class="card">
+      <h3>Regime scorecard</h3>
+      <p class="sub">
+        The circulating valuation model assigns four scenarios and assumes values for its inputs.
+        These are the same inputs, measured on chain. A row reads as the regime whose threshold it
+        has passed — not as a forecast.
+      </p>
+      <div class="scroll"><table id="tRegime" class="regime"></table></div>
+      <div id="regimeTake"></div>
+    </div>
+
+    <h2 class="section-title">Leading indicators</h2>
+    <div class="grid g2">
+      <div class="card">
+        <h3>1. Net flow momentum</h3>
+        <p class="sub">Who is absorbing whom. Buy/sell imbalance turns before price does, because it is what moves it.</p>
+        <div id="kpiFlow"></div>
+        <div class="chart" id="cInvFlow"></div>
+        <div id="takeFlow"></div>
+      </div>
+      <div class="card">
+        <h3>2. Fee run-rate</h3>
+        <p class="sub">All three fee legs, annualised. This is the protocol's revenue, and it is paid in AI, so it is also the burn engine.</p>
+        <div id="kpiFee"></div>
+        <div class="chart" id="cInvFee"></div>
+        <div id="takeFee"></div>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card">
+        <h3>3. Hard backing</h3>
+        <p class="sub">NVDA accumulating in the vault. Unlike the burn, this is an asset that cannot be inflated away.</p>
+        <div id="kpiVault"></div>
+        <div class="chart" id="cInvVault"></div>
+        <div id="takeVault"></div>
+      </div>
+      <div class="card">
+        <h3>4. Hub conversion</h3>
+        <p class="sub">Share of AI volume that is other tokens routing <i>through</i> AI. The single best test of whether the liquidity-hub thesis is happening.</p>
+        <div id="kpiKappa"></div>
+        <div class="chart" id="cInvKappa"></div>
+        <div id="takeKappa"></div>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card">
+        <h3>5. Fee capture</h3>
+        <p class="sub">Share of indexed AI volume crossing the tolled AI/NVDA pool. Revenue scales with this, so the hub's own success can cannibalise it.</p>
+        <div id="kpiCapture"></div>
+        <div class="chart" id="cInvCapture"></div>
+        <div id="takeCapture"></div>
+      </div>
+      <div class="card">
+        <h3>6. Float removal</h3>
+        <p class="sub">AI destroyed or immobilised, cumulatively. A slow, one-way squeeze on what can actually trade.</p>
+        <div id="kpiFloat"></div>
+        <div class="chart" id="cInvFloat"></div>
+        <div id="takeFloat"></div>
+      </div>
+    </div>
+
+    <h2 class="section-title">Valuation frame</h2>
+    <div class="card">
+      <h3>What the measured revenue supports</h3>
+      <p class="sub">
+        Fee run-rate capitalised at the rates the model uses, next to the money-multiple method.
+        USD figures use a public aggregator's price and are a convenience, not an on-chain measurement.
+      </p>
+      <div class="scroll"><table id="tValuation"></table></div>
+      <div id="takeValuation"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>What would change the call</h3>
+      <p class="sub">The thresholds worth watching, stated in advance so they are not rationalised after the fact.</p>
+      <div id="triggers"></div>
+    </div>
+  </section>
 
   <!-- ───────────────────────── Flow & Burn ───────────────────────── -->
   <section class="panel" id="p-flow" role="tabpanel" aria-labelledby="tab-flow" hidden>
