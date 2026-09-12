@@ -22,7 +22,7 @@
 <div class="topbar">
 <header>
   <div class="hdr-in">
-    <div class="brand"><span class="dot" id="liveDot" title="live"></span> AI / NVDA Monitor</div>
+    <div class="brand"><span class="dot" id="liveDot" title="live"></span> AI / NVDA Monitor<span class="livelbl" id="liveLbl" hidden></span></div>
     <div class="hdr-stats" id="hdrStats">
       <div class="hs"><b id="hUsd">—</b><span>AI USD</span></div>
       <div class="hs"><b id="hMcap">—</b><span>Market cap</span></div>
@@ -318,7 +318,9 @@
       </div>
       <div class="card">
         <h3>New AI bridges per day</h3>
-        <p class="sub">First-time pool creations against AI that went on to trade. Formation rate is the thesis signal.</p>
+        <p class="sub">Pools opened against AI each day that are <b>still trading</b> now; hover for how many
+          opened in total. Formation rate is the thesis signal — but the surviving count is
+          survivorship-filtered, so older days under-report by however many bridges have since gone quiet.</p>
         <div class="chart" id="cFormation"></div>
       </div>
     </div>
@@ -331,8 +333,13 @@
         <span class="muted">native</span> and sit near 100% by construction — that is a fact about
         how they were minted, not evidence of AI winning flow. The <b>organic</b> rows, where a
         token had its own venues first and grew an AI pool later, are the ones that carry the thesis.
+        Each row’s two volume columns are in <b>that token’s own units</b>, so they are comparable
+        down a row but never across rows — summing them produces a number with no meaning. The
+        population figure is therefore each token’s own share weighted by the <b>AI</b> moving through
+        its bridge, with the median shown beside it.
       </p>
       <div class="grid g2" id="bridgeKinds" style="margin-bottom:14px"></div>
+      <div id="takeBoner"></div>
       <div class="scroll"><table id="tBridges"></table></div>
     </div>
 

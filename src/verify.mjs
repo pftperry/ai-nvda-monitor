@@ -122,6 +122,23 @@ if (bridges && bridges.tokens) {
     bridges.tokens.every((t) => t.aiPairShare >= 0 && t.aiPairShare <= 1));
   check("each bridged token has at least one AI venue",
     bridges.tokens.every((t) => t.aiVenues >= 1));
+  /* The population headline must lie inside the range of the per-token shares it
+     summarises. This is the check that would have caught the aggregate built by
+     summing volumes denominated in different tokens: it reported 9.05% organic
+     while every organic token but one sat under 2%. Any statistic outside
+     [min, max] is not a summary of this population. */
+  for (const [kind, s] of Object.entries(bridges.byKind || {})) {
+    const rows = bridges.tokens.filter((t) => t.kind === kind);
+    if (!rows.length) continue;
+    const lo = Math.min(...rows.map((t) => t.aiPairShare));
+    const hi = Math.max(...rows.map((t) => t.aiPairShare));
+    const stats = ["medianShare", "meanShare", "weightedShare"]
+      .filter((f) => s[f] != null).map((f) => [f, s[f]]);
+    check(`${kind} aggregates lie within the per-token share range`,
+      stats.every(([, v]) => v >= lo - 1e-9 && v <= hi + 1e-9),
+      `[${(lo * 100).toFixed(2)}%, ${(hi * 100).toFixed(2)}%] vs ${stats.map(([f, v]) => `${f} ${(v * 100).toFixed(2)}%`).join(", ")}`);
+    check(`${kind} volume sums are flagged non-comparable`, s.unitsComparable === false);
+  }
 } else console.log("  --  bridges.json absent (optional)");
 
 console.log(`\n${checks - failures}/${checks} checks passed.`);

@@ -214,6 +214,10 @@ if (!fast && !flag("no-bridges")) {
       // over successive runs rather than timing out trying to do everything.
       perRun: opt("bridges-per-run", deep ? 8 : 4),
       prior: flag("rebuild") ? null : readData("bridges.json"),
+      // Formation needs the pools that are dormant too, or the rate it reports is
+      // survivorship-filtered: `active` excludes anything that stopped trading, so
+      // older days lose their casualties and look quieter than they were.
+      allPools: all,
       store,
     });
     writeData("bridges.json", { updatedAt: now, ...bridges });

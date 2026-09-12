@@ -43,8 +43,16 @@ export function analyseRouting(txIndex, pools, tm, opts = {}) {
       const v = Math.abs(flat[2]);
       directAI += v; nDirectTx++;
       row.direct += v; row.directTx++;
-      const sym = pools[flat[1]]?.pairSymbol || "?";
-      hubCounterparties.set(sym, (hubCounterparties.get(sym) || 0) + v);
+      /* Key by token address, not by symbol. Symbols are accident- and
+         attacker-controlled on a permissionless chain: several pools here have a
+         symbol() that reverts and all landed in one "?" row, and nothing stops two
+         tokens sharing a ticker, which silently merged their volumes into one line. */
+      const cp = pools[flat[1]];
+      const key = cp?.pairToken || "unknown";
+      const row = hubCounterparties.get(key)
+        || { token: cp?.pairToken || null, symbol: cp?.pairSymbol || null, ai: 0 };
+      row.ai += v;
+      hubCounterparties.set(key, row);
       continue;
     }
 
@@ -101,8 +109,8 @@ export function analyseRouting(txIndex, pools, tm, opts = {}) {
     transactions: { direct: nDirectTx, multiLeg: nMultiTx, crossRouting: nCrossTx },
     topRoutes: [...routes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)
       .map(([route, ai]) => ({ route, ai: r6(ai) })),
-    topCounterparties: [...hubCounterparties.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)
-      .map(([symbol, ai]) => ({ symbol, ai: r6(ai) })),
+    topCounterparties: [...hubCounterparties.values()].sort((a, b) => b.ai - a.ai).slice(0, 25)
+      .map((r) => ({ symbol: r.symbol, token: r.token, ai: r6(r.ai) })),
     daily: series,
   };
 }

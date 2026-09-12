@@ -26,6 +26,7 @@ function compact(x, d = 2) {
   if (a >= 1e9) return `${s}${(a / 1e9).toFixed(d)}B`;
   if (a >= 1e6) return `${s}${(a / 1e6).toFixed(d)}M`;
   if (a >= 1e3) return `${s}${(a / 1e3).toFixed(d)}K`;
+  if (a === 0) return "0";
   return `${s}${a.toFixed(a < 1 ? 4 : d)}`;
 }
 const pct = (x, d = 1) => (x == null || !isFinite(x) ? "—" : `${x > 0 ? "+" : ""}${(x * 100).toFixed(d)}%`);
@@ -478,6 +479,16 @@ function paintHeaderMarket() {
   }
 }
 
+/* The figures on screen stay put when the chain polls fail, so say so in text.
+   Shown beside the status dot because the dot's colour alone is not readable as
+   "these numbers stopped moving", and its title never appears on a touch screen. */
+function setLiveLabel(text) {
+  const lbl = $("#liveLbl");
+  if (!lbl) return;
+  lbl.textContent = text || "";
+  lbl.hidden = !text;
+}
+
 async function refreshLive() {
   try {
     const [bnHex, supplyHex] = await Promise.all([
@@ -504,9 +515,11 @@ async function refreshLive() {
     }
     $("#liveDot").classList.remove("stale");
     $("#liveDot").title = `live · block ${bn.toLocaleString()}`;
+    setLiveLabel(null);
   } catch (e) {
     $("#liveDot").classList.add("stale");
     $("#liveDot").title = `RPC unreachable: ${e.message}`;
+    setLiveLabel(/cors|failed to fetch|networkerror/i.test(e.message || "") ? "rpc blocked" : "rpc down");
   }
   // USD price is a convenience cross-check from a public aggregator.
   try {
@@ -542,9 +555,9 @@ function renderFlow() {
      That gap is what made a correctly-rendered chart look mis-zoned: it showed
      9 PM at 11 PM because the data genuinely ended there. Live hours are summed
      onto their bucket and flagged, never silently blended into settled ones. */
-  const liveB = S.live?.buckets || [];
+  const liveB = S.live?.bucketsByPool?.[p.poolId] || [];
   let series = p.hourly;
-  if (liveB.length && S.flow.pools.indexOf(p) < 3) {
+  if (liveB.length) {
     const byT = new Map(p.hourly.map((x) => [x.t, x]));
     for (const lb of liveB) {
       const ex = byT.get(lb.t);
@@ -570,7 +583,9 @@ function renderFlow() {
     { lbl: `Net flow (${S.hours ? S.hours + "h" : "all"})`, val: compact(aiBuy - aiSell), note: `AI · ${aiBuy - aiSell >= 0 ? "net bought" : "net sold"}`, cls: aiBuy - aiSell >= 0 ? "up" : "down" },
     { lbl: "Flow imbalance", val: pctLevel(imb), note: `${compact(aiBuy)} bought / ${compact(aiSell)} sold`, cls: imb >= 0 ? "up" : "down" },
     { lbl: "Trade count", val: `${buys + sells}`, note: `${buys} buys · ${sells} sells` },
-    { lbl: "Price change", val: pct(chg, 2), note: `${q} per AI`, cls: chg >= 0 ? "up" : "down" },
+    { lbl: `Price change (${S.hours ? S.hours + "h" : "all"})`,
+      val: Math.abs(chg) > 10 ? `${(1 + chg).toFixed(1)}×` : pct(chg, 2),
+      note: `${q} per AI`, cls: chg >= 0 ? "up" : "down" },
   ];
   $("#flowTiles").innerHTML = tiles.map((t) => `
     <div class="tile"><div class="lbl">${t.lbl}</div>
@@ -722,14 +737,15 @@ function renderBridges() {
   }
   const total = r.directAI + r.crossRoutedAI;
   $("#routeTiles").innerHTML = [
-    { lbl: "Measured cross-routing", val: pct(r.measuredKappaRatio, 1), note: `of direct volume — implies "${r.impliedRegime}" regime` },
-    { lbl: "Cross-routed AI", val: compact(r.crossRoutedAI), note: `${pct(r.crossRoutedAI / (total || 1), 1)} of all AI volume observed` },
+    { lbl: "Measured cross-routing", val: pctLevel(r.measuredKappaRatio, 1), note: `of direct volume — implies "${r.impliedRegime}" regime` },
+    { lbl: "Cross-routed AI", val: compact(r.crossRoutedAI), note: `${pctLevel(r.crossRoutedAI / (total || 1), 1)} of all AI volume observed` },
     { lbl: "Cross-routing txs", val: r.transactions.crossRouting.toLocaleString(), note: `of ${r.transactions.multiLeg.toLocaleString()} multi-leg txs` },
     { lbl: "Active AI bridges", val: `${S.meta.poolCounts.active}`, note: `of ${S.meta.poolCounts.withAI.toLocaleString()} pools that contain AI` },
   ].map((t) => `<div class="tile"><div class="lbl">${t.lbl}</div><div class="val">${t.val}</div><div class="note">${t.note}</div></div>`).join("");
 
   bulletGauge($("#cGauge"), {
     value: r.measuredKappaRatio, max: Math.max(0.45, r.measuredKappaRatio * 1.2),
+    fmt: (v) => pctLevel(v, 1),
     label: "of direct volume cross-routed",
     markers: [
       { name: "bear", at: r.scenarios.bear },
@@ -753,10 +769,17 @@ function renderBridges() {
     for (const id of ["#cFormation", "#tBridges"]) $(id).innerHTML = "";
     return;
   }
+  /* Bars are the pools still trading, because a pool nobody uses is not a
+     bridge. But that count is survivorship-filtered, so the tooltip carries how
+     many actually opened that day -- otherwise the chart invents a decline in
+     formation out of the older days' casualties. */
   barChart($("#cFormation"), br.formation, {
     xKey: "t", yKey: "newBridges", color: "var(--series-3)",
     fmt: (v) => v.toFixed(0),
-    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.newBridges} new AI bridge${d.newBridges === 1 ? "" : "s"}</div>`,
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div>
+      <div>${d.newBridges} still trading</div>${d.opened == null ? "" :
+      `<div class="muted">${d.opened} opened · ${d.opened > d.newBridges
+        ? `${d.opened - d.newBridges} since went quiet` : "all still active"}</div>`}`,
   });
 
   /* Native launches settle ~100% on their AI pair by construction, so blending
@@ -767,9 +790,21 @@ function renderBridges() {
     const label = kind === "organic"
       ? "Organic bridges — token existed elsewhere first"
       : "Native launches — created against AI";
+    /* Headline is the flow-weighted share when the AI-side meter is available,
+       because that is the only cross-token aggregate that is arithmetically valid
+       AND weights each token by how much AI actually moves through its bridge.
+       The median sits beside it: the two diverge sharply here, and the gap IS the
+       finding -- one large token routes through AI while the typical one barely
+       does. Falls back to the median on artifacts written before the AI-side
+       meter existed. */
+    const w = s.weightedShare;
+    const head = w ?? s.medianShare ?? s.aiPairShare;
+    const basis = w != null ? "flow-weighted" : s.medianShare != null ? "median" : "legacy aggregate";
+    const detail = s.medianShare == null ? ""
+      : `${w == null ? "" : ` · median ${pctLevel(s.medianShare, 1)}`} · range ${pctLevel(s.minShare ?? 0, 1)}–${pctLevel(s.maxShare ?? 0, 1)}`;
     return `<div class="tile"><div class="lbl">${label}</div>
-      <div class="val">${pctLevel(s.aiPairShare, 1)}</div>
-      <div class="note">${s.tokens} token${s.tokens === 1 ? "" : "s"} · ${compact(s.volumeInAIPools)} on AI vs ${compact(s.volumeElsewhere)} elsewhere</div></div>`;
+      <div class="val">${pctLevel(head, 1)}</div>
+      <div class="note">${basis} across ${s.tokens} token${s.tokens === 1 ? "" : "s"}${detail}</div></div>`;
   }).join("") || `<p class="muted">No bridge data in window.</p>`;
 
   const maxShare = Math.max(0.01, maxOf(br.tokens.map((t) => t.aiPairShare)));
@@ -778,10 +813,12 @@ function renderBridges() {
     { h: "Kind", f: (t) => t.kind === "native"
         ? `<span class="muted" title="launched against AI">native</span>`
         : `<b>organic</b>` },
-    { h: "AI-pair share", attrs: () => ({ class: "bar-cell" }), f: (t) => `<div class="fill" style="width:${(t.aiPairShare / maxShare) * 100}px"></div><span>${pct(t.aiPairShare, 1)}</span>` },
-    { h: "Vol in AI pools", f: (t) => compact(t.volumeInAIPools) },
-    { h: "Vol elsewhere", f: (t) => compact(t.volumeElsewhere) },
-    { h: "Venues", f: (t) => `${t.venues}` },
+    { h: "AI-pair share", attrs: () => ({ class: "bar-cell" }), f: (t) => `<div class="fill" style="width:${(t.aiPairShare / maxShare) * 100}px"></div><span>${pctLevel(t.aiPairShare, 1)}</span>` },
+    { h: "Vol in AI pools", attrs: (t) => ({ title: `in ${t.symbol} units` }), f: (t) => compact(t.volumeInAIPools) },
+    { h: "Vol elsewhere", attrs: (t) => ({ title: `in ${t.symbol} units` }), f: (t) => compact(t.volumeElsewhere) },
+    ...(br.tokens.some((t) => t.aiSideVolume != null)
+      ? [{ h: "AI through bridge", f: (t) => (t.aiSideVolume == null ? "—" : compact(t.aiSideVolume)) }] : []),
+    { h: "Venues", f: (t) => t.venues.toLocaleString() },
     { h: "vs AI", f: (t) => `${t.aiVenues}` },
     { h: "Swaps (AI)", f: (t) => t.swapsInAIPools.toLocaleString() },
     { h: "Bridge opened", f: (t) => dayFmt(t.bridgeOpenedAt) },
@@ -793,7 +830,9 @@ function renderBridges() {
   ], r.topRoutes);
 
   table($("#tCounter"), [
-    { h: "Paired token", f: (x) => `AI / ${x.symbol}` },
+    { h: "Paired token", f: (x) => x.symbol
+        ? `AI / ${x.symbol}`
+        : `AI / <span class="muted" title="${x.token || "unknown pool"}">unnamed${x.token ? ` · ${x.token.slice(0, 6)}…` : ""}</span>` },
     { h: "Direct AI volume", f: (x) => compact(x.ai) },
   ], r.topCounterparties);
 }
@@ -858,16 +897,17 @@ async function refreshLiveTail() {
        settled history but far too coarse for "now": it makes a live chart look
        frozen for up to an hour after the last bucket closed. */
     const pointsByPool = {};
-    const buckets = new Map();
+    const bucketsByPool = {};
     perPool.forEach((swaps, i) => {
       for (const s of swaps) {
         n++;
         const h = Math.floor(tOf(s.block) / 3600) * 3600;
-        const row = buckets.get(h) || { t: h, aiBuy: 0, aiSell: 0, buys: 0, sells: 0, buyers: 0, sellers: 0, close: 0, live: true };
+        const bk = (bucketsByPool[pools[i].poolId] ||= new Map());
+        const row = bk.get(h) || { t: h, aiBuy: 0, aiSell: 0, buys: 0, sells: 0, buyers: 0, sellers: 0, close: 0, live: true };
         if (s.buy) { buy += s.ai; row.aiBuy += s.ai; row.buys++; }
         else { sell += -s.ai; row.aiSell += -s.ai; row.sells++; }
         row.close = s.price;
-        buckets.set(h, row);
+        bk.set(h, row);
         if (i === 0) last = s;
         priceByPool[pools[i].poolId] = s.price;   // last print per venue
         if (s.price > 0) {
@@ -881,7 +921,8 @@ async function refreshLiveTail() {
     S.live = {
       head, from, swaps: n, buy, sell, net: buy - sell,
       imbalance: buy + sell > 0 ? (buy - sell) / (buy + sell) : 0,
-      buckets: [...buckets.values()].sort((a, b) => a.t - b.t),
+      bucketsByPool: Object.fromEntries(Object.entries(bucketsByPool)
+        .map(([k, m]) => [k, [...m.values()].sort((x, y) => x.t - y.t)])),
       pools: pools.map((p) => p.pairSymbol), at: nowSec, priceByPool,
       pointsByPool: Object.fromEntries(Object.entries(pointsByPool).map(([k, m]) => [k, [...m.values()].sort((a, b) => a.t - b.t)])),
       lastPrice: last ? last.price : null,
@@ -1140,7 +1181,12 @@ function renderInvestor() {
     kappa, sc,
     multNow: mult ? mult.now : null, multMedian: mult ? mult.median : null,
     nvdaPerDay: nv7 / 7, removedPace: rem7 / 7, net7, net7p,
-    organicShare: S.bridges?.byKind?.organic?.tokens ? S.bridges.byKind.organic.aiPairShare : null,
+    organicShare: S.bridges?.byKind?.organic?.tokens
+      ? (S.bridges.byKind.organic.weightedShare
+         ?? S.bridges.byKind.organic.medianShare
+         ?? S.bridges.byKind.organic.aiPairShare) : null,
+    organicBasis: S.bridges?.byKind?.organic?.weightedShare != null ? "flow-weighted"
+      : S.bridges?.byKind?.organic?.medianShare != null ? "median" : "legacy",
   });
   renderRegime(kappa, sc, capNow, feeAnnual, impliedVol);
   renderValuation(feeAnnual, impliedVol, vols);
@@ -1300,7 +1346,8 @@ function renderMultiple(feeSeries) {
   const chg = prior ? now / prior - 1 : null;
 
   $("#kpiMultiple").innerHTML = kpiEl(now == null ? "—" : `${now.toFixed(1)}×`,
-    chg == null ? "" : `${pct(chg, 0)} wk/wk`, chg <= 0 ? "up" : "down", "supply ÷ annual fees");
+    chg == null ? "" : `${pct(chg, 0)} wk/wk · ${chg > 0 ? "dearer" : "cheaper"}`,
+    chg <= 0 ? "up" : "down", "supply ÷ annual fees");
   if (series.length > 1) {
     lineChart($("#cInvMultiple"), series, {
       xKey: "t", yKey: "mult", color: "var(--series-1)", xFmt: dayFmt,
@@ -1475,16 +1522,16 @@ function renderVenues() {
   const paying = rows.filter((r) => r.p.isLongHook).reduce((s, r) => s + r.v, 0);
   const boner = (S.bridges?.tokens || []).find((t) => /boner/i.test(t.symbol || ""));
   if (boner) {
-    const el = document.querySelector("#bridgeKinds");
-    if (el) el.insertAdjacentHTML("afterend", takeEl(boner.aiPairShare < 0.30 ? "neg" : "pos",
+    const host = $("#takeBoner");
+    if (host) host.innerHTML = (takeEl(boner.aiPairShare < 0.30 ? "neg" : "pos",
       `The circulating thesis rests on one hard number: that the AI/BONER bridge settles
-       <b>35–37%</b> of all BONER trading. Measured here across its ${boner.venues} venues, it is
+       <b>35–37%</b> of all BONER trading. Measured here across its ${boner.venues.toLocaleString()} venues, it is
        <b>${pctLevel(boner.aiPairShare, 1)}</b>${boner.aiPairShare < 0.30
         ? ` — under half the claim. That may be decay since the bridge's early peak rather than the
            figure having been wrong when written, but it is the load-bearing evidence for AI as a hub
            and it is no longer where the argument needs it to be.`
         : `, broadly consistent with the claim.`}`));
-  }
+  } else { const host = $("#takeBoner"); if (host) host.innerHTML = ""; }
   $("#takeVenues").innerHTML = takeEl(paying / total < 0.5 ? "neg" : "pos",
     `Of the last 72 hours of indexed AI volume, <b>${pctLevel(paying / total, 1)}</b> crossed a venue that funds the vault.
      The tolled pool is the oldest and the most expensive; every newer hookless pool competes with it directly on price
@@ -1555,7 +1602,8 @@ function renderRating(parts) {
       why: "drives fees directly; more leakage means less revenue at any volume" },
     { k: "Organic bridge share", w: 1.5,
       s: parts.organicShare == null ? null : clamp((parts.organicShare - 0.15) / 0.20),
-      v: parts.organicShare == null ? "—" : pctLevel(parts.organicShare, 1),
+      v: parts.organicShare == null ? "—"
+        : `${pctLevel(parts.organicShare, 1)}${parts.organicBasis ? ` ${parts.organicBasis}` : ""}`,
       why: "the thesis's own test: flow AI was not given by construction" },
     { k: "Hub conversion κ", w: 2.0, s: kappa == null ? null : clamp((kappa - sc.base) / (sc.bull - sc.base)),
       v: kappa == null ? "—" : pctLevel(kappa, 1), why: "structural: the thesis converting, or not" },

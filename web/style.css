@@ -93,6 +93,10 @@ header { border-bottom: 1px solid var(--border); background: var(--surface-1); }
 .brand { font-weight: 650; letter-spacing: -.01em; font-size: 15px; display: flex; align-items: center; gap: 9px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
 .dot.stale { background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 22%, transparent); }
+/* Visible, not hover-only: a title attribute cannot be read on a phone. */
+.livelbl { margin-left: 7px; font-size: 10px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--warning); border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
 .hdr-stats { display: flex; gap: 22px; margin-left: auto; flex-wrap: wrap; }
 .hs { display: flex; flex-direction: column; gap: 1px; }
 .hs b { font: 600 15px/1.2 var(--mono); font-variant-numeric: tabular-nums; }

@@ -36,18 +36,31 @@ jobs:
         with:
           node-version: 20
 
-      # Resume state AND the generated data. Caching web/data is what lets a
-      # 5-minute cadence work without committing 288 times a day: each run resumes
-      # from the previous run's artifacts, and git only receives a periodic
-      # snapshot as a durable fallback for when the cache is evicted.
-      - name: Restore indexer cache
+      # Resume state AND the generated data, in two caches rather than one.
+      #
+      # They are split because the cache is restored ON TOP of the checkout, so a
+      # cached web/data silently overrides whatever is committed. That makes a data
+      # repair pushed to git unshippable: the next run restores the broken copy over
+      # it. (Measured: 205 of 211 AI/USDG hourly closes were 1e12 too small after a
+      # decimals fix, and a committed repair could not have taken effect.) With the
+      # artifacts on their own key, bumping the version in their key (indexer-data-vN)
+      # makes exactly one run fall through to the committed files and re-adopt them,
+      # while .cache keeps the expensive discovery state (pool catalogue, bridge
+      # venues) intact.
+      - name: Restore indexer resume state
         uses: actions/cache@v4
         with:
-          path: |
-            .cache
-            web/data
+          path: .cache
           key: indexer-state-${{ github.run_id }}
           restore-keys: indexer-state-
+
+      # Bump vN to force one run to re-adopt the committed web/data.
+      - name: Restore generated artifacts
+        uses: actions/cache@v4
+        with:
+          path: web/data
+          key: indexer-data-v2-${{ github.run_id }}
+          restore-keys: indexer-data-v2-
 
       # The first run backfills ~59 days from scratch and is the slow one; every run
       # after it resumes from the committed cursor and only scans new blocks.
