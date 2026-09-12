@@ -180,6 +180,18 @@ jobs:
         if: steps.index.outcome == 'success'
         run: node src/verify.mjs
 
+      # Cross-validation. Reports rather than gates, on purpose: verify.mjs answers
+      # "is this data sound", and this answers the different question of "do the
+      # numbers agree with themselves when derived two independent ways". A
+      # disagreement here usually means a unit or a denominator is wrong somewhere,
+      # which wants a person reading it, not a red build blocking an otherwise-good
+      # refresh. Every dimensional bug this project has had would have shown up here
+      # as an order-of-magnitude gap.
+      - name: Cross-validate the headline numbers
+        if: steps.index.outcome == 'success'
+        continue-on-error: true
+        run: node src/audit.mjs
+
       # Snapshot to git at most every SNAPSHOT_MINUTES. At a 5-minute cadence,
       # committing every run would be ~288 commits and ~200MB of superseded JSON a
       # day. The cache carries data between runs; git only needs a periodic

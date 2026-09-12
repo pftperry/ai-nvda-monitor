@@ -12,6 +12,7 @@
     "index:fast": "node src/indexer.mjs --skip-backfill",
     "verify": "node src/verify.mjs",
     "smoke": "node src/smoke.mjs",
+    "audit": "node src/audit.mjs",
     "serve": "node src/serve.mjs",
     "dev": "npm run index:fast && npm run serve",
     "backtest": "node src/backtest.mjs"
