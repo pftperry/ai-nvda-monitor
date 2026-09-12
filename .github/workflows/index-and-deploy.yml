@@ -54,7 +54,7 @@ jobs:
       - name: Index chain data
         id: index
         continue-on-error: true
-        timeout-minutes: 300
+        timeout-minutes: 75
         run: |
           case "${{ github.event.inputs.mode }}" in
             quick)   node src/indexer.mjs --quick ;;

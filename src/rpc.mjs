@@ -45,10 +45,20 @@ const jitter = (ms) => ms * (0.75 + Math.random() * 0.5);
    Instead the penalty is treated as a process-wide condition: after a few
    consecutive rate-limited responses the client pauses once, long enough for the
    window to drain, and everyone benefits. Per-call backoff stays short. */
+/* Both extremes of patience have now failed in production, so neither constant is
+   right. Too patient: a run squatted on the CI concurrency lock for 2h15m and
+   blocked every deploy behind it. Too impatient: the next rebuild died in 105
+   seconds with "gave up after 8 attempts - HTTP 429" while the endpoint was in a
+   penalty window that would have cleared.
+   The resolution is to escalate while pressure persists, decay when it lifts, give
+   log scans far more patience than cheap calls (they are both the scarce resource
+   and the critical path), and rely on the job's own timeout as the hard stop
+   rather than on running out of retries. */
 const BACKOFF_BASE_MS = 400;
 const BACKOFF_MAX_MS = 5_000;
-const COOLDOWN_MS = 15_000;
+const COOLDOWN_STEPS_MS = [15_000, 30_000, 60_000, 60_000];
 const COOLDOWN_AFTER = 3;
+let cooldownRound = 0;
 let consecutiveLimited = 0;
 let cooldownUntil = 0;
 
@@ -58,20 +68,29 @@ async function noteRateLimited(method) {
   slowDown(method);
   consecutiveLimited++;
   if (consecutiveLimited >= COOLDOWN_AFTER && Date.now() > cooldownUntil) {
-    cooldownUntil = Date.now() + COOLDOWN_MS;
-    console.warn(`  endpoint is rate limiting; pausing ${COOLDOWN_MS / 1000}s to let the window drain`);
-    await sleep(COOLDOWN_MS);
+    const wait = COOLDOWN_STEPS_MS[Math.min(cooldownRound, COOLDOWN_STEPS_MS.length - 1)];
+    cooldownRound++;
+    cooldownUntil = Date.now() + wait;
+    console.warn(`  endpoint is rate limiting; pausing ${wait / 1000}s to let the window drain (round ${cooldownRound})`);
+    await sleep(wait);
     consecutiveLimited = 0;
   }
 }
-const noteOk = (method) => { consecutiveLimited = 0; speedUp(method); };
+const noteOk = (method) => {
+  consecutiveLimited = 0;
+  if (cooldownRound) cooldownRound--;   // decay, so a quiet spell resets the escalation
+  speedUp(method);
+};
 
 /**
  * Single JSON-RPC call. Retries transient failures with capped exponential
  * backoff. Throws TooManyLogs immediately so callers can subdivide rather than
  * wait out a condition that will never resolve on its own.
  */
-export async function rpc(method, params, tries = 8) {
+export async function rpc(method, params, tries) {
+  // Log scans get far more patience: they are the throttled resource, they are on
+  // the critical path, and abandoning one loses a whole chunk of history.
+  if (tries == null) tries = isExpensive(method) ? 24 : 8;
   let last;
   for (let i = 0; i < tries; i++) {
     // Respect a cooldown another call may have started.
