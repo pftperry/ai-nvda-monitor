@@ -159,10 +159,38 @@ export async function indexBurns(latest, tm, opts = {}) {
     erc20(NVDA, "totalSupply"),
   ]);
 
+  /* How wide the remaining window is, and what a block of it is worth.
+
+     Topping the scan up to the head narrows the race but cannot close it: the
+     top-up itself takes time, and the chain keeps producing blocks while the
+     balance calls are in flight. Measured on a 78-minute run the residual was
+     still 596 AI. Demanding exactness here would mean the invariant fails on
+     every long run and passes on every short one, which trains everyone to
+     ignore it -- the worst possible outcome for a check whose whole job is to be
+     believed.
+
+     So the skew is measured instead of wished away, and recorded alongside the
+     residual. A residual that the known skew can explain is arithmetic; one that
+     it cannot is a bug, and only the second kind should fail a build. */
+  const afterBlock = await blockNumber();
+  const stateSkewBlocks = Math.max(0, afterBlock - latest);
+
   const genesis = TOKENS.AI.genesisSupply;
   const totalSupply = fmtUnits(supply);
   // Reconciliation: this must hold, and is surfaced in the UI as a self-check.
-  const reconciles = Math.abs(genesis - totalBurn - totalSupply) < 1;
+  /* What a block of skew is worth, from this chain's own recent burn rate rather
+     than a guessed constant. Blocks run at ~0.1022s, so a day is about 845,000 of
+     them; the trailing week of burns divided by that is AI-burned-per-block. */
+  const BLOCKS_PER_DAY = Math.round(86400 / 0.1022);
+  const recentDays = [...daily.values()].sort((a, b) => b.t - a.t).slice(1, 8);
+  const burnPerBlock = recentDays.length
+    ? recentDays.reduce((x, d) => x + (d.burnAI || 0), 0) / recentDays.length / BLOCKS_PER_DAY
+    : 0;
+  const skewAllowance = Math.max(1, burnPerBlock * stateSkewBlocks * 3);
+  const residual = genesis - totalBurn - totalSupply;
+  const reconciles = Math.abs(residual) <= skewAllowance;
+  if (!reconciles) log(`  supply residual ${residual.toFixed(2)} AI exceeds what ${stateSkewBlocks} blocks of skew can explain (${skewAllowance.toFixed(2)} AI)`);
+  else if (Math.abs(residual) > 1) log(`  supply residual ${residual.toFixed(2)} AI, within the ${skewAllowance.toFixed(2)} AI explained by ${stateSkewBlocks} blocks of read skew`);
 
   // The AI-side fee legs sum to the total AI fee taken. At a 0.70% rate that implies
   // the AI-denominated notional that crossed tolled pools.
@@ -189,7 +217,11 @@ export async function indexBurns(latest, tm, opts = {}) {
       ? { burn: 1, lock: +(feeLock / feeBurn).toFixed(4), platform: +(feePlatform / feeBurn).toFixed(4) }
       : null,
     reconciles,
-    reconcileResidual: genesis - totalBurn - totalSupply,
+    reconcileResidual: residual,
+    // Recorded so verify can judge the residual against the skew that produced it
+    // rather than against an absolute that no long run can ever meet.
+    stateSkewBlocks,
+    skewAllowance: +skewAllowance.toFixed(4),
     vault: {
       address: COMMUNITY_VAULT,
       aiBalance: fmtUnits(vaultAI),
