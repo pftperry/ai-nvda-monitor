@@ -31,8 +31,15 @@ function compact(x, d = 2) {
 const pct = (x, d = 1) => (x == null || !isFinite(x) ? "—" : `${x > 0 ? "+" : ""}${(x * 100).toFixed(d)}%`);
 const sig = (x, n = 6) => (x == null || !isFinite(x) || x === 0 ? "—" : x.toPrecision(n).replace(/\.?0+$/, ""));
 const short = (a) => (a ? `${a.slice(0, 8)}…${a.slice(-6)}` : "—");
-const tsFmt = (t) => (t ? new Date(t * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
-const dayFmt = (t) => (t ? new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—");
+/* Times render in Central explicitly rather than in the viewer's local zone.
+   Pinning it means a timestamp means the same thing on the desktop that produced
+   it and the phone that reads it, and removes the ambiguity that makes a stale
+   chart look like a timezone bug -- which is exactly how this came up. */
+const TZ = "America/Chicago";
+const tsFmt = (t) => (t ? new Date(t * 1000).toLocaleString("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—");
+const dayFmt = (t) => (t ? new Date(t * 1000).toLocaleDateString("en-US", { timeZone: TZ, month: "short", day: "numeric" }) : "—");
+const hourFmt = (t) => (t ? new Date(t * 1000).toLocaleString("en-US", { timeZone: TZ, hour: "numeric", hour12: true }) : "—");
+const clockFmt = (t) => (t ? new Date(t * 1000).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }) + " CT" : "—");
 const ago = (t) => {
   const s = Math.floor(Date.now() / 1000) - t;
   if (s < 90) return `${s}s ago`;
@@ -454,6 +461,23 @@ async function rpcCall(method, params) {
 }
 
 /* ── live header ─────────────────────────────────────────────────────────── */
+
+/** Header price and market cap, from the same canonical state the panels use. */
+function paintHeaderMarket() {
+  if (!S.flow || !S.burns) return;                  // marketState needs the artifacts
+  const M = marketState();
+  if (M.price) {
+    const ch = S.usdChange24h;
+    $("#hUsd").innerHTML = `$${M.price < 0.01 ? M.price.toExponential(2) : M.price.toFixed(4)}` +
+      (ch == null ? "" : ` <span class="${ch >= 0 ? "up" : "down"}" style="font-size:12px">${ch >= 0 ? "+" : ""}${ch}%</span>`);
+    $("#hUsd").title = `price source: ${M.source}`;
+  }
+  if (M.mcap) {
+    $("#hMcap").textContent = "$" + compact(M.mcap);
+    $("#hMcap").title = `${M.supplyLive ? "live" : "indexed"} supply × ${M.source}`;
+  }
+}
+
 async function refreshLive() {
   try {
     const [bnHex, supplyHex] = await Promise.all([
@@ -464,7 +488,7 @@ async function refreshLive() {
     $("#hBlock").textContent = bn.toLocaleString();
     const supply = Number(BigInt(supplyHex)) / 1e18;
     S.liveSupply = supply;
-    if (S.usdPrice) $("#hMcap").textContent = "$" + compact(supply * S.usdPrice);
+    paintHeaderMarket();
 
     // latest pool price straight from the most recent Swap log
     const logs = await rpcCall("eth_getLogs", [{
@@ -490,10 +514,11 @@ async function refreshLive() {
     const j = await r.json();
     const best = (j.pairs || []).sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
     if (best) {
-      S.usdPrice = Number(best.priceUsd);   // cross-check against the on-chain USDG price
-      if (S.liveSupply) $("#hMcap").textContent = "$" + compact(S.liveSupply * S.usdPrice);
-      const ch = best.priceChange?.h24;
-      $("#hUsd").innerHTML = `$${Number(best.priceUsd).toFixed(4)} <span class="${ch >= 0 ? "up" : "down"}" style="font-size:12px">${ch >= 0 ? "+" : ""}${ch}%</span>`;
+      // Cross-check only. The header is painted from marketState() so that the
+      // price and market cap shown there are the same ones the panels compute.
+      S.usdPrice = Number(best.priceUsd);
+      S.usdChange24h = best.priceChange?.h24 ?? null;
+      paintHeaderMarket();
     }
   } catch { /* aggregator is optional */ }
   // The valuation table's USD column depends on that price, so refresh it once
@@ -513,7 +538,24 @@ function windowRows(hourly) {
 
 function renderFlow() {
   const p = currentPool();
-  const rows = windowRows(p.hourly);
+  /* Merge the live tail so this chart does not stop at the last indexed hour.
+     That gap is what made a correctly-rendered chart look mis-zoned: it showed
+     9 PM at 11 PM because the data genuinely ended there. Live hours are summed
+     onto their bucket and flagged, never silently blended into settled ones. */
+  const liveB = S.live?.buckets || [];
+  let series = p.hourly;
+  if (liveB.length && S.flow.pools.indexOf(p) < 3) {
+    const byT = new Map(p.hourly.map((x) => [x.t, x]));
+    for (const lb of liveB) {
+      const ex = byT.get(lb.t);
+      byT.set(lb.t, ex
+        ? { ...ex, aiBuy: ex.aiBuy + lb.aiBuy, aiSell: ex.aiSell + lb.aiSell,
+            buys: ex.buys + lb.buys, sells: ex.sells + lb.sells, close: lb.close || ex.close, live: true }
+        : { ...lb });
+    }
+    series = [...byT.values()].sort((a, b) => a.t - b.t);
+  }
+  const rows = windowRows(series);
   const q = p.pairSymbol || "quote";
 
   const aiBuy = rows.reduce((s, r) => s + r.aiBuy, 0);
@@ -526,7 +568,7 @@ function renderFlow() {
 
   const tiles = [
     { lbl: `Net flow (${S.hours ? S.hours + "h" : "all"})`, val: compact(aiBuy - aiSell), note: `AI · ${aiBuy - aiSell >= 0 ? "net bought" : "net sold"}`, cls: aiBuy - aiSell >= 0 ? "up" : "down" },
-    { lbl: "Flow imbalance", val: pct(imb), note: `${compact(aiBuy)} bought / ${compact(aiSell)} sold`, cls: imb >= 0 ? "up" : "down" },
+    { lbl: "Flow imbalance", val: pctLevel(imb), note: `${compact(aiBuy)} bought / ${compact(aiSell)} sold`, cls: imb >= 0 ? "up" : "down" },
     { lbl: "Trade count", val: `${buys + sells}`, note: `${buys} buys · ${sells} sells` },
     { lbl: "Price change", val: pct(chg, 2), note: `${q} per AI`, cls: chg >= 0 ? "up" : "down" },
   ];
@@ -587,10 +629,10 @@ function renderBurn() {
   const avg7 = b.daily.slice(-7).reduce((s, r) => s + r.burnAI, 0) / Math.max(1, Math.min(7, b.daily.length));
 
   $("#burnTiles").innerHTML = [
-    { lbl: "Total AI burned", val: compact(b.burned), note: `${pct(b.burned / b.genesisSupply, 2)} of genesis supply` },
+    { lbl: "Total AI burned", val: compact(b.burned), note: `${pctLevel(b.burned / b.genesisSupply, 2)} of genesis supply` },
     { lbl: "Burn rate (7d avg)", val: compact(avg7), note: "AI per day" },
-    { lbl: "Vault NVDA reserve", val: nf(b.vault.nvdaBalance, 1), note: `of ${compact(b.nvdaTotalSupply)} NVDA on chain` },
-    { lbl: "Implied fee volume", val: compact(b.impliedAILegVolume), note: "AI notional at 0.70% fee" },
+    { lbl: "Vault NVDA reserve", val: nf(b.vault.nvdaBalance, 1), note: `of ${compact(b.nvdaTotalSupply)} NVDA on chain · not redeemable` },
+    { lbl: "Implied fee volume", val: compact(b.impliedAILegVolume), note: `sell-side notional at the measured ${pctLevel(FEE_RATE,2)} fee` },
   ].map((t) => `<div class="tile"><div class="lbl">${t.lbl}</div><div class="val">${t.val}</div><div class="note">${t.note}</div></div>`).join("");
 
   barChart($("#cBurn"), recent, {
@@ -621,10 +663,10 @@ function renderFloat() {
   const b = S.burns;
   const removed = b.burned + b.vault.aiBalance;
   $("#floatTiles").innerHTML = [
-    { lbl: "Permanently removed", val: compact(removed), note: `${pct(removed / b.genesisSupply, 2)} of genesis — burned + vault-locked` },
-    { lbl: "Locked as pool inventory", val: compact(b.poolManagerAI), note: `${pct(b.poolManagerAI / b.totalSupply, 2)} of supply sitting in v4 pools` },
+    { lbl: "Permanently removed", val: compact(removed), note: `${pctLevel(removed / b.genesisSupply, 2)} of genesis — burned + vault-locked` },
+    { lbl: "Locked as pool inventory", val: compact(b.poolManagerAI), note: `${pctLevel(b.poolManagerAI / b.totalSupply, 2)} of supply sitting in v4 pools` },
     { lbl: "Effective float", val: compact(b.effectiveFloat), note: "supply less vault and pool inventory" },
-    { lbl: "Float / supply", val: pct(b.effectiveFloat / b.totalSupply, 1), note: "what can actually change hands" },
+    { lbl: "Float / supply", val: pctLevel(b.effectiveFloat / b.totalSupply, 1), note: "what can actually change hands" },
   ].map((t) => `<div class="tile"><div class="lbl">${t.lbl}</div><div class="val">${t.val}</div><div class="note">${t.note}</div></div>`).join("");
 
   shareBars($("#cWaterfall"), [
@@ -637,7 +679,7 @@ function renderFloat() {
   table($("#tSupply"), [
     { h: "Component", f: (r) => r.k },
     { h: "AI", f: (r) => nf(r.v, 0) },
-    { h: "Share of genesis", f: (r) => pct(r.v / b.genesisSupply, 3) },
+    { h: "Share of genesis", f: (r) => pctLevel(r.v / b.genesisSupply, 3) },
     { h: "Reversible?", f: (r) => r.rev },
   ], [
     { k: "Genesis supply (single mint)", v: b.genesisSupply, rev: "—" },
@@ -811,6 +853,11 @@ async function refreshLiveTail() {
     const tOf = (b) => nowSec - Math.round((head - b) * SEC_PER_BLOCK);
 
     let buy = 0, sell = 0, n = 0, last = null;
+    const priceByPool = {};
+    /* Five-minute price buckets for the chart tail. Hourly is the right grain for
+       settled history but far too coarse for "now": it makes a live chart look
+       frozen for up to an hour after the last bucket closed. */
+    const pointsByPool = {};
     const buckets = new Map();
     perPool.forEach((swaps, i) => {
       for (const s of swaps) {
@@ -822,6 +869,12 @@ async function refreshLiveTail() {
         row.close = s.price;
         buckets.set(h, row);
         if (i === 0) last = s;
+        priceByPool[pools[i].poolId] = s.price;   // last print per venue
+        if (s.price > 0) {
+          const slot = Math.floor(tOf(s.block) / 300) * 300;
+          const pid = pools[i].poolId;
+          (pointsByPool[pid] ||= new Map()).set(slot, { t: slot, close: s.price, live: true });
+        }
       }
     });
 
@@ -829,11 +882,13 @@ async function refreshLiveTail() {
       head, from, swaps: n, buy, sell, net: buy - sell,
       imbalance: buy + sell > 0 ? (buy - sell) / (buy + sell) : 0,
       buckets: [...buckets.values()].sort((a, b) => a.t - b.t),
-      pools: pools.map((p) => p.pairSymbol), at: nowSec,
+      pools: pools.map((p) => p.pairSymbol), at: nowSec, priceByPool,
+      pointsByPool: Object.fromEntries(Object.entries(pointsByPool).map(([k, m]) => [k, [...m.values()].sort((a, b) => a.t - b.t)])),
       lastPrice: last ? last.price : null,
       minutes: Math.max(1, Math.round((head - from) * SEC_PER_BLOCK / 60)),
     };
     renderLiveStrip();
+    paintHeaderMarket();   // the live print changes the canonical price
     if (!$("#p-investor").hidden) { try { renderInvestor(); } catch { /* never blank the tab */ } }
   } catch { /* the live tail is a bonus; its failure must not disturb the page */ }
 }
@@ -982,7 +1037,7 @@ function renderInvestor() {
     `Fees are running at <b>${compact(feeAnnual)} AI/yr</b> and
      ${feeTrend == null ? "have no prior period to compare" :
        `<b>${feeTrend >= 0 ? "rose" : "fell"} ${pct(Math.abs(feeTrend), 0).replace("+", "")}</b> against the prior week`}.
-     At the measured 0.70% rate that implies <b>${compact(impliedVol)} AI/day</b> crossing tolled pools.
+     AI-denominated fees are charged on <b>sells only</b> (buys pay in NVDA), so at the measured 0.70% rate this implies <b>${compact(impliedVol)} AI/day</b> of <i>sell-side</i> notional through tolled pools — roughly half the round-trip volume.
      Because the fee is paid in AI, revenue and burn are the same number seen twice — this line is the
      fundamental floor under the token, and it is the one to watch decay.`);
 
@@ -1003,7 +1058,7 @@ function renderInvestor() {
     `The vault holds <b>${nf(b.vault.nvdaBalance, 1)} NVDA</b>, growing about
      <b>${nf(nv7 / 7, 2)} per day</b>${nvTrend == null ? "" : ` (${pct(nvTrend, 0)} versus the prior week)`}.
      That is <b>${nf(nvdaPerM, 2)} NVDA per million AI</b> outstanding, and it only ratchets upward —
-     no outflow has ever been observed. This is the part of the story that does not depend on the meme holding.`);
+     no outflow has ever been observed. This is the part of the story that does not depend on the meme holding — but note it is <b>backing, not a claim</b>: the protocol states holders cannot redeem assets from the vault, so it supports the story rather than setting a floor you can exercise.`);
 
   /* ── 4. hub conversion ────────────────────────────────────────────── */
   const kd = completeDays((r && r.daily) || []);
@@ -1100,6 +1155,44 @@ function usdPool() {
     .sort((a, b) => recent(b) - recent(a))[0] || null;
 }
 
+/**
+ * The single source of truth for price, supply and market cap.
+ *
+ * These were derived three different ways: the header used a live supply call
+ * times an aggregator quote, the price panel used indexed supply times the
+ * on-chain USDG close, and the valuation table used indexed supply times the
+ * aggregator. Three market caps that could never agree, on one page — and
+ * whichever a reader happened to look at is the one they would act on.
+ *
+ * Precedence is freshness then authority: a live on-chain USDG print beats the
+ * indexed close, which beats the aggregator; a live supply call beats the indexed
+ * figure. The aggregator stays as the cross-check, and when the two disagree
+ * materially the caller is told rather than silently handed one of them.
+ */
+function marketState() {
+  const b = S.burns;
+  const pool = usdPool();
+  const livePx = pool && S.live?.priceByPool ? S.live.priceByPool[pool.poolId] : null;
+  const indexedPx = pool?.hourly?.length
+    ? [...pool.hourly].reverse().find((h) => h.close > 0)?.close ?? null : null;
+  const agg = S.usdPrice || null;
+
+  let price = livePx || indexedPx || agg || null;
+  let source = livePx ? "live on-chain AI/USDG"
+    : indexedPx ? "indexed on-chain AI/USDG"
+    : agg ? "aggregator" : "none";
+  const chainPx = livePx || indexedPx;
+  const disagrees = !!(chainPx && agg && (chainPx / agg > 1.25 || agg / chainPx > 1.25));
+  if (disagrees && agg) { price = agg; source = "aggregator (on-chain price rejected)"; }
+
+  const supply = S.liveSupply || b?.totalSupply || null;
+  return {
+    price, source, agg, disagrees, pool,
+    supply, supplyLive: !!S.liveSupply,
+    mcap: price && supply ? price * supply : null,
+  };
+}
+
 function renderPrice(feeSeries) {
   const b = S.burns;
   const pool = usdPool();
@@ -1114,27 +1207,42 @@ function renderPrice(feeSeries) {
     for (const h of hrs) if (h.t <= t) best = h;
     return best ? best.close : null;
   };
-  const px = last.close, p24 = at(24), p7d = at(168);
+  const M = marketState();
+  const px = M.price || last.close;
+  /* A change is only meaningful if the historical leg sits on the same scale as
+     the current price. Stored buckets can predate a decoding fix — the USDG
+     decimals error left old closes 10^12 too small — and comparing today against
+     one of those rendered "+139,740,061,052,265% 24h" on screen. Implausible
+     comparisons are withheld, because an absurd number is still read as a number. */
+  const sane = (h) => (h && px && h / px > 0.05 && h / px < 20 ? h : null);
+  const raw24 = at(24), raw168 = at(168);
+  const p24 = sane(raw24), p7d = sane(raw168);
+  const historySuspect = (raw24 && !p24) || (raw168 && !p7d);
   const c24 = p24 ? px / p24 - 1 : null, c7 = p7d ? px / p7d - 1 : null;
-  const mcap = px * b.totalSupply;
+  const mcap = M.mcap ?? px * b.totalSupply;
   const money = (v) => (v < 0.01 ? `$${v.toExponential(3)}` : `$${v.toFixed(4)}`);
 
   /* Sanity gate. If the on-chain price and the aggregator disagree by more than
      a quarter, the decimals or the pool choice is wrong. A confidently wrong
      price is worse than none, and this is precisely how a 10^12 decimals error
      (USDG configured at 18 when it is 6) surfaced. */
-  const agg = S.usdPrice;
-  const disagrees = agg && (px / agg > 1.25 || agg / px > 1.25);
+  const agg = M.agg;
+  const disagrees = M.disagrees;
 
   $("#kpiPrice").innerHTML = kpiEl(money(px),
     c24 == null ? "" : `${pct(c24, 1)} 24h`, c24 >= 0 ? "up" : "down",
     `market cap $${compact(mcap)}`);
 
-  lineChart($("#cInvPrice"), hrs.slice(-24 * 30), {
+  /* Chart = settled hourly history + the live five-minute tail. Without the tail
+     the line simply stops at the last indexed hour, which on a page that calls
+     itself a monitor reads as broken rather than as "not yet indexed". */
+  const livePts = (S.live?.pointsByPool?.[pool.poolId] || []).filter((pt) => pt.t > (hrs.at(-1)?.t || 0));
+  const chartRows = [...hrs.slice(-24 * 30), ...livePts];
+  lineChart($("#cInvPrice"), chartRows, {
     xKey: "t", yKey: "close", color: (c7 ?? 0) >= 0 ? "var(--buy)" : "var(--sell)", area: true,
     fmt: (v) => (v < 0.01 ? v.toExponential(1) : `$${v.toFixed(3)}`),
-    tip: (h) => `<div class="k">${tsFmt(h.t)}</div><div>${money(h.close)} per AI</div>
-      <div class="k">market cap $${compact(h.close * b.totalSupply)}</div>`,
+    tip: (h) => `<div class="k">${tsFmt(h.t)}${h.live ? " · live" : ""}</div><div>${money(h.close)} per AI</div>
+      <div class="k">market cap $${compact(h.close * (M.supply || b.totalSupply))}</div>`,
   });
 
   // Price against fundamentals: the comparison that says whether a move was earned.
@@ -1145,13 +1253,16 @@ function renderPrice(feeSeries) {
     : (c7 ?? 0) < 0 && feeChg < 0 ? "falling alongside the cash flow, which is at least internally consistent"
     : (c7 ?? 0) >= 0 && feeChg >= 0 ? "rising with the cash flow behind it, which is the healthy combination"
     : "falling while fees improve, which is the combination usually worth buying";
-  $("#takePrice").innerHTML = takeEl(disagrees ? "warn" : (c7 ?? 0) >= 0 ? "pos" : "neg",
+  const suspectNote = historySuspect
+    ? ` <span class="muted">Price history before the last re-index is on a different scale and is being withheld until it is re-derived; the current price is unaffected.</span>`
+    : "";
+  $("#takePrice").innerHTML = takeEl(disagrees ? "warn" : historySuspect ? "warn" : (c7 ?? 0) >= 0 ? "pos" : "neg",
     disagrees
       ? `<b>On-chain and aggregator prices disagree materially</b> (${money(px)} vs $${agg.toPrecision(4)}).
          Treat both as suspect until reconciled; this normally means a token's decimals or the chosen pool is wrong.`
       : `AI is <b>${money(px)}</b>, a market cap of <b>$${compact(mcap)}</b>${c24 == null ? "" : `, <b>${pct(c24, 1)}</b> over 24h`}${c7 == null ? "" : ` and <b>${pct(c7, 1)}</b> over 7 days`}.
          ${feeChg == null ? "" : `Fees over the same week ${feeChg >= 0 ? "rose" : "fell"} <b>${pctLevel(Math.abs(feeChg), 0)}</b>, so price is ${verdict}.`}
-         ${agg ? `<span class="muted">Aggregator cross-check: $${agg.toPrecision(4)}.</span>` : ""}`);
+         ${agg ? `<span class="muted">Aggregator cross-check: $${agg.toPrecision(4)}.</span>` : ""}${suspectNote}`);
   return { px, mcap };
 }
 
@@ -1280,8 +1391,8 @@ function renderRegime(kappa, sc, capNow, feeAnnual) {
       note: "indexed pools only; model cases 5 / 10 / 12%" },
     { k: "Fee run-rate", v: `${compact(feeAnnual)} AI/yr`, band: ["na", "measured"],
       note: "all three splitter legs, annualised from 7d" },
-    { k: "NVDA hard reserve", v: `${nf(b.vault.nvdaBalance, 1)} NVDA`, band: ["na", "measured"],
-      note: "no outflow ever observed" },
+    { k: "NVDA reserve (not redeemable)", v: `${nf(b.vault.nvdaBalance, 1)} NVDA`, band: ["na", "measured"],
+      note: "no outflow ever observed; holders cannot redeem" },
     { k: "Supply removed", v: pctLevel((b.burned + b.vault.aiBalance) / b.genesisSupply, 2), band: ["na", "measured"],
       note: "burned + vault-locked, of genesis" },
   ];
@@ -1300,9 +1411,10 @@ function renderRegime(kappa, sc, capNow, feeAnnual) {
 
 function renderValuation(feeAnnual, impliedVol, vols) {
   const b = S.burns;
-  const px = S.usdPrice;               // aggregator price, set by refreshLive
+  const M = marketState();
+  const px = M.price;                  // canonical: see marketState()
   const usd = (ai) => (px ? `$${compact(ai * px)}` : "—");
-  const mcap = px ? b.totalSupply * px : null;
+  const mcap = M.mcap;
   const vol30 = vols.slice(-30);
   const avgDailyVol = vol30.length ? vol30.reduce((s, v) => s + v.total, 0) / vol30.length : 0;
 
@@ -1312,7 +1424,7 @@ function renderValuation(feeAnnual, impliedVol, vols) {
     { m: "Capitalised at 6.0% (base discount)", ai: `${compact(feeAnnual / 0.06)} AI`, u: usd(feeAnnual / 0.06), n: "yield method" },
     { m: "Capitalised at 5.0% (bull discount)", ai: `${compact(feeAnnual / 0.05)} AI`, u: usd(feeAnnual / 0.05), n: "rate the model gives listed venues with real revenue" },
     { m: "Indexed AI volume, 30d average", ai: `${compact(avgDailyVol)} AI/day`, u: usd(avgDailyVol), n: "indexed pools only — a floor, not the full tape" },
-    { m: "Current market cap", ai: `${compact(b.totalSupply)} AI supply`, u: mcap ? `$${compact(mcap)}` : "—", n: "aggregator price × live supply" },
+    { m: "Current market cap", ai: `${compact(b.totalSupply)} AI supply`, u: mcap ? `$${compact(mcap)}` : "—", n: `${M.source}, ${M.supplyLive ? "live" : "indexed"} supply` },
   ];
   table($("#tValuation"), [
     { h: "Measure", f: (x) => x.m },
@@ -1573,6 +1685,7 @@ async function boot() {
   });
 
   renderAll();
+  paintHeaderMarket();
   refreshLive();
   setInterval(refreshLive, 20000);
   // The live tail is the real-time layer: it makes the top line independent of

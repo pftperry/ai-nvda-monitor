@@ -39,7 +39,24 @@ export const USDG = TOKENS.USDG.address;
  */
 export const LONG_HOOK = "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544";
 
-/** Receives hook fees, then splits them atomically in the same tx (holds no balance). */
+/* Receives hook fees, then splits them atomically in the same tx (holds no balance).
+
+   The published mechanics (artificialinu.com/how-it-works) and the chain agree,
+   once you account for something the page leaves out:
+
+     buys  -> fee paid in NVDA: 80% to the community vault, 20% to the receiver
+     sells -> fee paid in AI:   "50% burned / 50% locked"
+
+   Measured on chain the AI side is burn : lock : receiver = 1 : 1 : 0.5, i.e.
+   40 / 40 / 20. Both reconcile if the 20% receiver cut is taken first on BOTH
+   sides and the page's "50/50" describes the split of what remains. The measured
+   figures are therefore the complete picture; the page states the simplified one.
+
+   Two consequences that matter for interpretation:
+     - AI-denominated fees come from SELLS only, so fee ÷ rate gives sell-side
+       notional, not total volume.
+     - Vault assets are explicitly not redeemable by holders: "holders cannot
+       redeem assets from the Vault". It is backing, not a claim. */
 export const FEE_SPLITTER = "0x4f6c50a87bf234c45191f88ed4cbb9f021b7dc67";
 
 /** The community vault: permanently-locked AI + the accumulating NVDA hard reserve. */
