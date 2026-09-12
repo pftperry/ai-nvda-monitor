@@ -2100,9 +2100,9 @@ function renderRating(parts) {
           improving — fees, toll capture, hub conversion and the reserve — and every input is ranked
           against <b>its own measured history</b>, so nothing here is judged against an outside analyst's
           assumed scenarios. Zero means "typical for this asset lately"; ±1 means at the edge of its own
-          60-day range. It is <b>not</b> a price forecast: tested over that window, no KPI here reliably
-          leads price, and flow's strong-looking link to price is mechanical rather than predictive. The
-          Method tab shows the test.
+          60-day range. It is <b>not</b> a price forecast: tested against the <b>dollar</b> price over
+          52 days, no KPI here reliably leads it, and flow's strong-looking link to price is mechanical
+          rather than predictive. The Method tab shows the test.
         </div>
       </div>
       <div class="scale"><div class="needle" style="left:calc(${pos.toFixed(1)}% - 1.5px)"></div></div>

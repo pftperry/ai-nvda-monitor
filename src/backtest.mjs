@@ -26,9 +26,30 @@ const flow = readData("flow.json");
 const burns = readData("burns.json");
 if (!flow) { console.error("No flow.json — run `npm run index` first."); process.exit(1); }
 
-const pool = flow.pools.find((p) => p.poolId === C.AI_NVDA_POOL) || flow.pools[0];
-const h = pool.hourly.filter((x) => x.close > 0);
-console.log(`Backtest on AI/${pool.pairSymbol}: ${h.length} hourly observations `
+/* Price the test in DOLLARS, not in NVDA.
+   The predictors were always tested against the AI/NVDA close, because that was the
+   only long series available. But NVDA is itself a volatile asset here, so a return
+   measured against it mixes the question "did AI move" with "did NVDA move" -- and
+   the holder's question, the one this whole site exists to answer, is about dollars.
+   Both AI/USDG venues now reach back to 22 July, so the dollar series is long enough
+   to test on: it is stitched the same way the page stitches it, busiest venue first
+   with older hours filled in behind. AI/NVDA remains the fallback when USDG history
+   is too short. */
+const usdgPools = flow.pools.filter((p) => p.pairSymbol === "USDG");
+const stitched = (() => {
+  if (!usdgPools.length) return [];
+  const recent = (p) => p.hourly.slice(-72).reduce((a, x) => a + (x.aiBuy || 0) + (x.aiSell || 0), 0);
+  const ranked = [...usdgPools].sort((a, b) => recent(b) - recent(a));
+  const byT = new Map(ranked[0].hourly.filter((x) => x.close > 0).map((x) => [x.t, x]));
+  for (const other of ranked.slice(1)) {
+    for (const x of other.hourly) if (x.close > 0 && !byT.has(x.t)) byT.set(x.t, x);
+  }
+  return [...byT.values()].sort((a, b) => a.t - b.t);
+})();
+const useUsd = stitched.length >= 500;
+const pool = useUsd ? usdgPools[0] : (flow.pools.find((p) => p.poolId === C.AI_NVDA_POOL) || flow.pools[0]);
+const h = useUsd ? stitched : pool.hourly.filter((x) => x.close > 0);
+console.log(`Backtest on AI in ${useUsd ? "USD (stitched across " + usdgPools.length + " AI/USDG venues)" : "AI/" + pool.pairSymbol}: ${h.length} hourly observations `
   + `(${((h.at(-1).t - h[0].t) / 86400).toFixed(1)} days)\n`);
 
 /* Returns are log returns so they compose across horizons and are symmetric.
