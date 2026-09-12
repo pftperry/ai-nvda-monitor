@@ -13,7 +13,12 @@ export const POOL_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951";
 export const TOKENS = {
   AI:   { address: "0x2e8c31162b855a2ffa90f6f8634643ad6f111e18", symbol: "AI",   decimals: 18, genesisSupply: 1_000_000_000 },
   NVDA: { address: "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec", symbol: "NVDA", decimals: 18 },
-  USDG: { address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", symbol: "USDG", decimals: 18 },
+  // USDG is 6 decimals, NOT 18. Getting this wrong put every USDG-denominated
+  // price out by a factor of 10^12 (AI showed as 2.7e-13 rather than ~0.27), and
+  // because curated entries outrank the on-chain lookup the mistake overrode the
+  // correct value silently. assertTokenMetadata() now checks these against the
+  // chain on every run so a hardcoded constant can never quietly lie again.
+  USDG: { address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", symbol: "USDG", decimals: 6 },
   WETH: { address: "0x0bd7d308f8e1639fab988df18a8011f41eacad73", symbol: "WETH", decimals: 18 },
   // v4 represents native ETH as the zero address. Without this it resolves to no
   // symbol and renders as "0x000000", which reads like an unnamed dust token

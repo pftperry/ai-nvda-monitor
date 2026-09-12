@@ -85,6 +85,27 @@ export async function resolveTokens(addresses, opts = {}) {
   return out;
 }
 
+/**
+ * Check every curated token's decimals against the chain.
+ *
+ * Curated entries outrank both the cache and the on-chain lookup, which makes a
+ * wrong constant invisible: USDG was hardcoded at 18 when it is 6, and the only
+ * symptom was a price 10^12 too small in a corner of the UI. Four eth_calls per
+ * run is a trivial price for making that class of error impossible.
+ */
+export async function assertTokenMetadata(log = console.log) {
+  const bad = [];
+  for (const t of Object.values(TOKENS)) {
+    if (t.address === "0x0000000000000000000000000000000000000000") continue;  // native ETH has no contract
+    const [res] = await rpcBatch([{ method: "eth_call", params: [{ to: t.address, data: SEL.decimals }, "latest"] }]);
+    if (!res || res === "0x") { log(`  warn: ${t.symbol} decimals unreadable; keeping configured ${t.decimals}`); continue; }
+    const onChain = Number(BigInt(res));
+    if (onChain !== t.decimals) bad.push(`${t.symbol} configured ${t.decimals} but chain says ${onChain}`);
+  }
+  if (bad.length) throw new Error(`token metadata is wrong: ${bad.join("; ")}`);
+  log(`  token metadata verified against chain (${Object.keys(TOKENS).length} entries)`);
+}
+
 export async function erc20(address, what) {
   const [r] = await rpcBatch([{ method: "eth_call", params: [{ to: address, data: SEL[what] }, "latest"] }]);
   return r && r !== "0x" ? BigInt(r) : 0n;

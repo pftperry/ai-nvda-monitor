@@ -12,7 +12,7 @@ on:
         required: false
         default: "standard"
         type: choice
-        options: [standard, quick, deep]
+        options: [standard, quick, deep, rebuild]
   push:
     branches: [main]
 
@@ -57,9 +57,13 @@ jobs:
         timeout-minutes: 300
         run: |
           case "${{ github.event.inputs.mode }}" in
-            quick) node src/indexer.mjs --quick ;;
-            deep)  node src/indexer.mjs --top 18 ;;
-            *)     node src/indexer.mjs --top 8 ;;
+            quick)   node src/indexer.mjs --quick ;;
+            deep)    node src/indexer.mjs --top 18 ;;
+            # Discards stored series and re-derives every bucket. Needed when a
+            # decoding input changes (a token's decimals, say), because resuming
+            # from a cursor only adds new buckets and never revisits old ones.
+            rebuild) node src/indexer.mjs --rebuild --top 8 ;;
+            *)       node src/indexer.mjs --top 8 ;;
           esac
 
       # A silently-wrong index is worse than a failed one, so bad data never ships.

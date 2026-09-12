@@ -24,9 +24,9 @@
   <div class="hdr-in">
     <div class="brand"><span class="dot" id="liveDot" title="live"></span> AI / NVDA Monitor</div>
     <div class="hdr-stats" id="hdrStats">
-      <div class="hs"><b id="hPrice">—</b><span>AI / NVDA</span></div>
       <div class="hs"><b id="hUsd">—</b><span>AI USD</span></div>
-      <div class="hs"><b id="hSupply">—</b><span>Supply</span></div>
+      <div class="hs"><b id="hMcap">—</b><span>Market cap</span></div>
+      <div class="hs"><b id="hPrice">—</b><span>AI / NVDA</span></div>
       <div class="hs"><b id="hBlock">—</b><span>Head block</span></div>
     </div>
   </div>
@@ -61,6 +61,17 @@
       </p>
       <div class="scroll"><table id="tRegime" class="regime"></table></div>
       <div id="regimeTake"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <h3>AI in USD</h3>
+      <p class="sub">
+        Priced on chain against USDG, a USD stablecoin, so this is the pool's own execution price rather than an
+        aggregator's opinion. Market cap is that price times live supply.
+      </p>
+      <div id="kpiPrice"></div>
+      <div class="chart" id="cInvPrice"></div>
+      <div id="takePrice"></div>
     </div>
 
     <h2 class="section-title">Leading indicators</h2>

@@ -437,7 +437,8 @@ async function refreshLive() {
     const bn = parseInt(bnHex, 16);
     $("#hBlock").textContent = bn.toLocaleString();
     const supply = Number(BigInt(supplyHex)) / 1e18;
-    $("#hSupply").textContent = compact(supply);
+    S.liveSupply = supply;
+    if (S.usdPrice) $("#hMcap").textContent = "$" + compact(supply * S.usdPrice);
 
     // latest pool price straight from the most recent Swap log
     const logs = await rpcCall("eth_getLogs", [{
@@ -463,7 +464,8 @@ async function refreshLive() {
     const j = await r.json();
     const best = (j.pairs || []).sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
     if (best) {
-      S.usdPrice = Number(best.priceUsd);   // the valuation panel's only USD input
+      S.usdPrice = Number(best.priceUsd);   // cross-check against the on-chain USDG price
+      if (S.liveSupply) $("#hMcap").textContent = "$" + compact(S.liveSupply * S.usdPrice);
       const ch = best.priceChange?.h24;
       $("#hUsd").innerHTML = `$${Number(best.priceUsd).toFixed(4)} <span class="${ch >= 0 ? "up" : "down"}" style="font-size:12px">${ch >= 0 ? "+" : ""}${ch}%</span>`;
     }
@@ -939,6 +941,7 @@ function renderInvestor() {
      <span class="muted">Burned and vault-locked are different tokens, not one counted twice: burned AI is destroyed and
      outside totalSupply, vault AI still exists inside it. They are near-identical in size only because the fee splits 1:1.</span>`);
 
+  renderPrice(feeSeries);
   const leak = renderLeak();
   renderVenues();
   renderMultiple(feeSeries);
@@ -946,6 +949,76 @@ function renderInvestor() {
   renderValuation(feeAnnual, impliedVol, vols);
   renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak);
   renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak);
+}
+
+/**
+ * AI priced in USD, from the chain.
+ *
+ * USDG is a USD stablecoin, so an AI/USDG pool's own price IS the dollar price,
+ * with no oracle and no aggregator in the path. That also makes the full history
+ * available at hourly resolution, which a spot quote cannot give. The aggregator
+ * figure is kept beside it as a cross-check: if the two disagree materially, one
+ * is wrong and that is worth surfacing rather than hiding.
+ */
+function usdPool() {
+  const recent = (p) => p.hourly.slice(-72).reduce((s, h) => s + (h.aiBuy || 0) + (h.aiSell || 0), 0);
+  return S.flow.pools.filter((p) => p.pairSymbol === "USDG" && p.hourly.length)
+    .sort((a, b) => recent(b) - recent(a))[0] || null;
+}
+
+function renderPrice(feeSeries) {
+  const b = S.burns;
+  const pool = usdPool();
+  if (!pool) { $("#kpiPrice").innerHTML = `<p class="muted">No AI/USDG venue indexed.</p>`; return null; }
+
+  const hrs = pool.hourly.filter((h) => h.close > 0);
+  if (!hrs.length) { $("#kpiPrice").innerHTML = `<p class="muted">No priced hours yet.</p>`; return null; }
+  const last = hrs[hrs.length - 1];
+  const at = (hoursAgo) => {
+    const t = last.t - hoursAgo * 3600;
+    let best = null;
+    for (const h of hrs) if (h.t <= t) best = h;
+    return best ? best.close : null;
+  };
+  const px = last.close, p24 = at(24), p7d = at(168);
+  const c24 = p24 ? px / p24 - 1 : null, c7 = p7d ? px / p7d - 1 : null;
+  const mcap = px * b.totalSupply;
+  const money = (v) => (v < 0.01 ? `$${v.toExponential(3)}` : `$${v.toFixed(4)}`);
+
+  /* Sanity gate. If the on-chain price and the aggregator disagree by more than
+     a quarter, the decimals or the pool choice is wrong. A confidently wrong
+     price is worse than none, and this is precisely how a 10^12 decimals error
+     (USDG configured at 18 when it is 6) surfaced. */
+  const agg = S.usdPrice;
+  const disagrees = agg && (px / agg > 1.25 || agg / px > 1.25);
+
+  $("#kpiPrice").innerHTML = kpiEl(money(px),
+    c24 == null ? "" : `${pct(c24, 1)} 24h`, c24 >= 0 ? "up" : "down",
+    `market cap $${compact(mcap)}`);
+
+  lineChart($("#cInvPrice"), hrs.slice(-24 * 30), {
+    xKey: "t", yKey: "close", color: (c7 ?? 0) >= 0 ? "var(--buy)" : "var(--sell)", area: true,
+    fmt: (v) => (v < 0.01 ? v.toExponential(1) : `$${v.toFixed(3)}`),
+    tip: (h) => `<div class="k">${tsFmt(h.t)}</div><div>${money(h.close)} per AI</div>
+      <div class="k">market cap $${compact(h.close * b.totalSupply)}</div>`,
+  });
+
+  // Price against fundamentals: the comparison that says whether a move was earned.
+  const fee7 = trailing(feeSeries, 7, (d) => d.fee), fee7p = trailing(feeSeries, 7, (d) => d.fee, 7);
+  const feeChg = fee7p > 0 ? fee7 / fee7p - 1 : null;
+  const verdict = feeChg == null ? "" :
+    (c7 ?? 0) >= 0 && feeChg < 0 ? "rising while the cash flow behind it shrinks — that re-rating is sentiment, not earnings"
+    : (c7 ?? 0) < 0 && feeChg < 0 ? "falling alongside the cash flow, which is at least internally consistent"
+    : (c7 ?? 0) >= 0 && feeChg >= 0 ? "rising with the cash flow behind it, which is the healthy combination"
+    : "falling while fees improve, which is the combination usually worth buying";
+  $("#takePrice").innerHTML = takeEl(disagrees ? "warn" : (c7 ?? 0) >= 0 ? "pos" : "neg",
+    disagrees
+      ? `<b>On-chain and aggregator prices disagree materially</b> (${money(px)} vs $${agg.toPrecision(4)}).
+         Treat both as suspect until reconciled; this normally means a token's decimals or the chosen pool is wrong.`
+      : `AI is <b>${money(px)}</b>, a market cap of <b>$${compact(mcap)}</b>${c24 == null ? "" : `, <b>${pct(c24, 1)}</b> over 24h`}${c7 == null ? "" : ` and <b>${pct(c7, 1)}</b> over 7 days`}.
+         ${feeChg == null ? "" : `Fees over the same week ${feeChg >= 0 ? "rose" : "fell"} <b>${pctLevel(Math.abs(feeChg), 0)}</b>, so price is ${verdict}.`}
+         ${agg ? `<span class="muted">Aggregator cross-check: $${agg.toPrecision(4)}.</span>` : ""}`);
+  return { px, mcap };
 }
 
 /**

@@ -5,6 +5,7 @@ import { hookPermissions } from "./decode.mjs";
 import { Store, writeData, readData } from "./store.mjs";
 import { loadTimeMap } from "./timemap.mjs";
 import { discoverPools, buildRoutingIndex } from "./tasks/pools.mjs";
+import { assertTokenMetadata } from "./tokens.mjs";
 import { indexFlow, rollup } from "./tasks/flow.mjs";
 import { analyseRouting } from "./tasks/routing.mjs";
 import { indexBurns } from "./tasks/burns.mjs";
@@ -36,6 +37,9 @@ console.log(`AI genesis block ${C.GENESIS_BLOCK.toLocaleString()} -> ${(latest -
 if (quick) console.log("QUICK MODE: shortened windows, fewer pools");
 if (deep) console.log("DEEP MODE: 18 pools, 14-day routing window, 7-day bridge window");
 console.log(`windows -> activity ${(ACTIVITY_WINDOW / DAY_BLOCKS).toFixed(1)}d · routing ${(ROUTING_WINDOW / DAY_BLOCKS).toFixed(1)}d · bridges ${(BRIDGES_WINDOW / DAY_BLOCKS).toFixed(1)}d · top ${TOP_FLOW} pools · ${BRIDGES_TOP} bridge tokens`);
+
+step("Verifying token metadata");
+await assertTokenMetadata();
 
 step("Building block -> time anchors");
 const tm = await loadTimeMap(store, latest);
