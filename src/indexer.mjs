@@ -45,26 +45,6 @@ step("Building block -> time anchors");
 const tm = await loadTimeMap(store, latest);
 console.log(`  ${tm.toJSON().length} anchors; head = ${new Date(tm.at(latest) * 1000).toISOString()}`);
 
-step("Discovering AI pools");
-// Ranking needs breadth (all pools) but not depth (a short window suffices).
-const { all, active, seedTxIndex, seedFrom } = await discoverPools(latest, {
-  activityWindow: ACTIVITY_WINDOW,
-  nameTop: quick ? 40 : 120,
-  // Initialize events are append-only, so the pool catalogue resumes too.
-  knownPools: flag("rebuild") ? null : store.get("poolCatalogue"),
-  store,
-});
-
-// The two flagship venues are always indexed in depth regardless of how they rank.
-// Raw swap count is dominated by freshly-launched dust tokens churning through their
-// first hours, which would otherwise push AI/NVDA -- the pool that actually feeds the
-// vault -- off the list entirely.
-const PINNED = [C.AI_NVDA_POOL, C.AI_USDG_POOL];
-const pinned = PINNED
-  .map((id) => active.find((p) => p.poolId === id) || all.find((p) => p.poolId === id))
-  .filter(Boolean);
-const selected = [...pinned, ...active.filter((p) => !PINNED.includes(p.poolId))].slice(0, TOP_FLOW);
-console.log(`  pinned flagships: ${pinned.map((p) => "AI/" + (p.pairSymbol || "?")).join(", ")}`);
 /* Feed the previous run's series back in so only new blocks are scanned.
 
    --rebuild-pools <match,match> drops the stored series for just the matching
@@ -88,18 +68,65 @@ if (rebuildOnly) {
 }
 if (prev.size) console.log(`  resuming from stored series for ${prev.size} pools (--rebuild to force a full re-scan)`);
 
-step(`Indexing buy/sell flow for top ${selected.length} pools`);
+/* Two stages cannot be made incremental, because both measure a trailing window
+   and so must re-read it: ranking pool activity across ~5,470 ids, and building
+   the routing index across the active ones. Together they dominate a refresh and
+   are why a run takes minutes rather than seconds.
+   They also do not need to run often. Venue ranking and κ move over days; price
+   and flow move continuously. So --fast does only the parts that change fast:
+   it reuses the previous run's pool selection (flow.json already carries every
+   field indexFlow needs) and leaves pools.json and routing.json untouched, so a
+   scheduled refresh costs a handful of small queries. A periodic full run keeps
+   the slow-moving figures honest. */
+const fast = flag("fast") && priorFlow?.pools?.length > 0;
+let all = [], active = [], seedTxIndex = null, seedFrom = latest, selected = [];
+
+if (fast) {
+  console.log(`\n[${((Date.now() - t0) / 1000).toFixed(0)}s] FAST refresh: reusing the last run's ${priorFlow.pools.length} pools; ranking, routing and bridges untouched`);
+  selected = priorFlow.pools.map((p) => ({
+    poolId: p.poolId, pairSymbol: p.pairSymbol, pairToken: p.pairToken,
+    pairDecimals: p.pairDecimals, aiIsCurrency0: p.aiIsCurrency0,
+    fee: p.fee, dynamicFee: p.dynamicFee, isLongHook: p.isLongHook,
+    hooks: p.hooks, createdBlock: p.createdBlock,
+  }));
+} else {
+  step("Discovering AI pools");
+  // Ranking needs breadth (all pools) but not depth (a short window suffices).
+  ({ all, active, seedTxIndex, seedFrom } = await discoverPools(latest, {
+    activityWindow: ACTIVITY_WINDOW,
+    nameTop: quick ? 40 : 120,
+    // Initialize events are append-only, so the pool catalogue resumes too.
+    knownPools: flag("rebuild") ? null : store.get("poolCatalogue"),
+    store,
+  }));
+  /* The two flagship venues are always indexed regardless of rank. Raw swap count
+     is dominated by freshly-launched dust churning through its first hours, which
+     would otherwise push AI/NVDA -- the pool that actually feeds the vault -- off
+     the list entirely. */
+  const PINNED = [C.AI_NVDA_POOL, C.AI_USDG_POOL];
+  const pinned = PINNED
+    .map((id) => active.find((p) => p.poolId === id) || all.find((p) => p.poolId === id))
+    .filter(Boolean);
+  selected = [...pinned, ...active.filter((p) => !PINNED.includes(p.poolId))].slice(0, TOP_FLOW);
+  console.log(`  pinned flagships: ${pinned.map((p) => "AI/" + (p.pairSymbol || "?")).join(", ")}`);
+}
+
+step(`Indexing buy/sell flow for ${selected.length} pools`);
 const flow = await indexFlow(selected, latest, tm, { prev });
 
-step("Measuring real cross-routing (κ)");
-// Routing wants depth (several days) but only over pools that actually trade.
-const { txIndex, routingFrom } = await buildRoutingIndex(all, active, latest, {
-  window: ROUTING_WINDOW,
-  seed: seedTxIndex, seedFrom,
-});
-const routing = analyseRouting(txIndex, all, tm);
-console.log(`  measured cross-routing = ${(routing.measuredKappaRatio * 100).toFixed(2)}% of direct volume -> regime "${routing.impliedRegime}"`);
-console.log(`  ${routing.transactions.crossRouting.toLocaleString()} cross-routing txs of ${routing.transactions.multiLeg.toLocaleString()} multi-leg`);
+let routing = null, routingFrom = null;
+if (!fast) {
+  step("Measuring real cross-routing (κ)");
+  // Routing wants depth (several days) but only over pools that actually trade.
+  const built = await buildRoutingIndex(all, active, latest, {
+    window: ROUTING_WINDOW,
+    seed: seedTxIndex, seedFrom,
+  });
+  routingFrom = built.routingFrom;
+  routing = analyseRouting(built.txIndex, all, tm);
+  console.log(`  measured cross-routing = ${(routing.measuredKappaRatio * 100).toFixed(2)}% of direct volume -> regime "${routing.impliedRegime}"`);
+  console.log(`  ${routing.transactions.crossRouting.toLocaleString()} cross-routing txs of ${routing.transactions.multiLeg.toLocaleString()} multi-leg`);
+}
 
 step("Indexing burn / lock / vault ledger");
 const burns = await indexBurns(latest, tm, { prev: flag("rebuild") ? null : readData("burns.json") });
@@ -133,14 +160,17 @@ writeData("meta.json", {
     aiNvdaPool: C.AI_NVDA_POOL, aiUsdgPool: C.AI_USDG_POOL,
   },
   hookPermissions: hookPermissions(C.LONG_HOOK),
-  poolCounts: { withAI: all.length, active: active.length, indexed: selected.length },
+  mode: fast ? "fast" : (quick ? "quick" : deep ? "deep" : "standard"),
+  poolCounts: fast
+    ? { ...(readData("meta.json")?.poolCounts || {}), indexed: selected.length }
+    : { withAI: all.length, active: active.length, indexed: selected.length },
   rpcCalls: rpcCalls(),
   buildSeconds: Math.round((Date.now() - t0) / 1000),
 });
-writeData("pools.json", { updatedAt: now, pools: active.slice(0, 250) });
+if (!fast) writeData("pools.json", { updatedAt: now, pools: active.slice(0, 250) });
 writeData("flow.json", { updatedAt: now, windows, pools: flowOut });
 writeData("burns.json", burns);
-writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, ...routing });
+if (routing) writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, ...routing });
 writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape });
 store.save();
 
@@ -149,7 +179,7 @@ store.save();
    step -- a single popular token can have dozens of venues and a heavy tape -- and
    it is the least critical surface. Flow, burn and routing must not sit unwritten
    behind it. The page treats bridges.json as optional for the same reason. */
-if (!flag("no-bridges")) {
+if (!fast && !flag("no-bridges")) {
   step("Analysing bridges and AI-pair share");
   try {
     const bridges = await analyseBridges(active, latest, tm, {

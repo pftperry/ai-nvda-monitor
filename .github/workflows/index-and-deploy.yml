@@ -62,7 +62,19 @@ jobs:
         continue-on-error: true
         timeout-minutes: 75
         run: |
-          case "${{ github.event.inputs.mode }}" in
+          MODE="${{ github.event.inputs.mode }}"
+          # Scheduled runs pick their own depth. Ranking pool activity and building
+          # the routing index both re-read a trailing window and cannot be made
+          # incremental, so they dominate a refresh — but they measure things that
+          # move over days. Running them every five minutes buys nothing. So the
+          # frequent run does only what changes continuously (flow, burns, price),
+          # and the top of each hour refreshes the slow-moving figures.
+          if [ -z "$MODE" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            if [ "$(date -u +%M)" -lt 5 ]; then MODE="standard"; else MODE="fast"; fi
+            echo "scheduled run -> $MODE"
+          fi
+          case "$MODE" in
+            fast)    node src/indexer.mjs --fast --top 8 ;;
             quick)   node src/indexer.mjs --quick ;;
             deep)    node src/indexer.mjs --top 18 ;;
             # Discards stored series and re-derives every bucket. Needed when a
