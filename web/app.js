@@ -768,7 +768,7 @@ function renderBridges() {
       ? "Organic bridges — token existed elsewhere first"
       : "Native launches — created against AI";
     return `<div class="tile"><div class="lbl">${label}</div>
-      <div class="val">${pct(s.aiPairShare, 1)}</div>
+      <div class="val">${pctLevel(s.aiPairShare, 1)}</div>
       <div class="note">${s.tokens} token${s.tokens === 1 ? "" : "s"} · ${compact(s.volumeInAIPools)} on AI vs ${compact(s.volumeElsewhere)} elsewhere</div></div>`;
   }).join("") || `<p class="muted">No bridge data in window.</p>`;
 
@@ -1140,6 +1140,7 @@ function renderInvestor() {
     kappa, sc,
     multNow: mult ? mult.now : null, multMedian: mult ? mult.median : null,
     nvdaPerDay: nv7 / 7, removedPace: rem7 / 7, net7, net7p,
+    organicShare: S.bridges?.byKind?.organic?.tokens ? S.bridges.byKind.organic.aiPairShare : null,
   });
   renderRegime(kappa, sc, capNow, feeAnnual, impliedVol);
   renderValuation(feeAnnual, impliedVol, vols);
@@ -1472,6 +1473,18 @@ function renderVenues() {
     { h: "Swaps", f: (r) => r.p.totalSwaps.toLocaleString() },
   ], rows);
   const paying = rows.filter((r) => r.p.isLongHook).reduce((s, r) => s + r.v, 0);
+  const boner = (S.bridges?.tokens || []).find((t) => /boner/i.test(t.symbol || ""));
+  if (boner) {
+    const el = document.querySelector("#bridgeKinds");
+    if (el) el.insertAdjacentHTML("afterend", takeEl(boner.aiPairShare < 0.30 ? "neg" : "pos",
+      `The circulating thesis rests on one hard number: that the AI/BONER bridge settles
+       <b>35–37%</b> of all BONER trading. Measured here across its ${boner.venues} venues, it is
+       <b>${pctLevel(boner.aiPairShare, 1)}</b>${boner.aiPairShare < 0.30
+        ? ` — under half the claim. That may be decay since the bridge's early peak rather than the
+           figure having been wrong when written, but it is the load-bearing evidence for AI as a hub
+           and it is no longer where the argument needs it to be.`
+        : `, broadly consistent with the claim.`}`));
+  }
   $("#takeVenues").innerHTML = takeEl(paying / total < 0.5 ? "neg" : "pos",
     `Of the last 72 hours of indexed AI volume, <b>${pctLevel(paying / total, 1)}</b> crossed a venue that funds the vault.
      The tolled pool is the oldest and the most expensive; every newer hookless pool competes with it directly on price
@@ -1540,6 +1553,10 @@ function renderRating(parts) {
       s: leakNow == null ? null : (leakPrior == null ? clamp((0.5 - leakNow) * 2) : clamp((leakPrior - leakNow) * 6)),
       v: leakNow == null ? "—" : pctLevel(leakNow, 1) + " leaking",
       why: "drives fees directly; more leakage means less revenue at any volume" },
+    { k: "Organic bridge share", w: 1.5,
+      s: parts.organicShare == null ? null : clamp((parts.organicShare - 0.15) / 0.20),
+      v: parts.organicShare == null ? "—" : pctLevel(parts.organicShare, 1),
+      why: "the thesis's own test: flow AI was not given by construction" },
     { k: "Hub conversion κ", w: 2.0, s: kappa == null ? null : clamp((kappa - sc.base) / (sc.bull - sc.base)),
       v: kappa == null ? "—" : pctLevel(kappa, 1), why: "structural: the thesis converting, or not" },
     { k: "Cash-flow multiple vs own median", w: 2.0,
