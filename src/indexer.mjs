@@ -9,6 +9,7 @@ import { assertTokenMetadata } from "./tokens.mjs";
 import { indexFlow, rollup } from "./tasks/flow.mjs";
 import { analyseRouting } from "./tasks/routing.mjs";
 import { indexDepth } from "./tasks/depth.mjs";
+import { snapshotKpis } from "./tasks/kpis.mjs";
 import { indexBurns } from "./tasks/burns.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
 
@@ -290,6 +291,22 @@ try {
   }
 } catch (e) {
   console.warn(`  depth failed (${e.message}); leaving the previous depth.json in place`);
+}
+
+/* An hourly panel of every rating input beside price, for the study of which of
+   them actually relate to price and how they should be weighted. Runs last, from
+   artifacts already on disk, so it cannot affect anything it measures. Inputs
+   only, never the score -- the weighting is the question, so storing today's
+   answer would make the exercise circular. */
+try {
+  const kpis = snapshotKpis({
+    flow: { pools: flowOut }, burns, routing, bridges: readData("bridges.json"), depth,
+    now: Math.floor(Date.now() / 1000), prior: readData("kpis.json"),
+  });
+  writeData("kpis.json", kpis);
+  console.log(`  kpi panel: ${kpis.rows.length} hourly rows`);
+} catch (e) {
+  console.warn(`  kpi snapshot failed (${e.message}); the panel keeps its previous rows`);
 }
 
 store.save();
