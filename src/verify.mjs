@@ -103,6 +103,40 @@ check("buy/sell counts match bucket totals",
 check("distinct buyers never exceed buy count",
   flow.pools.every((p) => p.hourly.every((h) => h.buyers <= h.buys && h.sellers <= h.sells)));
 check("every pool records a resume cursor", flow.pools.every((p) => p.cursor > 0));
+/* The indexed set must stay diverse. Everything that depends on it -- fee
+   leakage, net flow, the USD price -- is a comparison ACROSS venues, and a set
+   collapsed onto one counterparty still produces confident-looking numbers. A
+   pin rule that over-matched did exactly that: eight slots, seven of them USDG
+   dust, AI/ETH and AI/OPEN gone, and nothing failed. */
+{
+  const counterparties = new Set(flow.pools.map((p) => p.pairToken));
+  check("the indexed set spans several counterparty tokens",
+    counterparties.size >= Math.min(4, flow.pools.length),
+    `${counterparties.size} distinct tokens across ${flow.pools.length} pools`);
+}
+/* A four-order-of-magnitude jump between two adjacent hourly closes is not a
+   price move, it is a units change. This is the check that should have existed when USDG's
+   decimals were corrected: the fix applied to new buckets only, so 205 of 211
+   stored closes stayed 1e12 too small and the 24h change tile read
+   "+1,170,701,449,776x" without anything failing. Incremental indexing makes this
+   a whole class of bug -- a decode fix repairs the future and leaves the past -- so
+   the seam itself is what gets asserted.
+   The threshold is 10,000x, and the first three hours of a pool's life are
+   exempt: a launch can legitimately print an absurd first price before real
+   trading sets a level (AI/OPEN's largest real hourly ratio is 30x, in its
+   opening hour). Every decimals error is a power of ten at least 1e3 and usually
+   1e12, so the gap between "loud price move" and "wrong units" is wide. */
+for (const p of flow.pools) {
+  const closes = p.hourly.filter((h) => h.close > 0).slice(3);
+  let worst = null;
+  for (let i = 1; i < closes.length; i++) {
+    const r = Math.max(closes[i].close / closes[i - 1].close, closes[i - 1].close / closes[i].close);
+    if (!worst || r > worst.r) worst = { r, t: closes[i].t };
+  }
+  check(`AI/${p.pairSymbol || "?"} (${p.poolId.slice(0, 8)}) closes have no units seam`,
+    !worst || worst.r < 10_000,
+    worst ? `largest hour-on-hour ratio ${worst.r < 1000 ? worst.r.toFixed(2) : worst.r.toExponential(1)}x at ${new Date(worst.t * 1000).toISOString()}` : "no prices");
+}
 check("more pools contain AI than are active", meta.poolCounts.withAI > meta.poolCounts.active,
   `${meta.poolCounts.withAI} total vs ${meta.poolCounts.active} active`);
 

@@ -55,11 +55,13 @@
 
     <h2 class="section-title">Where the measured inputs actually sit</h2>
     <div class="card">
-      <h3>Regime scorecard</h3>
+      <h3>Where the inputs actually sit</h3>
       <p class="sub">
-        The circulating valuation model assigns four scenarios and assumes values for its inputs.
-        These are the same inputs, measured on chain. A row reads as the regime whose threshold it
-        has passed — not as a forecast.
+        The structural inputs, measured on chain, each placed in <b>its own</b> measured range rather than
+        against anyone's assumed scenarios. A row says whether this figure is high or low <i>for this asset,
+        lately</i> — not what it will do next. The notes record how one circulating valuation writeup labelled
+        the same inputs; that writeup prompted these questions but its cases are assumptions, and nothing on
+        this page is scored against them.
       </p>
       <div class="scroll"><table id="tRegime" class="regime"></table></div>
       <div id="regimeTake"></div>
@@ -176,7 +178,8 @@
     <div class="card">
       <h3>What the measured revenue supports</h3>
       <p class="sub">
-        Fee run-rate capitalised at the rates the model uses, next to the money-multiple method.
+        Fee run-rate capitalised across a band of discount rates. Only the run-rate is measured; every rate is
+        an assumption, and the spread between them is wider than most of the figures on this page — read the range.
         USD figures use a public aggregator's price and are a convenience, not an on-chain measurement.
       </p>
       <div class="scroll"><table id="tValuation"></table></div>
@@ -303,9 +306,9 @@
     <div class="card" style="margin-top:14px">
       <h3>Measured cross-routing intensity</h3>
       <p class="sub">
-        Cross-routed AI as a share of direct volume. The valuation thesis assigns this by
-        assumption; here it is counted from transactions where AI is a pass-through hop.
-        Markers show that model's four scenario levels.
+        Cross-routed AI as a share of direct volume, counted from transactions where AI is a genuine
+        pass-through hop rather than assumed. Markers are this series' <b>own</b> 10th, 50th and 90th
+        percentiles, so the scale comes from what the token has actually done.
       </p>
       <div class="chart" id="cGauge"></div>
     </div>
@@ -323,7 +326,7 @@
       <div class="card">
         <h3>New AI bridges per day</h3>
         <p class="sub">Pools opened against AI each day that are <b>still trading</b> now; hover for how many
-          opened in total. Formation rate is the thesis signal — but the surviving count is
+          opened in total. Formation rate is the clearest read on whether AI is being adopted as a venue — but the surviving count is
           survivorship-filtered, so older days under-report by however many bridges have since gone quiet.</p>
         <div class="chart" id="cFormation"></div>
       </div>
@@ -336,7 +339,7 @@
         bridge rather than its other venues. Tokens the launchpad created against AI are marked
         <span class="muted">native</span> and sit near 100% by construction — that is a fact about
         how they were minted, not evidence of AI winning flow. The <b>organic</b> rows, where a
-        token had its own venues first and grew an AI pool later, are the ones that carry the thesis.
+        token had its own venues first and grew an AI pool later, are the ones that carry any hub claim.
         Each row’s two volume columns are in <b>that token’s own units</b>, so they are comparable
         down a row but never across rows — summing them produces a number with no meaning. The
         population figure is therefore each token’s own share weighted by the <b>AI</b> moving through

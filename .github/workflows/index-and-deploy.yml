@@ -67,8 +67,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: web/data
-          key: indexer-data-v2-${{ github.run_id }}
-          restore-keys: indexer-data-v2-
+          key: indexer-data-v3-${{ github.run_id }}
+          restore-keys: indexer-data-v3-
 
       # The first run backfills ~59 days from scratch and is the slow one; every run
       # after it resumes from the committed cursor and only scans new blocks.

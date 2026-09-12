@@ -653,7 +653,10 @@ function renderBurn() {
     { lbl: "Total AI burned", val: compact(b.burned), note: `${pctLevel(b.burned / b.genesisSupply, 2)} of genesis supply` },
     { lbl: "Burn rate (7d avg)", val: compact(avg7), note: "AI per day" },
     { lbl: "Vault NVDA reserve", val: nf(b.vault.nvdaBalance, 1), note: `of ${compact(b.nvdaTotalSupply)} NVDA on chain · not redeemable` },
-    { lbl: "Implied fee volume", val: compact(b.impliedAILegVolume), note: `sell-side notional at the measured ${pctLevel(FEE_RATE,2)} fee` },
+    { lbl: "Implied fee volume", val: compact(b.impliedAILegVolume),
+      note: (() => { const fr = measuredFeeRate(); return fr
+        ? `sell-side notional at the measured ${pctLevel(fr, 2)} effective rate`
+        : "sell-side notional — effective rate not measurable yet"; })() },
   ].map((t) => `<div class="tile"><div class="lbl">${t.lbl}</div><div class="val">${t.val}</div><div class="note">${t.note}</div></div>`).join("");
 
   barChart($("#cBurn"), recent, {
@@ -760,15 +763,24 @@ function renderBridges() {
     { lbl: "Active AI bridges", val: `${S.meta.poolCounts.active}`, note: `of ${S.meta.poolCounts.withAI.toLocaleString()} pools that contain AI` },
   ].map((t) => `<div class="tile"><div class="lbl">${t.lbl}</div><div class="val">${t.val}</div><div class="note">${t.note}</div></div>`).join("");
 
+  /* Markers are this series' own quartiles, with the outside writeup's cases kept
+     only as two faint reference ticks. Four borrowed thresholds across the scale made
+     them read as the axis -- as though "bull" were a property of the measurement
+     rather than of someone's assumption. */
+  const kHist = (r.daily || []).map((d) => d.ratio).filter((x) => x != null && isFinite(x)).sort((a, b) => a - b);
+  const kq = (f) => (kHist.length >= 10 ? kHist[Math.min(kHist.length - 1, Math.floor(f * kHist.length))] : null);
+  const ownMarks = [
+    { name: "own low", at: kq(0.1) },
+    { name: "own median", at: kq(0.5) },
+    { name: "own high", at: kq(0.9) },
+  ].filter((m) => m.at != null);
   bulletGauge($("#cGauge"), {
     value: r.measuredKappaRatio, max: Math.max(0.45, r.measuredKappaRatio * 1.2),
     fmt: (v) => pctLevel(v, 1),
     label: "of direct volume cross-routed",
-    markers: [
-      { name: "bear", at: r.scenarios.bear },
-      { name: "base", at: r.scenarios.base },
-      { name: "bull", at: r.scenarios.bull },
-      { name: "x-bull", at: r.scenarios.extraBull },
+    markers: ownMarks.length ? ownMarks : [
+      { name: "ref base", at: r.scenarios.base },
+      { name: "ref bull", at: r.scenarios.bull },
     ],
   });
 
@@ -904,7 +916,8 @@ async function refreshLiveTail() {
     const from = Math.max(S.meta.headBlock + 1, head - 4 * HOUR_BLOCKS);
     if (head <= from) { S.live = null; renderLiveStrip(); return; }
 
-    const pools = S.flow.pools.slice(0, 3);
+    const recent = (p) => p.hourly.slice(-24).reduce((a, h) => a + (h.aiBuy || 0) + (h.aiSell || 0), 0);
+    const pools = [...S.flow.pools].sort((a, b) => recent(b) - recent(a)).slice(0, 3);
     const perPool = await Promise.all(pools.map((p) => liveSwaps(p, from, head).catch(() => [])));
 
     const nowSec = Math.floor(Date.now() / 1000);
@@ -942,7 +955,10 @@ async function refreshLiveTail() {
       imbalance: buy + sell > 0 ? (buy - sell) / (buy + sell) : 0,
       bucketsByPool: Object.fromEntries(Object.entries(bucketsByPool)
         .map(([k, m]) => [k, [...m.values()].sort((x, y) => x.t - y.t)])),
-      pools: pools.map((p) => p.pairSymbol), at: nowSec, priceByPool,
+      pools: pools.map((p, i) => {
+        const dup = pools.some((q, j) => j !== i && q.pairSymbol === p.pairSymbol);
+        return dup ? `${p.pairSymbol} ${p.poolId.slice(0, 6)}` : p.pairSymbol;
+      }), at: nowSec, priceByPool,
       pointsByPool: Object.fromEntries(Object.entries(pointsByPool).map(([k, m]) => [k, [...m.values()].sort((a, b) => a.t - b.t)])),
       lastPrice: last ? last.price : null,
       minutes: Math.max(1, Math.round((head - from) * SEC_PER_BLOCK / 60)),
@@ -981,11 +997,78 @@ function renderLiveStrip() {
    computed from the series it sits under, so it cannot drift out of agreement
    with its own chart. Where a figure is an estimate or a proxy, the text says so. */
 
-const FEE_RATE = 0.007;          // measured: dynamic fee resolves to 7000 pips
+/**
+ * Effective fee rate, divided out of the data rather than assumed.
+ *
+ * The constant here used to be 0.007, on the reasoning that AI/NVDA's dynamic fee
+ * resolves to 7000 pips in the swap logs. Dividing measured fee income by measured
+ * sell volume on the pools that actually carry the hook gives 0.60% pooled over
+ * the last fortnight, and the daily figure ranges 0.27%-0.77%. Three reasons it is
+ * not 0.70%: the per-swap fee in the logs appears to include a chain-level
+ * component the splitter never receives (across sixteen static pools the logged fee
+ * exceeds the pool's configured fee by up to 1000 pips, capped there); the hook now
+ * runs on several pools at different tiers, not just AI/NVDA; and buys pay in NVDA,
+ * so the AI-denominated leg divides by sell volume only.
+ *
+ * So the rate is measured per window. Anything derived from it -- implied notional,
+ * above all -- is then a ratio of two measured quantities instead of one measured
+ * quantity and one borrowed assumption. Returns null rather than a fallback when
+ * there is nothing to divide: a missing number is honest, a stale constant is not.
+ */
+function measuredFeeRate(days = 14) {
+  const b = S.burns, f = S.flow;
+  if (!b?.daily?.length || !f?.pools?.length) return null;
+  const hooked = f.pools.filter((p) => p.isLongHook);
+  if (!hooked.length) return null;
+  const sellByDay = new Map();
+  for (const p of hooked) {
+    for (const h of p.hourly) {
+      const d = Math.floor(h.t / DAY) * DAY;
+      sellByDay.set(d, (sellByDay.get(d) || 0) + (h.aiSell || 0));
+    }
+  }
+  let fees = 0, sells = 0;
+  for (const d of completeDays(b.daily).slice(-days)) {
+    const v = sellByDay.get(d.t);
+    if (!v) continue;
+    fees += (d.burnAI || 0) + (d.lockAI || 0) + (d.platformAI || 0);
+    sells += v;
+  }
+  return sells > 0 ? fees / sells : null;
+}
 const DAY = 86400;
 
 /** A level, not a change: no leading sign. Using pct() here reads as a delta. */
 const pctLevel = (x, d = 1) => (x == null || !isFinite(x) ? "—" : `${(+(x * 100).toFixed(d)).toFixed(d)}%`);
+
+/**
+ * Where does today sit in this asset's own measured range?
+ *
+ * The scoring used to lean on an outside model's four scenarios -- cross-routing
+ * "base" at 23%, "bull" at 34%, and so on. Those are one analyst's assumptions
+ * about a token with two months of history, and wiring them into the headline made
+ * a stranger's spreadsheet the benchmark every measurement was judged against. A
+ * percentile of the asset's own distribution needs no such import: it answers "is
+ * this high or low FOR THIS THING", which is the question a level actually
+ * supports.
+ *
+ * Returns null below a minimum sample, because a percentile over four points is
+ * theatre. Ties count as half, so a flat series lands at the middle rather than at
+ * an arbitrary end.
+ */
+function percentileOf(values, v, minN = 10) {
+  const xs = values.filter((x) => x != null && isFinite(x));
+  if (v == null || !isFinite(v) || xs.length < minN) return null;
+  let below = 0, equal = 0;
+  for (const x of xs) { if (x < v) below++; else if (x === v) equal++; }
+  return (below + equal / 2) / xs.length;
+}
+
+/** Percentile mapped to the -1..+1 the rating works in; median scores zero. */
+const pctlScore = (values, v, minN = 10) => {
+  const p = percentileOf(values, v, minN);
+  return p == null ? null : (p - 0.5) * 2;
+};
 
 /**
  * Drop today's bucket, which is still filling.
@@ -1011,19 +1094,34 @@ function trailing(series, days, pick, endOffset = 0) {
 const trend = (now, prior) => (prior > 0 ? now / prior - 1 : null);
 
 /** Daily AI volume per pool, and for the flagship, from the hourly series. */
+/**
+ * AI/NVDA's share of indexed volume, per day, with the venue count beside it.
+ *
+ * That count matters more than it looks. This share is measured over the pools
+ * indexed in depth, and that set grew from one pool to eight -- so for fifty of the
+ * first sixty days the share is exactly 100%, not because the toll captured
+ * everything but because nothing else was being measured. Ranking today's figure
+ * against a history like that says "lowest ever" when what changed was the
+ * denominator, so callers comparing across time filter on `venues`.
+ */
 function dailyVolumes() {
-  const all = new Map(), main = new Map();
+  const rows = new Map();
   for (const p of S.flow.pools) {
     const isMain = p.poolId === S.meta.contracts.aiNvdaPool;
     for (const h of p.hourly) {
       const d = Math.floor(h.t / DAY) * DAY;
       const v = (h.aiBuy || 0) + (h.aiSell || 0);
-      all.set(d, (all.get(d) || 0) + v);
-      if (isMain) main.set(d, (main.get(d) || 0) + v);
+      if (!(v > 0)) continue;
+      const r = rows.get(d) || { t: d, total: 0, main: 0, pools: new Set() };
+      r.total += v;
+      if (isMain) r.main += v;
+      r.pools.add(p.poolId);
+      rows.set(d, r);
     }
   }
-  return [...all.entries()].sort((a, b) => a[0] - b[0])
-    .map(([t, total]) => ({ t, total, main: main.get(t) || 0, share: total > 0 ? (main.get(t) || 0) / total : 0 }));
+  return [...rows.values()].sort((a, b) => a.t - b.t)
+    .map((r) => ({ t: r.t, total: r.total, main: r.main, venues: r.pools.size,
+      share: r.total > 0 ? r.main / r.total : 0 }));
 }
 
 /** Net AI flow per day across every indexed pool. */
@@ -1083,7 +1181,11 @@ function renderInvestor() {
   const feeSeries = completeDays(b.daily.map((d) => ({ t: d.t, fee: fee(d), burn: d.burnAI || 0 })));
   const fee7 = trailing(feeSeries, 7, (d) => d.fee), fee7p = trailing(feeSeries, 7, (d) => d.fee, 7);
   const feeAnnual = (fee7 / 7) * 365;
-  const impliedVol = (fee7 / 7) / FEE_RATE;
+  /* Implied notional divides measured fees by the measured effective rate, so both
+     sides come from the chain. With the old assumed 0.70% this figure ran about a
+     sixth low. Null when the rate cannot be measured, rather than silently assumed. */
+  const feeRate = measuredFeeRate();
+  const impliedVol = feeRate ? (fee7 / 7) / feeRate : null;
   const feeTrend = trend(fee7, fee7p);
   $("#kpiFee").innerHTML = kpiEl(compact(feeAnnual),
     feeTrend == null ? "" : `${pct(feeTrend, 0)} vs prior 7d`, feeTrend >= 0 ? "up" : "down",
@@ -1091,13 +1193,19 @@ function renderInvestor() {
   lineChart($("#cInvFee"), feeSeries.slice(-30), {
     xKey: "t", yKey: "fee", zeroBase: true, area: true, color: "var(--series-2)", xFmt: dayFmt,
     tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${compact(d.fee)} AI of fees</div>
-      <div class="k">implies ${compact(d.fee / FEE_RATE)} AI of tolled volume</div>`,
+      ${feeRate ? `<div class="k">implies ${compact(d.fee / feeRate)} AI of tolled volume</div>` : ""}`,
   });
   $("#takeFee").innerHTML = takeEl(feeTrend >= 0 ? "pos" : "warn",
     `Fees are running at <b>${compact(feeAnnual)} AI/yr</b> and
      ${feeTrend == null ? "have no prior period to compare" :
        `<b>${feeTrend >= 0 ? "rose" : "fell"} ${pct(Math.abs(feeTrend), 0).replace("+", "")}</b> against the prior week`}.
-     AI-denominated fees are charged on <b>sells only</b> (buys pay in NVDA), so at the measured 0.70% rate this implies <b>${compact(impliedVol)} AI/day</b> of <i>sell-side</i> notional through tolled pools — roughly half the round-trip volume.
+     AI-denominated fees are charged on <b>sells only</b> (buys pay in NVDA).
+     ${impliedVol == null ? "" : `Dividing measured fee income by measured sell volume on the hooked pools gives an
+       effective rate of <b>${pctLevel(feeRate, 2)}</b>, which implies <b>${compact(impliedVol)} AI/day</b> of
+       <i>sell-side</i> notional through tolled pools — roughly half the round-trip volume.
+       <span class="muted">That rate is measured, not the 0.70% the swap logs report per trade: across sixteen
+       static pools the logged fee runs up to 1000 pips above the pool's own fee, so some of it never reaches
+       the splitter.</span>`}
      Because the fee is paid in AI, revenue and burn are the same number seen twice — this line is the
      fundamental floor under the token, and it is the one to watch decay.`);
 
@@ -1141,15 +1249,28 @@ function renderInvestor() {
   } else {
     $("#cInvKappa").innerHTML = `<p class="muted" style="padding:16px 0">Window too short for a trend; the headline figure is the measurement.</p>`;
   }
-  $("#takeKappa").innerHTML = takeEl(kappa >= sc.base ? "pos" : "warn",
+  /* Judged against its own range, with the outside scenarios mentioned second and
+     labelled as someone's assumptions rather than as the scale. */
+  const kOwn = percentileOf(kd.map((d) => d.ratio), kappa);
+  $("#takeKappa").innerHTML = takeEl(kOwn == null ? "warn" : kOwn >= 0.5 ? "pos" : "warn",
     `<b>${pctLevel(kappa, 1)}</b> of direct AI volume is other tokens passing through AI, measured from transactions
-     where AI is a genuine intermediate hop. That sits <b>${regimeWord(kappa, sc)}</b>
-     (bear ${pctLevel(sc.bear, 0)} · base ${pctLevel(sc.base, 0)} · bull ${pctLevel(sc.bull, 0)} · extra-bull ${pctLevel(sc.extraBull, 0)}).
-     The circulating model calls this quantity unmeasurable and assumes it; it is not, and this is the number
-     that decides whether AI becomes infrastructure or stays a trade.`);
+     where AI is a genuine intermediate hop — not assumed, which is the part that matters: this is the number that
+     decides whether AI becomes infrastructure or stays a trade.
+     ${kOwn == null ? "Too little history yet to say whether that is high or low for this asset." :
+       `That is the <b>${Math.round(kOwn * 100)}th percentile</b> of its own measured range over
+        ${kd.length} days, so it is ${kOwn >= 0.75 ? "near the top of" : kOwn >= 0.5 ? "above the middle of"
+        : kOwn >= 0.25 ? "below the middle of" : "near the bottom of"} what this token has actually done.`}
+     <span class="muted">For reference, one circulating valuation writeup assumed cases of
+     ${pctLevel(sc.bear, 0)} / ${pctLevel(sc.base, 0)} / ${pctLevel(sc.bull, 0)} / ${pctLevel(sc.extraBull, 0)} for this input.
+     Those are that author's assumptions about a two-month-old token, shown for comparison only — nothing on this
+     page is scored against them.</span>`);
 
   /* ── 5. fee capture ───────────────────────────────────────────────── */
   const cap = vols.filter((v) => v.total > 0);
+  /* Days with a single indexed venue cannot inform a share comparison -- the share
+     is 100% by construction. Ranking against them reported "lowest in its range"
+     for a figure whose denominator had simply acquired seven more pools. */
+  const capComparable = cap.filter((v) => v.venues > 1);
   const cap7 = cap.slice(-7), cap7p = cap.slice(-14, -7);
   const capNow = cap7.reduce((s, v) => s + v.main, 0) / Math.max(1e-9, cap7.reduce((s, v) => s + v.total, 0));
   const capPrior = cap7p.length ? cap7p.reduce((s, v) => s + v.main, 0) / Math.max(1e-9, cap7p.reduce((s, v) => s + v.total, 0)) : null;
@@ -1200,6 +1321,21 @@ function renderInvestor() {
     kappa, sc,
     multNow: mult ? mult.now : null, multMedian: mult ? mult.median : null,
     nvdaPerDay: nv7 / 7, removedPace: rem7 / 7, net7, net7p,
+    /* Own-history distributions. Every level is scored against where it sits in
+       this asset's own measured range, so no outside assumption sets a threshold. */
+    hist: {
+      kappa: kd.map((d) => d.ratio),
+      leak: (leak?.comparable || []).map((d) => d.leak),
+      feeGrowth: feeSeries.length > 14
+        ? feeSeries.map((_, i) => {
+            if (i < 13) return null;
+            const a = feeSeries.slice(i - 6, i + 1).reduce((x, d) => x + d.fee, 0);
+            const b2 = feeSeries.slice(i - 13, i - 6).reduce((x, d) => x + d.fee, 0);
+            return b2 > 0 ? a / b2 - 1 : null;
+          }).filter((x) => x != null)
+        : [],
+      nvdaPerDay: bDaily.map((d) => d.nvdaIn),
+    },
     organicShare: S.bridges?.byKind?.organic?.tokens
       ? (S.bridges.byKind.organic.weightedShare
          ?? S.bridges.byKind.organic.medianShare
@@ -1207,10 +1343,11 @@ function renderInvestor() {
     organicBasis: S.bridges?.byKind?.organic?.weightedShare != null ? "flow-weighted"
       : S.bridges?.byKind?.organic?.medianShare != null ? "median" : "legacy",
   });
-  renderRegime(kappa, sc, capNow, feeAnnual, impliedVol);
+  renderRegime(kappa, sc, capNow, feeAnnual, impliedVol,
+    { kappa: kd.map((d) => d.ratio), capture: capComparable.map((d) => d.share) });
   renderValuation(feeAnnual, impliedVol, vols);
-  renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak);
-  renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak);
+  renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak, kd.map((d) => d.ratio));
+  renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kd.map((d) => d.ratio));
 }
 
 /**
@@ -1458,18 +1595,28 @@ function renderMultiple(feeSeries) {
  */
 function renderLeak() {
   const DAYS = 30;
+  /* Each day records whether BOTH kinds of venue were actually trading in the
+     indexed set, because otherwise the ratio is structural rather than economic:
+     for the first fifty days only hooked pools were indexed, so leakage reads 0%,
+     and ranking today against that history reports a record high for a figure whose
+     denominator merely acquired seven more pools. Comparisons across time use the
+     `comparable` days only. */
   const perDay = new Map();
   for (const p of S.flow.pools) {
     for (const h of p.hourly) {
-      const d = Math.floor(h.t / DAY) * DAY;
-      const row = perDay.get(d) || { t: d, hooked: 0, hookless: 0 };
       const v = (h.aiBuy || 0) + (h.aiSell || 0);
-      if (p.isLongHook) row.hooked += v; else row.hookless += v;
+      if (!(v > 0)) continue;
+      const d = Math.floor(h.t / DAY) * DAY;
+      const row = perDay.get(d) || { t: d, hooked: 0, hookless: 0, sawHooked: false, sawHookless: false };
+      if (p.isLongHook) { row.hooked += v; row.sawHooked = true; }
+      else { row.hookless += v; row.sawHookless = true; }
       perDay.set(d, row);
     }
   }
   const series = completeDays([...perDay.values()].sort((a, b) => a.t - b.t))
-    .map((r) => ({ ...r, total: r.hooked + r.hookless, leak: (r.hooked + r.hookless) > 0 ? r.hookless / (r.hooked + r.hookless) : 0 }))
+    .map((r) => ({ ...r, total: r.hooked + r.hookless,
+      comparable: r.sawHooked && r.sawHookless,
+      leak: (r.hooked + r.hookless) > 0 ? r.hookless / (r.hooked + r.hookless) : 0 }))
     .slice(-DAYS);
 
   const last = series[series.length - 1];
@@ -1506,27 +1653,38 @@ function renderLeak() {
      This is why revenue fell while total volume did not. It is a <b>structural</b> problem, not a cyclical one:
      v4 pools are permissionless, so the toll can always be undercut by a pool that provides no funding to the protocol.`);
 
-  return { leakNow, worst, series };
+  return { leakNow, worst, series, comparable: series.filter((d) => d.comparable) };
 }
 
-function regimeWord(v, sc) {
-  if (v >= sc.extraBull) return "at or above the model's extra-bull case";
-  if (v >= sc.bull) return "between its bull and extra-bull cases";
-  if (v >= sc.base) return "between its base and bull cases";
-  if (v >= sc.bear) return "between its bear and base cases";
-  return "below even the model's bear case";
-}
-const bandFor = (v, sc) => v >= sc.extraBull ? ["xbull", "extra-bull"] : v >= sc.bull ? ["bull", "bull"]
-  : v >= sc.base ? ["base", "base"] : v >= sc.bear ? ["bear", "bear→base"] : ["bear", "below bear"];
+/* One outside writeup's four cases, kept for comparison and nothing else. They are
+   not a scale: they are one author's assumptions about a token with two months of
+   history, and for a while this page was scoring measurements against them, which
+   made "how is the asset doing" indistinguishable from "how closely does it track a
+   stranger's spreadsheet". Every band a reader sees now comes from the asset's own
+   distribution; these appear once, labelled, as a footnote. */
+const referenceCase = (v, sc) => v >= sc.extraBull ? "extra-bull" : v >= sc.bull ? "bull"
+  : v >= sc.base ? "base" : v >= sc.bear ? "bear→base" : "below bear";
 
-function renderRegime(kappa, sc, capNow, feeAnnual) {
+/** Band from the asset's own measured range. High is good; callers invert if not. */
+function ownBand(values, v) {
+  const p = percentileOf(values, v);
+  if (p == null) return ["na", "no range yet"];
+  const pc = Math.round(p * 100) + "th";
+  if (p >= 0.8) return ["xbull", `${pc} — highest`];
+  if (p >= 0.6) return ["bull", `${pc} — high`];
+  if (p >= 0.4) return ["base", `${pc} — typical`];
+  if (p >= 0.2) return ["bear", `${pc} — low`];
+  return ["bear", `${pc} — lowest`];
+}
+
+function renderRegime(kappa, sc, capNow, feeAnnual, impliedVol, hist = {}) {
   const b = S.burns;
-  const mainSc = { bear: .05, base: .10, bull: .12, extraBull: .12 };  // model's main-pool-share cases
+  const mainSc = { bear: .05, base: .10, bull: .12, extraBull: .12 };  // the same writeup's main-pool-share cases
   const rows = [
-    { k: "Cross-routing κ (vs direct volume)", v: pctLevel(kappa, 1), band: bandFor(kappa, sc),
-      note: "measured from same-tx pass-through hops" },
-    { k: "Fee capture on AI/NVDA", v: pctLevel(capNow, 1), band: bandFor(capNow, mainSc),
-      note: "indexed pools only; model cases 5 / 10 / 12%" },
+    { k: "Cross-routing κ (vs direct volume)", v: pctLevel(kappa, 1), band: ownBand(hist.kappa || [], kappa),
+      note: `measured from same-tx pass-through hops · that writeup called this ${referenceCase(kappa, sc)}` },
+    { k: "Fee capture on AI/NVDA", v: pctLevel(capNow, 1), band: ownBand(hist.capture || [], capNow),
+      note: `indexed pools only · that writeup called this ${referenceCase(capNow, mainSc)}` },
     { k: "Fee run-rate", v: `${compact(feeAnnual)} AI/yr`, band: ["na", "measured"],
       note: "all three splitter legs, annualised from 7d" },
     { k: "NVDA reserve (not redeemable)", v: `${nf(b.vault.nvdaBalance, 1)} NVDA`, band: ["na", "measured"],
@@ -1537,14 +1695,17 @@ function renderRegime(kappa, sc, capNow, feeAnnual) {
   table($("#tRegime"), [
     { h: "Input", f: (x) => x.k },
     { h: "Measured", f: (x) => `<b>${x.v}</b>` },
-    { h: "Reads as", f: (x) => `<span class="band ${x.band[0]}">${x.band[1]}</span>` },
+    { h: "In its own range", f: (x) => `<span class="band ${x.band[0]}">${x.band[1]}</span>` },
     { h: "Note", f: (x) => `<span class="muted">${x.note}</span>` },
   ], rows);
-  $("#regimeTake").innerHTML = takeEl(kappa >= sc.base ? "pos" : "warn",
-    `The two inputs that can be scored against the model land at <b>${bandFor(kappa, sc)[1]}</b> for hub conversion and
-     <b>${bandFor(capNow, mainSc)[1]}</b> for fee capture. Everything else here is a measurement, not a forecast —
-     the model's own scenarios are assumptions, and the point of this table is that three of these five no longer
-     have to be.`);
+  const kP = percentileOf(hist.kappa || [], kappa);
+  $("#regimeTake").innerHTML = takeEl(kP == null ? "warn" : kP >= 0.5 ? "pos" : "warn",
+    `Every figure in this table is measured on chain; none of them is a forecast. The bands say where each one sits
+     in <b>its own</b> history, because that is the only scale the data itself supplies
+     ${kP == null ? "" : `— hub conversion is at its ${Math.round(kP * 100)}th percentile`}.
+     <span class="muted">The notes also give how one circulating valuation writeup labelled these inputs. That writeup
+     prompted the questions this page answers, but its cases are assumptions and nothing here is scored against
+     them — where it and the measurement disagree, the measurement is the evidence.</span>`);
 }
 
 function renderValuation(feeAnnual, impliedVol, vols) {
@@ -1558,9 +1719,12 @@ function renderValuation(feeAnnual, impliedVol, vols) {
 
   const rows = [
     { m: "Fee run-rate (annualised)", ai: `${compact(feeAnnual)} AI`, u: usd(feeAnnual), n: "measured, all three legs" },
-    { m: "Capitalised at 7.5% (bear discount)", ai: `${compact(feeAnnual / 0.075)} AI`, u: usd(feeAnnual / 0.075), n: "yield method" },
-    { m: "Capitalised at 6.0% (base discount)", ai: `${compact(feeAnnual / 0.06)} AI`, u: usd(feeAnnual / 0.06), n: "yield method" },
-    { m: "Capitalised at 5.0% (bull discount)", ai: `${compact(feeAnnual / 0.05)} AI`, u: usd(feeAnnual / 0.05), n: "rate the model gives listed venues with real revenue" },
+    { m: "Capitalised at 7.5%", ai: `${compact(feeAnnual / 0.075)} AI`, u: usd(feeAnnual / 0.075),
+      n: "yield method — the discount rate is an assumption, not a measurement" },
+    { m: "Capitalised at 6.0%", ai: `${compact(feeAnnual / 0.06)} AI`, u: usd(feeAnnual / 0.06),
+      n: "same stream, 1.5 points cheaper: note how far the answer moves" },
+    { m: "Capitalised at 5.0%", ai: `${compact(feeAnnual / 0.05)} AI`, u: usd(feeAnnual / 0.05),
+      n: "a rate typically given to listed venues with durable revenue" },
     { m: "Indexed AI volume, 30d average", ai: `${compact(avgDailyVol)} AI/day`, u: usd(avgDailyVol), n: "indexed pools only — a floor, not the full tape" },
     { m: "Current market cap", ai: `${compact(b.totalSupply)} AI supply`, u: mcap ? `$${compact(mcap)}` : "—", n: `${M.source}, ${M.supplyLive ? "live" : "indexed"} supply` },
   ];
@@ -1576,13 +1740,16 @@ function renderValuation(feeAnnual, impliedVol, vols) {
   $("#takeValuation").innerHTML = takeEl(ratio == null ? "warn" : ratio >= 1 ? "pos" : "neg",
     ratio == null
       ? `No USD price available right now, so only the AI-denominated column is meaningful.`
-      : `On the fee stream alone, capitalised at the base 6%, the measured revenue supports about
+      : `On the fee stream alone, capitalised at 6%, the measured revenue supports about
          <b>$${compact(capBase)}</b> against a market cap of <b>$${compact(mcap)}</b> —
          <b>${ratio >= 1 ? `${ratio.toFixed(2)}× above` : `${(1 / ratio).toFixed(2)}× below`}</b> the current price.
          ${ratio >= 1
             ? "The revenue alone would justify the price, which means the monetary premium is being had for free."
             : "So the price already embeds growth the current fee stream does not cover; you are paying for the hub thesis converting, not for today's cash flow."}
-         Treat this as a floor calculation: it values the toll and ignores both the NVDA reserve and any monetary premium.`);
+         Treat this as a floor calculation: it values the toll and ignores both the NVDA reserve and any monetary premium.
+         <span class="muted">The only measured input here is the fee run-rate. Every discount rate is an assumption —
+         at 7.5% the same stream supports ${usd(feeAnnual / 0.075)} and at 5% it supports ${usd(feeAnnual / 0.05)}, so
+         the rate moves the answer by more than half. Read the spread, not any single row.</span>`);
 }
 
 function renderVenues() {
@@ -1601,16 +1768,22 @@ function renderVenues() {
   ], rows);
   const paying = rows.filter((r) => r.p.isLongHook).reduce((s, r) => s + r.v, 0);
   const boner = (S.bridges?.tokens || []).find((t) => /boner/i.test(t.symbol || ""));
-  if (boner) {
+  if (S.bridges?.byKind?.organic?.tokens) {
+    const org = (S.bridges?.byKind?.organic) || {};
+    const shown = org.weightedShare ?? org.medianShare;
     const host = $("#takeBoner");
-    if (host) host.innerHTML = (takeEl(boner.aiPairShare < 0.30 ? "neg" : "pos",
-      `The circulating thesis rests on one hard number: that the AI/BONER bridge settles
-       <b>35–37%</b> of all BONER trading. Measured here across its ${boner.venues.toLocaleString()} venues, it is
-       <b>${pctLevel(boner.aiPairShare, 1)}</b>${boner.aiPairShare < 0.30
-        ? ` — under half the claim. That may be decay since the bridge's early peak rather than the
-           figure having been wrong when written, but it is the load-bearing evidence for AI as a hub
-           and it is no longer where the argument needs it to be.`
-        : `, broadly consistent with the claim.`}`));
+    if (host) host.innerHTML = (takeEl(shown != null && shown < 0.10 ? "neg" : "warn",
+      `This is the question the hub story turns on, so read the population and not one row.
+       Across the <b>${org.tokens ?? 0}</b> organic bridges measured — tokens that had their own venues before an AI
+       pool existed — AI wins
+       ${shown == null ? "an unmeasured share" : `<b>${pctLevel(shown, 1)}</b> of their trading on a flow-weighted basis`}${org.medianShare == null ? "" :
+       `, with a median of <b>${pctLevel(org.medianShare, 1)}</b> and a range of
+        ${pctLevel(org.minShare ?? 0, 1)}–${pctLevel(org.maxShare ?? 0, 1)}`}. The spread is the finding: the largest
+       organic bridge routes a real fraction through AI while the typical one barely does, so "AI is becoming the
+       hub" is true of one token and not yet of the population.
+       ${boner ? `<span class="muted">For context, a circulating writeup put AI/BONER at 35–37% of all BONER trading.
+       Measured here across its ${boner.venues.toLocaleString()} venues it is ${pctLevel(boner.aiPairShare, 1)} — which is
+       worth knowing, but one token was never the test either way.</span>` : ""}`));
   } else { const host = $("#takeBoner"); if (host) host.innerHTML = ""; }
   $("#takeVenues").innerHTML = takeEl(paying / total < 0.5 ? "neg" : "pos",
     `Of the last 72 hours of indexed AI volume, <b>${pctLevel(paying / total, 1)}</b> crossed a venue that funds the vault.
@@ -1619,17 +1792,24 @@ function renderVenues() {
      which is why it can fall on a day when total volume rises.`);
 }
 
-function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak) {
+function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak, kappaHist = []) {
+  const sorted = kappaHist.filter((x) => x != null && isFinite(x)).sort((a, b) => a - b);
+  const q = (f) => (sorted.length >= 10 ? sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))] : null);
+  const hi = q(0.9), lo = q(0.1);
   const rows = [
     ["Hookless share of AI volume keeps climbing",
      `${leak ? pctLevel(leak.leakNow, 1) : "—"} of volume now pays the vault nothing. This is the live cause of the revenue decline; if it keeps rising, fee-based valuation keeps falling regardless of how well the ecosystem does.`,
      leak && leak.leakNow > 0.5 ? "neg" : "warn"],
-    ["Hub conversion breaks above " + pctLevel(sc.bull, 0),
-     `κ is ${pctLevel(kappa, 1)}. Clearing ${pctLevel(sc.bull, 0)} on a sustained basis would move the thesis from "plausible" to "happening" and is the strongest add signal here.`,
-     kappa >= sc.bull ? "pos" : "warn"],
-    ["Hub conversion falls back under " + pctLevel(sc.bear, 0),
-     `That would mean routers stopped choosing AI as the path. It is the cleanest single disconfirmation of the whole thesis.`,
-     kappa < sc.bear ? "neg" : "pos"],
+    [hi == null ? "Hub conversion breaks to a new high" : `Hub conversion sustains above ${pctLevel(hi, 0)}`,
+     `κ is ${pctLevel(kappa, 1)}${hi == null ? "" : `, against a 90th percentile of ${pctLevel(hi, 1)} over its own history`}.
+      Holding in the top decile of its own range would mean routers are choosing AI as the path more than they
+      ever have — the strongest add signal on this page.`,
+     hi != null && kappa >= hi ? "pos" : "warn"],
+    [lo == null ? "Hub conversion falls to a new low" : `Hub conversion drops under ${pctLevel(lo, 0)}`,
+     `${lo == null ? "" : `That is the bottom decile of its own range. `}It would mean routers stopped choosing AI as the
+      path, which is the cleanest single disconfirmation available — and unlike a price move it cannot be
+      explained away as sentiment.`,
+     lo != null && kappa < lo ? "neg" : "pos"],
     ["Fee run-rate falls two weeks running",
      `Fees ${fee7 >= fee7p ? "rose" : "fell"} this week. Revenue is the floor under the valuation; two consecutive declines means the floor is moving down, not the multiple.`,
      fee7 >= fee7p ? "pos" : "warn"],
@@ -1669,29 +1849,46 @@ function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak) {
  * mechanical correlation as though it were foresight.
  */
 function renderRating(parts) {
-  const { feeTrend, leakNow, leakPrior, kappa, sc, multNow, multMedian, nvdaPerDay, removedPace, net7, net7p } = parts;
+  const { feeTrend, leakNow, leakPrior, kappa, multNow, multMedian, nvdaPerDay, removedPace, net7, net7p } = parts;
   const clamp = (x) => Math.max(-1, Math.min(1, x));   // no single input dominates
+  const H = parts.hist || {};
 
+  /* Every level is scored against its OWN measured history, never against an
+     outside threshold. The thresholds that used to sit here -- cross-routing scored
+     against a "base case" of 23%, organic bridge share against 15% -- came from one
+     circulating valuation writeup. That writeup was a useful prompt, not a
+     benchmark, and wiring its assumptions into the headline meant the rating was
+     really reporting agreement with a stranger's spreadsheet. A percentile of this
+     asset's own distribution answers the question a level can actually support: is
+     this high or low for this thing, lately. Where no history exists yet, the input
+     is shown and left unscored rather than scored against a number someone guessed. */
   const comps = [
-    { k: "Fee run-rate trend", w: 3.0, s: feeTrend == null ? null : clamp(feeTrend / 0.25),
+    { k: "Fee run-rate trend", w: 3.0,
+      s: pctlScore(H.feeGrowth || [], feeTrend),
       v: feeTrend == null ? "—" : pct(feeTrend, 0) + " wk/wk",
-      why: "the only measure with even suggestive forward signal" },
+      why: "scored against its own 60-day range of weekly changes" },
     { k: "Fee capture (toll leakage)", w: 2.5,
-      s: leakNow == null ? null : (leakPrior == null ? clamp((0.5 - leakNow) * 2) : clamp((leakPrior - leakNow) * 6)),
+      s: (() => { const p2 = pctlScore(H.leak || [], leakNow); return p2 == null
+        ? (leakNow == null || leakPrior == null ? null : clamp((leakPrior - leakNow) * 6))
+        : -p2; })(),
       v: leakNow == null ? "—" : pctLevel(leakNow, 1) + " leaking",
-      why: "drives fees directly; more leakage means less revenue at any volume" },
-    { k: "Organic bridge share", w: 1.5,
-      s: parts.organicShare == null ? null : clamp((parts.organicShare - 0.15) / 0.20),
+      why: "high leakage is bad, so its own percentile is inverted" },
+    { k: "Organic bridge share", w: 1.5, s: null,
       v: parts.organicShare == null ? "—"
         : `${pctLevel(parts.organicShare, 1)}${parts.organicBasis ? ` ${parts.organicBasis}` : ""}`,
-      why: "the thesis's own test: flow AI was not given by construction" },
-    { k: "Hub conversion κ", w: 2.0, s: kappa == null ? null : clamp((kappa - sc.base) / (sc.bull - sc.base)),
-      v: kappa == null ? "—" : pctLevel(kappa, 1), why: "structural: the thesis converting, or not" },
+      why: "shown, not scored: measured once per rotation, so it has no trend to rank against" },
+    { k: "Hub conversion κ", w: 2.0,
+      s: pctlScore(H.kappa || [], kappa),
+      v: kappa == null ? "—" : pctLevel(kappa, 1),
+      why: "scored against its own daily range, not an assumed base case" },
     { k: "Cash-flow multiple vs own median", w: 2.0,
       s: multNow && multMedian ? clamp((multMedian - multNow) / multMedian) : null,
       v: multNow ? `${multNow.toFixed(0)}×` : "—", why: "cheap or dear against its own history" },
-    { k: "NVDA reserve accretion", w: 1.0, s: nvdaPerDay == null ? null : (nvdaPerDay > 0 ? clamp(nvdaPerDay / 40) : -0.5),
-      v: nvdaPerDay == null ? "—" : `+${nf(nvdaPerDay, 1)}/day`, why: "compounds regardless of sentiment" },
+    { k: "NVDA reserve accretion", w: 1.0,
+      s: (() => { const p2 = pctlScore(H.nvdaPerDay || [], nvdaPerDay);
+        return p2 != null ? p2 : (nvdaPerDay == null ? null : nvdaPerDay > 0 ? 0.3 : -0.5); })(),
+      v: nvdaPerDay == null ? "—" : `+${nf(nvdaPerDay, 1)}/day`,
+      why: "scored against its own daily range of vault inflow" },
     { k: "Float removal pace", w: 0.5, s: removedPace == null ? null : (removedPace > 0 ? 0.3 : -0.3),
       v: removedPace == null ? "—" : `${compact(removedPace)} AI/day`, why: "real, but far too slow to be a catalyst" },
     { k: "Net flow, 7d", w: 0.5,
@@ -1702,6 +1899,8 @@ function renderRating(parts) {
 
   const scored = comps.filter((c) => c.s != null);
   const total = scored.reduce((s, c) => s + c.w, 0);
+  const allWeight = comps.reduce((s, c) => s + c.w, 0);
+  const unscored = comps.filter((c) => c.s == null);
   const score = total ? scored.reduce((s, c) => s + c.s * c.w, 0) / total : 0;
   const word = score >= 0.25 ? "BULLISH" : score <= -0.25 ? "BEARISH" : "NEUTRAL";
   const cls = score >= 0.25 ? "bull" : score <= -0.25 ? "bear" : "neutral";
@@ -1713,14 +1912,20 @@ function renderRating(parts) {
         <div class="word ${cls}">${word}</div>
         <div class="scope">
           <b>On fundamentals, not price direction.</b> This scores whether the business behind AI is
-          improving — fees, toll capture, hub conversion, the reserve, and how the cash-flow multiple sits
-          against its own history. It is <b>not</b> a price forecast: tested over ~60 days, no KPI here
-          reliably leads price, and flow's strong-looking link to price is mechanical rather than
-          predictive. The Method tab shows the test.
+          improving — fees, toll capture, hub conversion and the reserve — and every input is ranked
+          against <b>its own measured history</b>, so nothing here is judged against an outside analyst's
+          assumed scenarios. Zero means "typical for this asset lately"; ±1 means at the edge of its own
+          60-day range. It is <b>not</b> a price forecast: tested over that window, no KPI here reliably
+          leads price, and flow's strong-looking link to price is mechanical rather than predictive. The
+          Method tab shows the test.
         </div>
       </div>
       <div class="scale"><div class="needle" style="left:calc(${pos.toFixed(1)}% - 1.5px)"></div></div>
       <div class="scale-ends"><span>deteriorating</span><span>score ${score >= 0 ? "+" : ""}${score.toFixed(2)}</span><span>improving</span></div>
+      <div class="coverage">${scored.length} of ${comps.length} inputs scored
+        (${total.toFixed(1)} of ${allWeight.toFixed(1)} weight)${unscored.length === 0 ? "" :
+        ` — ${unscored.map((c) => c.k).join(" and ")} ${unscored.length === 1 ? "has" : "have"} too little
+        measured history to rank, so ${unscored.length === 1 ? "it is" : "they are"} shown rather than scored`}.</div>
       <div class="components">
         ${comps.map((c) => `
           <div class="row">
@@ -1732,9 +1937,14 @@ function renderRating(parts) {
     </div>`;
 }
 
-function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak) {
+function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kappaHist = []) {
   const b = S.burns;
-  const bullish = (net7 >= 0 ? 1 : 0) + (feeTrend >= 0 ? 1 : 0) + (kappa >= sc.base ? 1 : 0);
+  const kMed = (() => {
+    const xs = (kappaHist || []).filter((x) => x != null && isFinite(x)).sort((a, b) => a - b);
+    return xs.length >= 10 ? xs[Math.floor(xs.length / 2)] : null;
+  })();
+  const kappaOk = kMed == null ? kappa > 0 : kappa >= kMed;
+  const bullish = (net7 >= 0 ? 1 : 0) + (feeTrend >= 0 ? 1 : 0) + (kappaOk ? 1 : 0);
   const tone = bullish >= 2 ? "pos" : bullish === 1 ? "" : "neg";
   const lead = bullish >= 2
     ? "The measurable parts of the thesis are holding up."
@@ -1772,7 +1982,8 @@ function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capP
         Over the last 7 days traders were net <b>${net7 >= 0 ? "buyers" : "sellers"}</b> of
         <b>${compact(Math.abs(net7))} AI</b>; fees are running at <b>${compact(feeAnnual)} AI/yr</b>
         (${feeTrend == null ? "no prior week" : `${feeTrend >= 0 ? "up" : "down"} ${pct(Math.abs(feeTrend), 0).replace("+", "")} week over week`});
-        hub conversion measures <b>${pctLevel(kappa, 1)}</b>, ${regimeWord(kappa, sc)}; and
+        hub conversion measures <b>${pctLevel(kappa, 1)}</b>${kMed == null ? "" :
+          `, ${kappa >= kMed ? "above" : "below"} its own ${pctLevel(kMed, 1)} median`}; and
         <b>${pctLevel(removed / b.genesisSupply, 2)}</b> of genesis supply is now destroyed or locked, backed by
         <b>${nf(b.vault.nvdaBalance, 1)} NVDA</b> that has never been withdrawn.
         ${leak ? `The dominant fact right now is that <b>${pctLevel(leak.leakNow, 1)}</b> of the volume on the ${S.flow.pools.length} venues indexed in depth <b>crosses pools that pay the vault nothing</b>, so revenue is falling even though total volume is not — this is venue competition, not weakening demand.` : ""}
@@ -1814,6 +2025,30 @@ function renderMethod() {
       <code>blockTimestamp</code>, so block times are sampled at 250,000-block
       intervals and interpolated. Block production is steady near 0.102 s, keeping error far
       inside the one-hour buckets.</p>
+
+      <p><b style="color:var(--text-primary)">What anything is scored against.</b> Every band, percentile and
+      rating component on this site is ranked against <b>the asset's own measured history</b>. That is a change: an
+      earlier version scored these inputs against the four scenarios in a circulating valuation writeup — a
+      cross-routing "base case" of 23%, a fee-capture "bull case" of 12%, discount rates labelled bear and bull.
+      Those are one author's assumptions about a token with two months of history, and scoring against them meant
+      the headline was really measuring agreement with a spreadsheet. It also inverted readings: fee capture at
+      22.7% counted as <i>extra-bull</i> on that scale while sitting near the bottom of its own range. The writeup
+      is still quoted where it is useful, always labelled as someone's assumption. Where an input has too little
+      history to rank, it is shown and left unscored rather than scored against a guess, and the rating says how
+      much of its weight is actually live.</p>
+
+      <p><b style="color:var(--text-primary)">Comparisons across time.</b> The indexed set grew from one pool to
+      eight, so any share-of-indexed-volume figure has a break in it: before 3 September fee capture reads 100%
+      and leakage 0%, not because the toll captured everything but because nothing else was being measured. Days
+      without at least one venue of each kind are excluded from those comparisons, so a denominator change cannot
+      masquerade as a record high or low.</p>
+
+      <p><b style="color:var(--text-primary)">The effective fee rate is divided out, not assumed.</b> Swap logs
+      report about 7000 pips on the tolled pool, but dividing measured fee income by measured sell volume on the
+      hooked pools gives roughly 0.60% over the last fortnight. Across sixteen static pools the logged per-swap fee
+      exceeds the pool's own configured fee by up to 1000 pips, capped there, so part of what the log reports never
+      reaches the splitter. Anything derived from the rate — implied notional above all — therefore divides one
+      measured quantity by another.</p>
 
       <p><b style="color:var(--text-primary)">Dollars.</b> There is no USD oracle on this chain, so the
       dollar price is the AI/USDG pool's own price: USDG is a dollar stablecoin, which makes that

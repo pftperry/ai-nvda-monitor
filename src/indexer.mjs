@@ -108,14 +108,40 @@ if (fast) {
     knownPools: flag("rebuild") ? null : store.get("poolCatalogue"),
     store,
   }));
-  /* The two flagship venues are always indexed regardless of rank. Raw swap count
+  /* The flagship venues are always indexed regardless of rank. Raw swap count
      is dominated by freshly-launched dust churning through its first hours, which
      would otherwise push AI/NVDA -- the pool that actually feeds the vault -- off
-     the list entirely. */
-  const PINNED = [C.AI_NVDA_POOL, C.AI_USDG_POOL];
+     the list entirely.
+
+     The two busiest AI/USDG venues are pinned rather than one, because USDG is the
+     only dollar quote on this chain and dollar history is the series a holder
+     actually reads. The busiest pool opened on 3 September; a 1.00% pool has
+     traded since 22 July, ranks nowhere near the top on recent activity, and is
+     where forty extra days of dollar price live.
+
+     Two, not all of them: "every pool paired with USDG" is about a hundred and
+     ninety once dormant venues are counted, and pinning that list filled all
+     eight flow slots with USDG dust and evicted AI/ETH, AI/OPEN and AI/HENT
+     entirely. Ranking the ACTIVE ones by swap count picks the two that carry
+     essentially all of the dollar volume and adapts if a third venue takes over. */
+  const usdgVenues = active
+    .filter((p) => p.pairToken === C.USDG)
+    .sort((a, b) => b.swapsInWindow - a.swapsInWindow)
+    .slice(0, 2)
+    .map((p) => p.poolId);
+  const PINNED = [...new Set([C.AI_NVDA_POOL, C.AI_USDG_POOL, ...usdgVenues])];
   const pinned = PINNED
     .map((id) => active.find((p) => p.poolId === id) || all.find((p) => p.poolId === id))
     .filter(Boolean);
+  /* Pins must never crowd out the ranked set. A pin rule that matched more pools
+     than intended silently filled all eight flow slots with USDG dust and evicted
+     AI/ETH, AI/OPEN and AI/HENT -- the run looked healthy and produced a useless
+     index. Half the slots is a generous ceiling for a deliberate pin list. */
+  if (pinned.length > Math.floor(TOP_FLOW / 2)) {
+    throw new Error(
+      `pin rule matched ${pinned.length} pools for ${TOP_FLOW} flow slots; it would crowd out the ranked set ` +
+      `(${pinned.map((p) => p.pairSymbol || p.poolId.slice(0, 8)).join(", ")})`);
+  }
   selected = [...pinned, ...active.filter((p) => !PINNED.includes(p.poolId))].slice(0, TOP_FLOW);
   console.log(`  pinned flagships: ${pinned.map((p) => "AI/" + (p.pairSymbol || "?")).join(", ")}`);
 }

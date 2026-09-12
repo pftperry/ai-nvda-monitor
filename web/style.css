@@ -313,3 +313,6 @@ footer h4 { color: var(--text-secondary); font-size: 12px; margin: 16px 0 7px; t
   .kv div:nth-child(odd) { margin-top: 7px; }
   footer { font-size: 11.5px; }
 }
+
+/* How much of the rating is actually carrying weight. */
+.coverage { margin-top: 8px; font-size: 11px; line-height: 1.5; color: var(--text-muted); }
