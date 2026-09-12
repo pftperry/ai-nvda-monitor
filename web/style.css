@@ -334,3 +334,16 @@ footer h4 { color: var(--text-secondary); font-size: 12px; margin: 16px 0 7px; t
 /* A live reading beside a settled one; the contrast is the information. */
 .livenote { margin-top:7px; font-size:11.5px; line-height:1.5; color: var(--text-secondary); }
 .livenote b { color: var(--text-primary); }
+
+/* "What moved since I last looked" -- the first question anyone opening this on a
+   phone actually has, and previously it took reading eight cards to answer. */
+#sinceLast { margin: 0 0 14px; padding: 11px 13px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-2, transparent); font-size: 12.5px; line-height: 1.6; }
+#sinceLast .hd { font-weight: 600; color: var(--text-primary); margin-bottom: 5px; }
+#sinceLast ul { margin: 0; padding-left: 17px; color: var(--text-secondary); }
+#sinceLast li { margin: 1px 0; }
+#sinceLast b { color: var(--text-primary); }
+#sinceLast .up { color: var(--buy); }
+#sinceLast .down { color: var(--sell); }
+#sinceLast .dismiss { float: right; font-size: 11px; color: var(--text-muted);
+  background: none; border: 0; cursor: pointer; padding: 0 0 0 10px; }

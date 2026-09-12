@@ -1487,6 +1487,20 @@ function renderInvestor() {
   renderValuation(feeAnnual, impliedVol, vols);
   renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak, kd.map((d) => d.ratio));
   renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kd.map((d) => d.ratio));
+
+  /* Once per page load, not on the three-minute refresh: the comparison is against
+     the last time a person looked, and re-snapshotting every cycle would reset the
+     clock while they were still reading. */
+  if (!S.sinceDone) {
+    S.sinceDone = true;
+    try {
+      renderSinceLast({
+        at: Math.floor(Date.now() / 1000),
+        price: marketState().price, feeAnnual, leak: leak ? leak.leakNow : null,
+        kappa, nvda: b.vault.nvdaBalance, score: S.ratingScore, word: S.ratingWord,
+      });
+    } catch { /* a convenience must never blank the tab */ }
+  }
 }
 
 /**
@@ -2073,6 +2087,7 @@ function renderRating(parts) {
   const unscored = comps.filter((c) => c.s == null);
   const score = total ? scored.reduce((s, c) => s + c.s * c.w, 0) / total : 0;
   const word = score >= 0.25 ? "BULLISH" : score <= -0.25 ? "BEARISH" : "NEUTRAL";
+  S.ratingScore = score; S.ratingWord = word;   // read by the since-you-last-looked strip
   const cls = score >= 0.25 ? "bull" : score <= -0.25 ? "bear" : "neutral";
   const pos = ((score + 1) / 2) * 100;
 
@@ -2105,6 +2120,77 @@ function renderRating(parts) {
           </div>`).join("")}
       </div>
     </div>`;
+}
+
+/**
+ * What moved since this browser last looked.
+ *
+ * The first question anyone opening a monitor has is "what changed", and answering
+ * it previously meant reading eight cards and remembering the old numbers. Someone
+ * checking on a phone will not do that, so the page did not really support the
+ * decision it was built for.
+ *
+ * Deliberately per-browser and never sent anywhere: the snapshot is a handful of
+ * numbers in localStorage. Every access is wrapped, because localStorage throws
+ * outright in some contexts (private windows, blocked site data, thumbnailing) and
+ * a convenience must never be able to blank the page. No snapshot, a snapshot from
+ * this hour, or storage that refuses to answer all render nothing at all -- the
+ * strip appears only when it has something to say.
+ */
+const SINCE_KEY = "ainvda.lastSeen.v1";
+const MIN_GAP_MIN = 30;
+
+function readSnapshot() {
+  try { return JSON.parse(localStorage.getItem(SINCE_KEY) || "null"); } catch { return null; }
+}
+function writeSnapshot(snap) {
+  try { localStorage.setItem(SINCE_KEY, JSON.stringify(snap)); } catch { /* nothing to do */ }
+}
+
+function renderSinceLast(now) {
+  const host = $("#sinceLast");
+  if (!host) return;
+  const prev = readSnapshot();
+  writeSnapshot(now);                      // always record, even when nothing is shown
+  if (!prev || !prev.at) { host.hidden = true; return; }
+
+  const mins = Math.round((now.at - prev.at) / 60);
+  if (mins < MIN_GAP_MIN) { host.hidden = true; return; }
+
+  /* Only movement worth a sentence. A threshold per field, because a 0.3% drift in
+     the fee run-rate is noise and a 0.3 move in the rating score is not. */
+  const lines = [];
+  const rel = (label, a, b, min, fmtv) => {
+    if (a == null || b == null || !isFinite(a) || !isFinite(b) || a === 0) return;
+    const d = b / a - 1;
+    if (Math.abs(d) < min) return;
+    lines.push(`<span class="${d >= 0 ? "up" : "down"}">${pct(d, 0)}</span> ${label}, now <b>${fmtv(b)}</b>`);
+  };
+  const abs = (label, a, b, min, fmtv) => {
+    if (a == null || b == null || !isFinite(a) || !isFinite(b)) return;
+    const d = b - a;
+    if (Math.abs(d) < min) return;
+    lines.push(`<span class="${d >= 0 ? "up" : "down"}">${d >= 0 ? "+" : ""}${(d * 100).toFixed(1)}pt</span> ${label}, now <b>${fmtv(b)}</b>`);
+  };
+
+  rel("AI in dollars", prev.price, now.price, 0.02, (v) => "$" + v.toFixed(4));
+  rel("fee run-rate", prev.feeAnnual, now.feeAnnual, 0.05, (v) => compact(v) + " AI/yr");
+  abs("toll leakage", prev.leak, now.leak, 0.02, (v) => pctLevel(v, 1));
+  abs("cross-routing", prev.kappa, now.kappa, 0.02, (v) => pctLevel(v, 1));
+  rel("NVDA in the vault", prev.nvda, now.nvda, 0.01, (v) => nf(v, 1) + " NVDA");
+  if (prev.word && now.word && prev.word !== now.word) {
+    lines.push(`the rating moved from <b>${prev.word}</b> to <b>${now.word}</b>`);
+  } else if (prev.score != null && now.score != null && Math.abs(now.score - prev.score) >= 0.15) {
+    const d = now.score - prev.score;
+    lines.push(`<span class="${d >= 0 ? "up" : "down"}">${d >= 0 ? "+" : ""}${d.toFixed(2)}</span> on the rating score, now <b>${now.score.toFixed(2)}</b>`);
+  }
+
+  if (!lines.length) { host.hidden = true; return; }
+  host.hidden = false;
+  host.innerHTML = `<button class="dismiss" type="button">hide</button>
+    <div class="hd">Since you last looked, ${fmtAge(mins)} ago</div>
+    <ul>${lines.map((l) => "<li>" + l + "</li>").join("")}</ul>`;
+  host.querySelector(".dismiss")?.addEventListener("click", () => { host.hidden = true; });
 }
 
 function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kappaHist = []) {
