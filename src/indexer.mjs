@@ -8,6 +8,7 @@ import { discoverPools, buildRoutingIndex } from "./tasks/pools.mjs";
 import { assertTokenMetadata } from "./tokens.mjs";
 import { indexFlow, rollup } from "./tasks/flow.mjs";
 import { analyseRouting } from "./tasks/routing.mjs";
+import { indexDepth } from "./tasks/depth.mjs";
 import { indexBurns } from "./tasks/burns.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
 
@@ -259,6 +260,38 @@ writeData("flow.json", { updatedAt: now, windows, pools: flowOut });
 writeData("burns.json", burns);
 if (routing) writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, ...routing });
 writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape });
+/* Liquidity depth. Runs on every mode including --fast, because it is cheap after
+   the first pass (ModifyLiquidity is append-only and resumes from a cursor) and
+   because it is the only forward-looking measure here -- a stale order book is
+   worth much less than a stale volume figure. The dollar anchor comes from the
+   busiest AI/USDG pool's own close, the same one the page treats as canonical. */
+step("Measuring liquidity depth");
+let depth = null;
+try {
+  const usdgPool = flowOut
+    .filter((p) => p.pairSymbol === "USDG")
+    .sort((a, b) => b.totalSwaps - a.totalSwaps)[0];
+  const aiUsd = usdgPool?.hourly?.filter((h) => h.close > 0).at(-1)?.close ?? 0;
+  if (!(aiUsd > 0)) {
+    console.log("  no AI/USDG close available, so no dollar anchor; skipping depth");
+  } else {
+    const withState = flowOut.map((p) => {
+      const meta = (all.length ? all : (readData("pools.json")?.pools || []))
+        .find((x) => x.poolId === p.poolId);
+      return { ...p, lastSqrtPriceX96: p.lastSqrtPriceX96 ?? meta?.lastSqrtPriceX96,
+               pairDecimals: p.pairDecimals ?? meta?.pairDecimals };
+    });
+    depth = await indexDepth(withState, latest, aiUsd, {
+      store, windowPct: 0.5, bins: 120,
+      io: { read: readData, write: writeData },
+      budgetSeconds: opt("depth-budget", fast ? 90 : 420),
+    });
+    writeData("depth.json", { updatedAt: now, ...depth });
+  }
+} catch (e) {
+  console.warn(`  depth failed (${e.message}); leaving the previous depth.json in place`);
+}
+
 store.save();
 
 /* Bridges run last, after everything else is already on disk, and cannot take the

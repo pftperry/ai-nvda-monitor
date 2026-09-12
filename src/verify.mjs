@@ -30,6 +30,7 @@ const flow = readData("flow.json");
 const routing = readData("routing.json");
 const bridges = readData("bridges.json");
 const poolsArtifact = readData("pools.json");
+const depth = readData("depth.json");
 
 if (!meta || !burns || !flow) {
   console.error("Missing data artifacts. Run `npm run index` first.");
@@ -244,6 +245,48 @@ if (bridges && bridges.tokens) {
   }
 } else console.log("  --  bridges.json absent (optional)");
 
+console.log("\nLiquidity depth");
+if (depth && depth.pools?.length) {
+  /* Depth is the only forward-looking number on the site, so it gets the same
+     treatment as the backward-looking ones. These assert the geometry rather than
+     the values: bids are quote below spot and asks are AI above it BY DEFINITION,
+     so if that stops holding the side attribution is inverted and the headline
+     points the wrong way -- which is the one failure that would actively mislead. */
+  check("depth bins share one dollars-per-AI grid", depth.gridIsUsdPerAi === true,
+    "pools price AI in different quotes; merging native grids would be meaningless");
+
+  const bidAbove = depth.book.filter((b) => b.p > depth.aiUsd).reduce((s, b) => s + b.bid, 0);
+  const askBelow = depth.book.filter((b) => b.p < depth.aiUsd).reduce((s, b) => s + b.ask, 0);
+  /* A tenth, not a fiftieth. Every pool is binned on ONE dollars-per-AI grid
+     anchored to the AI/USDG price, but pools do not all trade at the same price --
+     fee tiers differ and arbitrage is not instantaneous -- so a venue whose own spot
+     sits under the global one legitimately places a sliver of its asks below the
+     shared line. Measured, that sliver is about 2%. What this check exists to catch
+     is INVERSION, where bid and ask have been swapped and the headline points the
+     wrong way; that reads near 100%, nowhere near the boundary. A threshold tight
+     enough to trip on normal cross-venue spread would just get relaxed the first
+     time it fired, which is how a check stops meaning anything. */
+  check("bids sit below spot and asks above it",
+    bidAbove / Math.max(1, depth.bidUsd) < 0.1 && askBelow / Math.max(1, depth.askUsd) < 0.1,
+    `${(bidAbove / Math.max(1, depth.bidUsd) * 100).toFixed(2)}% of bids above spot, ` +
+    `${(askBelow / Math.max(1, depth.askUsd) * 100).toFixed(2)}% of asks below`);
+
+  check("the imbalance is bids minus asks",
+    Math.abs(depth.imbalanceUsd - (depth.bidUsd - depth.askUsd)) <= 1,
+    `${depth.imbalanceUsd} vs ${depth.bidUsd - depth.askUsd}`);
+
+  const sumBid = depth.pools.reduce((s, p) => s + p.bidUsd, 0);
+  const sumAsk = depth.pools.reduce((s, p) => s + p.askUsd, 0);
+  check("per-venue depth sums to the totals",
+    Math.abs(sumBid - depth.bidUsd) <= depth.pools.length && Math.abs(sumAsk - depth.askUsd) <= depth.pools.length,
+    `${sumBid} vs ${depth.bidUsd}, ${sumAsk} vs ${depth.askUsd}`);
+
+  check("depth is positive and finite",
+    depth.pools.every((p) => p.tvlUsd >= 0 && isFinite(p.tvlUsd) && isFinite(p.bidUsd) && isFinite(p.askUsd)));
+
+  warn("every indexed venue has a replayed tick ladder", !depth.skipped,
+    depth.skipped ? `${depth.skipped} venue(s) not yet replayed; depth understates until they are` : "");
+} else console.log("  --  depth.json absent (optional)");
 console.log(`
 ${checks - failures}/${checks} checks passed${warnings ? `, ${warnings} warning${warnings === 1 ? "" : "s"}` : ""}.`);
 if (failures) {

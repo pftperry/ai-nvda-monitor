@@ -80,6 +80,30 @@
       <div id="takePrice"></div>
     </div>
 
+    <h2 class="section-title">Liquidity depth</h2>
+    <div class="card">
+      <h3>What it costs to move the price</h3>
+      <p class="sub">
+        Every other measure on this page is backward-looking: volume that happened, fees that were taken, flow
+        that already crossed. This one faces forward. Concentrated liquidity sitting <b>below</b> spot is money
+        already committed to buying AI; AI sitting <b>above</b> spot is supply already committed to selling. The
+        gap between them says which direction is cheaper to push, before anyone trades.
+        Rebuilt from every <code>ModifyLiquidity</code> event the pools have ever emitted, so it is measured
+        rather than quoted — two checks confirm the replay: net liquidity across all ticks must come to exactly
+        zero, and the liquidity active at the current tick must equal what the pool reports in its own last swap.
+        <b>Liquidity is not a promise.</b> A position can be withdrawn in one block, so read this as the shape of
+        the book right now, not as support that will be there later.
+      </p>
+      <div id="kpiDepth"></div>
+      <div class="legend">
+        <span><i style="background:var(--buy)"></i>Bids — dollars below spot</span>
+        <span><i style="background:var(--sell)"></i>Asks — AI above spot</span>
+      </div>
+      <div class="chart" id="cDepth"></div>
+      <div id="takeDepth"></div>
+      <div class="scroll"><table id="tDepth"></table></div>
+    </div>
+
     <h2 class="section-title">Leading indicators</h2>
     <div class="grid g2">
       <div class="card">

@@ -406,7 +406,63 @@ const wrapChart = (fn) => (host, ...args) => draw(host, () => fn(host, ...args))
 const divergingBars = wrapChart(_divergingBars);
 const lineChart     = wrapChart(_lineChart);
 const multiLine     = wrapChart(_multiLine);
+/**
+ * The order book, as a wall.
+ *
+ * Bids and asks sit on opposite sides of spot by construction, so one bar per price
+ * bin coloured by side reads better than two stacked series: the eye is looking for
+ * which wall is taller, and stacking invites it to compare totals instead. Spot is
+ * drawn as a line rather than implied by the colour change, because the interesting
+ * cases are exactly the ones where the two sides are lopsided around it.
+ */
+function _depthChart(host, rows, o) {
+  if (rows.length < 2) { host.innerHTML = '<p class="muted" style="padding:20px 0">Not enough depth data.</p>'; return; }
+  const f = frame(host, { height: o.height || 220 });
+  const val = (r) => r.bid + r.ask;
+  const max = maxOf(rows.map(val)) || 1;
+  yAxis(f, 0, max, o.fmt || compact);
+  const bw = f.iw / rows.length;
+  const w = Math.max(1, bw - 1);
+  const g = mk("g");
+  rows.forEach((r, i) => {
+    const v = val(r);
+    if (v <= 0) return;
+    const h = (v / max) * f.ih;
+    g.appendChild(mk("rect", {
+      x: f.padL + i * bw, y: f.padT + f.ih - h, width: w, height: Math.max(1, h),
+      rx: Math.min(3, w / 2), fill: r.bid >= r.ask ? "var(--buy)" : "var(--sell)",
+    }));
+  });
+  f.svg.appendChild(g);
+
+  // Spot, drawn where it actually falls between the bins rather than snapped to one.
+  if (o.spot != null) {
+    const lo = rows[0].p, hi = rows[rows.length - 1].p;
+    if (o.spot > lo && o.spot < hi) {
+      const x = f.padL + ((o.spot - lo) / (hi - lo)) * f.iw;
+      f.svg.appendChild(mk("line", {
+        x1: x, x2: x, y1: f.padT, y2: f.padT + f.ih,
+        stroke: "var(--text-primary)", "stroke-width": 1.5, "stroke-dasharray": "3 3", opacity: .75,
+      }));
+    }
+  }
+
+  const marker = mk("line", { class: "crosshair", y1: f.padT, y2: f.padT + f.ih, x1: 0, x2: 0, opacity: 0 });
+  f.svg.appendChild(marker);
+  const hit = mk("rect", { x: f.padL, y: f.padT, width: f.iw, height: f.ih, fill: "transparent" });
+  onPointer(hit, host, ({ x, y }) => {
+    const i = Math.max(0, Math.min(rows.length - 1, Math.floor((x - f.padL) / bw)));
+    const r = rows[i]; if (!r) return;
+    const cx = f.padL + (i + 0.5) * bw;
+    marker.setAttribute("x1", cx); marker.setAttribute("x2", cx); marker.setAttribute("opacity", 1);
+    showTip(f, host, cx, y, o.tip(r));
+  }, () => { hideTip(f); marker.setAttribute("opacity", 0); });
+  f.svg.appendChild(hit);
+  xLabels(f, rows, "p", o.xFmt || ((v) => `${Number(v).toPrecision(3)}`));
+}
+
 const barChart      = wrapChart(_barChart);
+const depthChart    = wrapChart(_depthChart);
 const groupedBars   = wrapChart(_groupedBars);
 const bulletGauge   = wrapChart(_bulletGauge);
 const shareBars     = wrapChart(_shareBars);
@@ -427,7 +483,7 @@ function table(host, cols, rows) {
 }
 
 /* ── data ───────────────────────────────────────────────────────────────── */
-const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, poolIdx: 0, hours: 24 };
+const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, poolIdx: 0, hours: 24 };
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -448,13 +504,13 @@ async function refreshData() {
     const meta = await loadJSON("meta.json");
     if (!meta || meta.headBlock === S.meta?.headBlock) return;   // nothing newly indexed
     const [flow, burns] = await Promise.all(["flow.json", "burns.json"].map(loadJSON));
-    const [routing, bridges, tape, pools] = await Promise.all(
-      ["routing.json", "bridges.json", "tape.json", "pools.json"].map((f) => loadJSON(f).catch(() => null))
+    const [routing, bridges, tape, pools, depth] = await Promise.all(
+      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json"].map((f) => loadJSON(f).catch(() => null))
     );
     Object.assign(S, {
       meta, flow, burns,
       routing: routing ?? S.routing, bridges: bridges ?? S.bridges,
-      tape: tape ?? S.tape, pools: pools ?? S.pools,
+      tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth,
     });
     renderAll();
     refreshLiveTail();   // the live window starts at the new head, so re-scope it
@@ -1463,6 +1519,7 @@ function renderInvestor() {
      outside totalSupply, vault AI still exists inside it. They are near-identical in size only because the fee splits 1:1.</span>`);
 
   renderPrice(feeSeries);
+  try { renderDepth(); } catch { /* depth is optional; never blank the tab */ }
   const leak = renderLeak();
   renderVenues();
   const mult = renderMultiple(feeSeries);
@@ -2205,6 +2262,70 @@ function renderSinceLast(now) {
   host.querySelector(".dismiss")?.addEventListener("click", () => { host.hidden = true; });
 }
 
+/**
+ * Liquidity depth, and the imbalance a holder can act on.
+ *
+ * The imbalance is deliberately the headline and the chart is the evidence: the
+ * question is "which way is cheaper to push", and a wall of bars answers that only
+ * after you have squinted at it. Signed with pctOrMult-style care -- buyside and
+ * sellside are named rather than left as a sign, because "+$1.1M" tells you nothing
+ * about direction unless you already know the convention.
+ */
+function renderDepth() {
+  const d = S.depth;
+  if (!d || !d.pools?.length) {
+    $("#kpiDepth").innerHTML = `<p class="muted">Liquidity depth not measured yet.</p>`;
+    for (const id of ["#cDepth", "#tDepth", "#takeDepth"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    return;
+  }
+  const buy = d.imbalanceUsd >= 0;
+  const side = buy ? "buyside" : "sellside";
+  const pctOfBook = d.bidUsd + d.askUsd > 0 ? Math.abs(d.imbalanceUsd) / (d.bidUsd + d.askUsd) : 0;
+
+  $("#kpiDepth").innerHTML = kpiEl(`$${compact(Math.abs(d.imbalanceUsd))}`,
+    `${side} imbalance`, buy ? "up" : "down",
+    `within \u00b1${pctLevel(d.windowPct, 0)} of spot, across ${d.pools.length} venues`)
+    + `<div class="livenote">Bids <b>$${compact(d.bidUsd)}</b> against asks <b>$${compact(d.askUsd)}</b>
+       \u00b7 ${pctLevel(pctOfBook, 0)} of the book in that window sits on the ${side}
+       \u00b7 total depth TVL <b>$${compact(d.tvlUsd)}</b>${d.skipped ? ` \u00b7 <span class="warnline">${d.skipped} venue(s) not yet replayed</span>` : ""}</div>`;
+
+  depthChart($("#cDepth"), d.book, {
+    spot: d.pools[0]?.spotUsd ?? d.aiUsd,
+    fmt: (v) => `$${compact(v, 0)}`,
+    xFmt: (v) => `$${Number(v).toPrecision(3)}`,
+    tip: (r) => `<div class="k">$${Number(r.p).toPrecision(4)} per AI</div>
+      ${r.bid > 0 ? `<div><span style="color:var(--buy)">\u25cf</span> bids $${compact(r.bid)}</div>` : ""}
+      ${r.ask > 0 ? `<div><span style="color:var(--sell)">\u25cf</span> asks $${compact(r.ask)}</div>` : ""}`,
+  });
+
+  table($("#tDepth"), [
+    { h: "Venue", f: (p) => `AI / ${p.pair || "?"}` },
+    { h: "Fee", f: (p) => (p.fee > 100000 ? "dynamic" : pctLevel((p.fee || 0) / 1e6, 2)) },
+    { h: "Depth TVL", f: (p) => `$${compact(p.tvlUsd)}` },
+    { h: "Bids", f: (p) => `$${compact(p.bidUsd)}` },
+    { h: "Asks", f: (p) => `$${compact(p.askUsd)}` },
+    { h: "Lean", f: (p) => {
+        const t = p.bidUsd + p.askUsd;
+        if (!t) return "\u2014";
+        const s = (p.bidUsd - p.askUsd) / t;
+        return `<span class="band ${s >= 0 ? "bull" : "bear"}">${s >= 0 ? "bid" : "ask"} ${pctLevel(Math.abs(s), 0)}</span>`;
+      } },
+  ], d.pools);
+
+  const top = d.pools[0];
+  $("#takeDepth").innerHTML = takeEl(buy ? "pos" : "neg",
+    `Within <b>\u00b1${pctLevel(d.windowPct, 0)}</b> of spot there is <b>$${compact(d.bidUsd)}</b> of committed buying
+     against <b>$${compact(d.askUsd)}</b> of committed selling \u2014 a <b>$${compact(Math.abs(d.imbalanceUsd))} ${side}</b>
+     imbalance. ${buy
+       ? `The book is thicker underneath than overhead, so equal size moves the price further up than down.`
+       : `The book is thicker overhead than underneath, so equal size moves the price further down than up.`}
+     ${top ? `Most of it sits on <b>AI / ${top.pair}</b> ($${compact(top.tvlUsd)} of $${compact(d.tvlUsd)}).` : ""}
+     <span class="muted">This is cost-to-move, not a forecast, and it is not a floor: liquidity providers can
+     withdraw in a single block, and a wall that is not there when you trade was never support. Measured on the
+     ${d.pools.length} venues indexed in depth, which excludes any Uniswap v3 pools \u2014 this chain has some, and
+     they are not in this figure.</span>`);
+}
+
 function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kappaHist = []) {
   const b = S.burns;
   const kMed = (() => {
@@ -2401,10 +2522,10 @@ async function boot() {
     const [meta, flow, burns] = await Promise.all(
       ["meta.json", "flow.json", "burns.json"].map(loadJSON)
     );
-    const [routing, bridges, tape, pools] = await Promise.all(
-      ["routing.json", "bridges.json", "tape.json", "pools.json"].map((f) => loadJSON(f).catch(() => null))
+    const [routing, bridges, tape, pools, depth] = await Promise.all(
+      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json"].map((f) => loadJSON(f).catch(() => null))
     );
-    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools });
+    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth });
   } catch (e) {
     $("#boot").remove();
     $("#bootErr").innerHTML = `<div class="err"><b>Could not load indexed data.</b><br>
