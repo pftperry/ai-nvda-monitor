@@ -28,8 +28,19 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
      is bounded and the full set converges over several runs instead of never
      finishing. A slightly stale bridge figure is worth far more than a perpetually
      absent one. */
+  /* A time budget on top of the per-run token cap, because the cap bounds the
+     number of tokens and not the work: a token with 1,100 venues costs orders of
+     magnitude more than one with three, and a run that drew four expensive ones
+     took fifty minutes. That matters beyond this step -- the workflow holds a
+     single concurrency lock, so a long run starves the five-minute refresh the
+     whole site is built around (measured: a 1h52m run left a four-hour gap in the
+     schedule). When the budget is spent we stop STARTING tokens; the one in flight
+     finishes, the rest carry forward, and the rotation converges over more runs
+     instead of blocking the fast path. */
   const store = opts.store;
   const perRun = opts.perRun ?? 4;
+  const budgetMs = (opts.budgetSeconds ?? 600) * 1000;
+  const startedAt = Date.now();
   const priorTokens = new Map((opts.prior?.tokens || []).map((t) => [t.token, t]));
   const venueCache = (store && store.get("bridgeVenues")) || {};
 
@@ -46,7 +57,9 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
   log(`  ${candidates.length} candidate tokens; refreshing ${queue.length} this run, carrying the rest forward`);
 
   const out = [];
+  let skippedForTime = 0;
   for (const c of queue) {
+    if (out.length && Date.now() - startedAt > budgetMs) { skippedForTime++; continue; }
     const T = c.pairToken;
     const cached = venueCache[T];
     const vFrom = cached?.cursor ? Math.max(GENESIS_BLOCK, cached.cursor + 1) : GENESIS_BLOCK;
@@ -124,6 +137,9 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
      rather than only the slice this run happened to reach. Each row states when it
      was last measured, so a stale one is visible as stale rather than passed off
      as current. */
+  if (skippedForTime) {
+    log(`    time budget of ${Math.round(budgetMs / 1000)}s spent after ${out.length} token(s); ${skippedForTime} deferred to the next run`);
+  }
   const refreshed = new Set(out.map((r) => r.token));
   for (const [tok, row] of priorTokens) if (!refreshed.has(tok)) out.push(row);
   if (store) store.set("bridgeVenues", venueCache);

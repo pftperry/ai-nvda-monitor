@@ -213,6 +213,8 @@ if (!fast && !flag("no-bridges")) {
       // A few tokens per run, rotating oldest-first: bounded work that converges
       // over successive runs rather than timing out trying to do everything.
       perRun: opt("bridges-per-run", deep ? 8 : 4),
+      // Deep runs are the ones started on purpose, so they may take their time.
+      budgetSeconds: opt("bridges-budget", deep ? 2400 : 600),
       prior: flag("rebuild") ? null : readData("bridges.json"),
       // Formation needs the pools that are dormant too, or the rate it reports is
       // survivorship-filtered: `active` excludes anything that stopped trading, so

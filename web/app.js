@@ -678,10 +678,21 @@ function renderFloat() {
   const b = S.burns;
   const removed = b.burned + b.vault.aiBalance;
   $("#floatTiles").innerHTML = [
-    { lbl: "Permanently removed", val: compact(removed), note: `${pctLevel(removed / b.genesisSupply, 2)} of genesis — burned + vault-locked` },
-    { lbl: "Locked as pool inventory", val: compact(b.poolManagerAI), note: `${pctLevel(b.poolManagerAI / b.totalSupply, 2)} of supply sitting in v4 pools` },
-    { lbl: "Effective float", val: compact(b.effectiveFloat), note: "supply less vault and pool inventory" },
-    { lbl: "Float / supply", val: pctLevel(b.effectiveFloat / b.totalSupply, 1), note: "what can actually change hands" },
+    /* Two denominators live on this tab and they are not interchangeable.
+       Removal is measured against the GENESIS mint, because burned AI has already
+       left total supply and dividing by what remains would understate it. Holdings
+       are measured against CURRENT supply, because that is what exists to hold.
+       Both are right; leaving either unlabelled is what made one screen show a
+       float of 96.7% beside a chart segment reading 95.8%. So each note names its
+       base. */
+    { lbl: "Permanently removed", val: compact(removed),
+      note: `${pctLevel(removed / b.genesisSupply, 2)} of the ${compact(b.genesisSupply)} genesis mint — burned + vault-locked` },
+    { lbl: "Locked as pool inventory", val: compact(b.poolManagerAI),
+      note: `${pctLevel(b.poolManagerAI / b.totalSupply, 2)} of current supply, sitting in v4 pools` },
+    { lbl: "Effective float", val: compact(b.effectiveFloat),
+      note: "current supply less vault and pool inventory" },
+    { lbl: "Float / supply", val: pctLevel(b.effectiveFloat / b.totalSupply, 1),
+      note: `of the ${compact(b.totalSupply)} in existence — what can change hands` },
   ].map((t) => `<div class="tile"><div class="lbl">${t.lbl}</div><div class="val">${t.val}</div><div class="note">${t.note}</div></div>`).join("");
 
   shareBars($("#cWaterfall"), [
@@ -1210,6 +1221,50 @@ function usdPool() {
 }
 
 /**
+ * Dollar history, stitched across every AI/USDG venue.
+ *
+ * The busiest USDG pool opened on 3 September, so reading price from it alone
+ * threw away the dollar history that already existed: an older 1.00% AI/USDG pool
+ * has been trading since 22 July. Both quote AI in the same stablecoin, so the
+ * earlier pool's closes are the same measurement on a thinner venue, not a
+ * different unit — and an investor asking what AI has done in dollars wants the
+ * fifty days, not the nine.
+ *
+ * The splice is conditional, not assumed. Where the two overlap they must agree:
+ * if the median ratio across shared hours is off by more than a tenth, the venues
+ * are not telling the same story (or one predates a decoding fix) and the older
+ * leg is dropped rather than welded on. Inside an hour both have, the busier
+ * pool wins, because that is where the price is actually set.
+ */
+function usdSeries() {
+  const pools = S.flow.pools.filter((p) => p.pairSymbol === "USDG" && p.hourly.length);
+  if (!pools.length) return { hrs: [], pool: null, spliced: 0, rejected: 0 };
+  const recent = (p) => p.hourly.slice(-72).reduce((s, h) => s + (h.aiBuy || 0) + (h.aiSell || 0), 0);
+  const ranked = [...pools].sort((a, b) => recent(b) - recent(a));
+  const primary = ranked[0];
+  const byT = new Map(primary.hourly.filter((h) => h.close > 0).map((h) => [h.t, h]));
+
+  let spliced = 0, rejected = 0;
+  for (const other of ranked.slice(1)) {
+    const own = other.hourly.filter((h) => h.close > 0);
+    const ratios = [];
+    for (const h of own) { const m = byT.get(h.t); if (m) ratios.push(h.close / m.close); }
+    if (ratios.length >= 3) {
+      ratios.sort((a, b) => a - b);
+      const med = ratios[Math.floor(ratios.length / 2)];
+      if (!(med > 0.9 && med < 1.1)) { rejected++; continue; }
+    } else if (ratios.length) {
+      rejected++; continue;                 // too little overlap to trust the weld
+    }
+    for (const h of own) if (!byT.has(h.t)) { byT.set(h.t, { ...h, spliced: true }); spliced++; }
+  }
+  return {
+    hrs: [...byT.values()].sort((a, b) => a.t - b.t),
+    pool: primary, spliced, rejected, venues: ranked.length,
+  };
+}
+
+/**
  * The single source of truth for price, supply and market cap.
  *
  * These were derived three different ways: the header used a live supply call
@@ -1252,7 +1307,8 @@ function renderPrice(feeSeries) {
   const pool = usdPool();
   if (!pool) { $("#kpiPrice").innerHTML = `<p class="muted">No AI/USDG venue indexed.</p>`; return null; }
 
-  const hrs = pool.hourly.filter((h) => h.close > 0);
+  const U = usdSeries();
+  const hrs = U.hrs;
   if (!hrs.length) { $("#kpiPrice").innerHTML = `<p class="muted">No priced hours yet.</p>`; return null; }
   const last = hrs[hrs.length - 1];
   const at = (hoursAgo) => {
@@ -1269,10 +1325,17 @@ function renderPrice(feeSeries) {
      one of those rendered "+139,740,061,052,265% 24h" on screen. Implausible
      comparisons are withheld, because an absurd number is still read as a number. */
   const sane = (h) => (h && px && h / px > 0.05 && h / px < 20 ? h : null);
-  const raw24 = at(24), raw168 = at(168);
-  const p24 = sane(raw24), p7d = sane(raw168);
-  const historySuspect = (raw24 && !p24) || (raw168 && !p7d);
+  const raw24 = at(24), raw168 = at(168), raw720 = at(720);
+  const p24 = sane(raw24), p7d = sane(raw168), p30d = sane(raw720);
+  const historySuspect = (raw24 && !p24) || (raw168 && !p7d) || (raw720 && !p30d);
   const c24 = p24 ? px / p24 - 1 : null, c7 = p7d ? px / p7d - 1 : null;
+  const c30 = p30d ? px / p30d - 1 : null;
+  const spanOf = (rows) => {
+    if (rows.length < 2) return "one hour";
+    const secs = rows[rows.length - 1].t - rows[0].t;
+    const days = Math.round(secs / 86400);
+    return days >= 1 ? `${days} days` : `${Math.max(1, Math.round(secs / 3600))} hours`;
+  };
   const mcap = M.mcap ?? px * b.totalSupply;
   const money = (v) => (v < 0.01 ? `$${v.toExponential(3)}` : `$${v.toFixed(4)}`);
 
@@ -1290,8 +1353,10 @@ function renderPrice(feeSeries) {
   /* Chart = settled hourly history + the live five-minute tail. Without the tail
      the line simply stops at the last indexed hour, which on a page that calls
      itself a monitor reads as broken rather than as "not yet indexed". */
-  const livePts = (S.live?.pointsByPool?.[pool.poolId] || []).filter((pt) => pt.t > (hrs.at(-1)?.t || 0));
-  const chartRows = [...hrs.slice(-24 * 30), ...livePts];
+  const onScale = hrs.filter((h) => sane(h.close) != null);
+  const offScale = hrs.length - onScale.length;
+  const livePts = (S.live?.pointsByPool?.[pool.poolId] || []).filter((pt) => pt.t > (onScale.at(-1)?.t || 0));
+  const chartRows = [...onScale.slice(-24 * 30), ...livePts];
   lineChart($("#cInvPrice"), chartRows, {
     xKey: "t", yKey: "close", color: (c7 ?? 0) >= 0 ? "var(--buy)" : "var(--sell)", area: true,
     fmt: (v) => (v < 0.01 ? v.toExponential(1) : `$${v.toFixed(3)}`),
@@ -1310,13 +1375,20 @@ function renderPrice(feeSeries) {
   const suspectNote = historySuspect
     ? ` <span class="muted">Price history before the last re-index is on a different scale and is being withheld until it is re-derived; the current price is unaffected.</span>`
     : "";
+  const scaleNote = offScale
+    ? ` <span class="muted">${offScale.toLocaleString()} earlier hours are off-scale against the current price and are left off the chart until they are re-derived.</span>`
+    : "";
+  const splicedShown = onScale.filter((h) => h.spliced).length;
+  const sourceNote = splicedShown
+    ? ` <span class="muted">Dollar history spans ${spanOf(onScale)} across ${U.venues} AI/USDG venues: the busiest sets the current price, and ${splicedShown.toLocaleString()} earlier hours come from the older pool, accepted only because the two agree where they overlap.</span>`
+    : ` <span class="muted">Dollar history spans ${spanOf(onScale)} from the busiest AI/USDG venue.${U.rejected ? ` ${U.rejected} other USDG venue(s) disagreed in the overlap and were left out.` : ""}</span>`;
   $("#takePrice").innerHTML = takeEl(disagrees ? "warn" : historySuspect ? "warn" : (c7 ?? 0) >= 0 ? "pos" : "neg",
     disagrees
       ? `<b>On-chain and aggregator prices disagree materially</b> (${money(px)} vs $${agg.toPrecision(4)}).
          Treat both as suspect until reconciled; this normally means a token's decimals or the chosen pool is wrong.`
-      : `AI is <b>${money(px)}</b>, a market cap of <b>$${compact(mcap)}</b>${c24 == null ? "" : `, <b>${pct(c24, 1)}</b> over 24h`}${c7 == null ? "" : ` and <b>${pct(c7, 1)}</b> over 7 days`}.
+      : `AI is <b>${money(px)}</b>, a market cap of <b>$${compact(mcap)}</b>${c24 == null ? "" : `, <b>${pct(c24, 1)}</b> over 24h`}${c7 == null ? "" : ` and <b>${pct(c7, 1)}</b> over 7 days`}${c30 == null ? "" : `, <b>${pct(c30, 1)}</b> over 30 days`}.
          ${feeChg == null ? "" : `Fees over the same week ${feeChg >= 0 ? "rose" : "fell"} <b>${pctLevel(Math.abs(feeChg), 0)}</b>, so price is ${verdict}.`}
-         ${agg ? `<span class="muted">Aggregator cross-check: $${agg.toPrecision(4)}.</span>` : ""}${suspectNote}`);
+         ${agg ? `<span class="muted">Aggregator cross-check: ${agg.toPrecision(4)}.</span>` : ""}${suspectNote}${scaleNote}${sourceNote}`);
   return { px, mcap };
 }
 
@@ -1672,7 +1744,8 @@ function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capP
     : diverges
       ? `<b>Right now that has flipped:</b> the last ${L.minutes} minutes show net
          ${L.net >= 0 ? "buying" : "selling"} of <b>${compact(Math.abs(L.net))} AI</b>, against the week's
-         net ${net7 >= 0 ? "buying" : "selling"}. One hour is not a trend, but a turn shows here first.`
+         net ${net7 >= 0 ? "buying" : "selling"}. ${L.minutes < 90 ? "An hour" : Math.round(L.minutes / 60) + " hours"} is
+         not a trend against seven days, but a turn shows here first.`
       : `The last ${L.minutes} minutes agree with the week: net ${L.net >= 0 ? "buying" : "selling"} of
          <b>${compact(Math.abs(L.net))} AI</b>.`;
 
@@ -1732,11 +1805,22 @@ function renderMethod() {
       intervals and interpolated. Block production is steady near 0.102 s, keeping error far
       inside the one-hour buckets.</p>
 
-      <p><b style="color:var(--text-primary)">Known limits.</b> Volumes are denominated in AI and in each pool's
-      quote token, not converted to USD — the chain has no single reliable USD oracle and
-      mixing one in would silently distort history. AI-pair share is measured over a recent
-      window, not all time. Pool inventory held by the PoolManager is an aggregate across all
-      pools, so it is attributed to AI in total rather than per pool.</p>
+      <p><b style="color:var(--text-primary)">Dollars.</b> There is no USD oracle on this chain, so the
+      dollar price is the AI/USDG pool's own price: USDG is a dollar stablecoin, which makes that
+      pool's ratio a dollar quote with nothing interpolated and no aggregator in the path. Two limits
+      follow. It assumes USDG holds its peg, which is not verified here. And it only exists back to
+      <b>3 September 2026</b>, when that pool opened — before then there is no on-chain dollar price
+      for AI at all, which is why history further back is shown in NVDA and in each pool's own quote
+      token. A public aggregator's quote sits beside it purely as a cross-check; if the two diverge
+      materially the page says so rather than picking one.</p>
+
+      <p><b style="color:var(--text-primary)">Known limits.</b> AI-pair share is measured over a recent
+      window, not all time. Shares are never added across tokens: each one is a ratio in its own
+      token's units, so a sum of them is not a quantity, and the population figure is instead each
+      token's own share weighted by the AI measured moving through its bridge. Bridge formation counts
+      pools still trading now, which under-reports older days by however many have since gone quiet, so
+      the count that opened is shown alongside. Pool inventory held by the PoolManager is an aggregate
+      across all pools, so it is attributed to AI in total rather than per pool.</p>
     </div>`;
 
   const c = m.contracts;

@@ -80,10 +80,20 @@ jobs:
           # the routing index both re-read a trailing window and cannot be made
           # incremental, so they dominate a refresh — but they measure things that
           # move over days. Running them every five minutes buys nothing. So the
-          # frequent run does only what changes continuously (flow, burns, price),
-          # and the top of each hour refreshes the slow-moving figures.
+          # frequent run does only what changes continuously (flow, burns, price).
+          #
+          # The heavy depth runs every SIX hours, not hourly, and that is about the
+          # concurrency lock rather than about the data. One workflow serialises on
+          # group "index-and-deploy", so while a standard run holds it every
+          # five-minute tick is blocked -- and GitHub drops scheduled events it
+          # cannot start rather than queueing them all. Measured: hourly standard
+          # runs plus a couple of pushes left a FOUR-HOUR hole between successful
+          # refreshes, on a site whose whole point is a five-minute cadence. Pool
+          # ranking, routing and bridges measure things that move over days, so
+          # four passes a day is ample and the fast path gets the lock back.
           if [ -z "$MODE" ] && [ "${{ github.event_name }}" = "schedule" ]; then
-            if [ "$(date -u +%M)" -lt 5 ]; then MODE="standard"; else MODE="fast"; fi
+            if [ "$(date -u +%M)" -lt 5 ] && [ "$(( $(date -u +%H) % 6 ))" -eq 0 ]
+              then MODE="standard"; else MODE="fast"; fi
             echo "scheduled run -> $MODE"
           fi
           case "$MODE" in
