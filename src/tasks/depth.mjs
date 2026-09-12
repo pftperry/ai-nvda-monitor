@@ -189,6 +189,28 @@ export async function indexDepth(pools, latest, aiUsd, opts = {}) {
   const bidUsd = out.reduce((s, d) => s + d.bidUsd, 0);
   const askUsd = out.reduce((s, d) => s + d.askUsd, 0);
 
+  /* Keep a history, even though nothing reads it yet.
+     Depth is the one measure here with a plausible claim to leading price -- order
+     book imbalance has real support in market microstructure, unlike anything else
+     on this page, which the backtest showed leads nothing. But that claim is
+     testable only against a series, and today there is one observation. So the
+     series starts accumulating now: every day not recorded is a day that can never
+     be backtested later, and the cost is one row.
+     Deliberately NOT wired into the rating. Scoring it today would mean inventing a
+     threshold, which is exactly the borrowed-anchor problem the rating was just
+     rebuilt to remove. It earns a place when it has history to be ranked against
+     and a backtest that says it leads something. */
+  const stamp = Math.floor(Date.now() / 1000);
+  const priorHistory = opts.io?.read?.("depth.json")?.history || [];
+  const hourKey = Math.floor(stamp / 3600) * 3600;
+  const history = priorHistory.filter((h) => h.t !== hourKey).slice(-24 * 90);
+  history.push({
+    t: hourKey, bid: Math.round(bidUsd), ask: Math.round(askUsd),
+    imbalance: Math.round(bidUsd - askUsd), aiUsd: +aiUsd.toPrecision(8),
+    venues: out.length,
+  });
+  history.sort((a, b) => a.t - b.t);
+
   /* One merged book across pools, on a shared price grid. Routers do not care which
      venue the liquidity sits in, so neither should the picture of it. */
   const merged = new Map();
@@ -215,5 +237,6 @@ export async function indexDepth(pools, latest, aiUsd, opts = {}) {
     imbalanceUsd: Math.round(bidUsd - askUsd),
     tvlUsd: out.reduce((s, d) => s + d.tvlUsd, 0),
     book: [...merged.values()].sort((a, b) => a.p - b.p),
+    history,
   };
 }
