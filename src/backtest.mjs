@@ -112,8 +112,11 @@ for (const [name, fn] of Object.entries(predictors)) {
     const { r, t, n } = pearson(xs, ys);
     const { rate } = hitRate(xs, ys);
     grid[name][k] = { r, t, n, rate };
-    const star = Math.abs(t) > 1.96 ? "*" : " ";
-    cells.push(`${(r >= 0 ? "+" : "") + r.toFixed(3)}${star} ${(rate * 100).toFixed(0)}%`.padStart(17));
+    // Deflate for overlapping windows before deciding what counts as significant.
+    const tAdj = deflate(t, k);
+    const star = Math.abs(tAdj) > 1.96 ? "*" : " ";
+    const hr = isFinite(rate) ? `${(rate * 100).toFixed(0)}%` : " n/a";
+    cells.push(`${(r >= 0 ? "+" : "") + r.toFixed(3)}${star} ${hr}`.padStart(17));
   }
   console.log(name.padEnd(32) + cells.join(""));
 }

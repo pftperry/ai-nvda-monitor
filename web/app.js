@@ -1133,7 +1133,14 @@ function renderInvestor() {
   renderPrice(feeSeries);
   const leak = renderLeak();
   renderVenues();
-  renderMultiple(feeSeries);
+  const mult = renderMultiple(feeSeries);
+  renderRating({
+    feeTrend, leakNow: leak ? leak.leakNow : null,
+    leakPrior: leak && leak.series && leak.series.length > 7 ? leak.series[leak.series.length - 8].leak : null,
+    kappa, sc,
+    multNow: mult ? mult.now : null, multMedian: mult ? mult.median : null,
+    nvdaPerDay: nv7 / 7, removedPace: rem7 / 7, net7, net7p,
+  });
   renderRegime(kappa, sc, capNow, feeAnnual, impliedVol);
   renderValuation(feeAnnual, impliedVol, vols);
   renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak);
@@ -1301,6 +1308,8 @@ function renderMultiple(feeSeries) {
     });
   } else $("#cInvMultiple").innerHTML = `<p class="muted" style="padding:16px 0">Not enough complete days yet.</p>`;
 
+  const sortedM = series.map((x) => x.mult).sort((a, b) => a - b);
+  const median = sortedM.length ? sortedM[Math.floor(sortedM.length / 2)] : null;
   $("#takeMultiple").innerHTML = takeEl(chg == null ? "" : chg <= 0 ? "pos" : "neg",
     now == null ? "No fee history yet."
     : `AI trades at <b>${now.toFixed(1)}× its annualised fee run-rate</b>${chg == null ? "" :
@@ -1308,6 +1317,7 @@ function renderMultiple(feeSeries) {
        The counterintuitive part: <b>this number does not move when the price moves.</b> Fees are earned in AI, so
        revenue and market cap rise and fall together and the ratio cancels. You cannot buy this dip on cash flow —
        only more volume through fee-bearing pools can re-rate it.`);
+  return { now, median };
 }
 
 /**
@@ -1497,6 +1507,84 @@ function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak) {
       <div><div style="font-size:13px;font-weight:600;margin-bottom:2px">${h}</div>
       <div style="font-size:12.5px;color:var(--text-secondary);line-height:1.55">${d}</div></div>
     </div>`).join("");
+}
+
+/**
+ * The headline rating.
+ *
+ * It rates FUNDAMENTAL CONDITION, not price direction, and says so — because the
+ * backtest in src/backtest.mjs does not support a price call. Across ~60 days of
+ * hourly data, once t-statistics are deflated for overlapping windows, exactly
+ * one predictor/horizon cell survives significance and it is NEGATIVE: six-hour
+ * flow imbalance against the next hour, r = −0.10. Flow's apparently huge
+ * relationship with price (r = 0.60) is contemporaneous and mechanical — in an
+ * AMM price moves *because* of net flow — and it does not persist forward.
+ *
+ * Weights therefore follow evidence rather than intuition. Fee trend carries most
+ * because it is the only measure with even suggestive forward signal (fee growth
+ * vs next-day return: r = 0.27, 63% hit, and even that misses 5% significance at
+ * n = 46). Structural measures come next, on the reasoning that they drive fees.
+ * Net flow is deliberately near zero: the evidence says it is a coincident
+ * indicator dressed as a leading one, and weighting it heavily would import a
+ * mechanical correlation as though it were foresight.
+ */
+function renderRating(parts) {
+  const { feeTrend, leakNow, leakPrior, kappa, sc, multNow, multMedian, nvdaPerDay, removedPace, net7, net7p } = parts;
+  const clamp = (x) => Math.max(-1, Math.min(1, x));   // no single input dominates
+
+  const comps = [
+    { k: "Fee run-rate trend", w: 3.0, s: feeTrend == null ? null : clamp(feeTrend / 0.25),
+      v: feeTrend == null ? "—" : pct(feeTrend, 0) + " wk/wk",
+      why: "the only measure with even suggestive forward signal" },
+    { k: "Fee capture (toll leakage)", w: 2.5,
+      s: leakNow == null ? null : (leakPrior == null ? clamp((0.5 - leakNow) * 2) : clamp((leakPrior - leakNow) * 6)),
+      v: leakNow == null ? "—" : pctLevel(leakNow, 1) + " leaking",
+      why: "drives fees directly; more leakage means less revenue at any volume" },
+    { k: "Hub conversion κ", w: 2.0, s: kappa == null ? null : clamp((kappa - sc.base) / (sc.bull - sc.base)),
+      v: kappa == null ? "—" : pctLevel(kappa, 1), why: "structural: the thesis converting, or not" },
+    { k: "Cash-flow multiple vs own median", w: 2.0,
+      s: multNow && multMedian ? clamp((multMedian - multNow) / multMedian) : null,
+      v: multNow ? `${multNow.toFixed(0)}×` : "—", why: "cheap or dear against its own history" },
+    { k: "NVDA reserve accretion", w: 1.0, s: nvdaPerDay == null ? null : (nvdaPerDay > 0 ? clamp(nvdaPerDay / 40) : -0.5),
+      v: nvdaPerDay == null ? "—" : `+${nf(nvdaPerDay, 1)}/day`, why: "compounds regardless of sentiment" },
+    { k: "Float removal pace", w: 0.5, s: removedPace == null ? null : (removedPace > 0 ? 0.3 : -0.3),
+      v: removedPace == null ? "—" : `${compact(removedPace)} AI/day`, why: "real, but far too slow to be a catalyst" },
+    { k: "Net flow, 7d", w: 0.5,
+      s: net7 == null ? null : clamp(net7 / Math.max(1, Math.abs(net7p || net7) * 2)),
+      v: net7 == null ? "—" : `${net7 >= 0 ? "+" : ""}${compact(net7)} AI`,
+      why: "near-zero weight: measured coincident, not leading" },
+  ];
+
+  const scored = comps.filter((c) => c.s != null);
+  const total = scored.reduce((s, c) => s + c.w, 0);
+  const score = total ? scored.reduce((s, c) => s + c.s * c.w, 0) / total : 0;
+  const word = score >= 0.25 ? "BULLISH" : score <= -0.25 ? "BEARISH" : "NEUTRAL";
+  const cls = score >= 0.25 ? "bull" : score <= -0.25 ? "bear" : "neutral";
+  const pos = ((score + 1) / 2) * 100;
+
+  $("#rating").innerHTML = `
+    <div class="rating">
+      <div class="rating-top">
+        <div class="word ${cls}">${word}</div>
+        <div class="scope">
+          <b>On fundamentals, not price direction.</b> This scores whether the business behind AI is
+          improving — fees, toll capture, hub conversion, the reserve, and how the cash-flow multiple sits
+          against its own history. It is <b>not</b> a price forecast: tested over ~60 days, no KPI here
+          reliably leads price, and flow's strong-looking link to price is mechanical rather than
+          predictive. The Method tab shows the test.
+        </div>
+      </div>
+      <div class="scale"><div class="needle" style="left:calc(${pos.toFixed(1)}% - 1.5px)"></div></div>
+      <div class="scale-ends"><span>deteriorating</span><span>score ${score >= 0 ? "+" : ""}${score.toFixed(2)}</span><span>improving</span></div>
+      <div class="components">
+        ${comps.map((c) => `
+          <div class="row">
+            <div>${c.k} <span class="muted">— ${c.why}</span></div>
+            <div class="v ${c.s == null ? "" : c.s > 0.1 ? "up" : c.s < -0.1 ? "down" : ""}">${c.v}</div>
+            <div class="w">w ${c.w.toFixed(1)}${c.s == null ? " · n/a" : ` · ${c.s >= 0 ? "+" : ""}${c.s.toFixed(2)}`}</div>
+          </div>`).join("")}
+      </div>
+    </div>`;
 }
 
 function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak) {
