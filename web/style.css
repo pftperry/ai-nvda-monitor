@@ -316,3 +316,17 @@ footer h4 { color: var(--text-secondary); font-size: 12px; margin: 16px 0 7px; t
 
 /* How much of the rating is actually carrying weight. */
 .coverage { margin-top: 8px; font-size: 11px; line-height: 1.5; color: var(--text-muted); }
+
+/* An unmeasured window in the data is a fact the reader must not have to hunt for. */
+.warnline { display:block; margin-top:5px; color: var(--warning); font-weight:500; }
+
+/* How old the indexed layer is, stated where it cannot be missed.
+   It used to be a footnote at the bottom of the page. The indexing schedule is
+   throttled to roughly one run every four hours, so "how old is this" is not a
+   footnote question -- it decides whether any level on the page can be acted on. */
+#staleBanner { margin: 0 0 14px; padding: 10px 13px; border-radius: 8px; font-size: 12.5px; line-height: 1.55;
+  border: 1px solid color-mix(in srgb, var(--warning) 42%, transparent);
+  background: color-mix(in srgb, var(--warning) 9%, transparent); color: var(--text-primary); }
+#staleBanner.bad { border-color: color-mix(in srgb, var(--serious, var(--warning)) 55%, transparent);
+  background: color-mix(in srgb, var(--serious, var(--warning)) 12%, transparent); }
+#staleBanner b { color: var(--warning); }

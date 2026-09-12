@@ -912,8 +912,22 @@ async function refreshLiveTail() {
   if (!S.flow || !S.meta || !S.flow.pools.length) return;
   try {
     const head = parseInt(await rpcCall("eth_blockNumber", []), 16);
+    /* The tail bridges from the last indexed block to now, and that gap is bigger
+       than it was designed for. The indexing workflow is supposed to refresh every
+       five minutes; GitHub throttles the schedule to roughly one run every four
+       hours, so the gap is routinely hours. A four-hour cap meant the tail could not
+       reach the indexed head at all and the page had a silent hole in the middle.
+
+       Twelve hours now, and the strip reports when even that cannot close the gap,
+       because an unreported hole is worse than a visible one. The cost is bounded:
+       three pools, one getLogs each, and the endpoint caps a response at 10,000
+       logs -- if a window is busier than that the tail is short rather than wrong,
+       which the strip also says. */
     const HOUR_BLOCKS = Math.round(3600 / SEC_PER_BLOCK);
-    const from = Math.max(S.meta.headBlock + 1, head - 4 * HOUR_BLOCKS);
+    const MAX_TAIL_HOURS = 12;
+    const from = Math.max(S.meta.headBlock + 1, head - MAX_TAIL_HOURS * HOUR_BLOCKS);
+    const gapBlocks = Math.max(0, head - (S.meta.headBlock + 1));
+    const coversGap = from <= S.meta.headBlock + 1;
     if (head <= from) { S.live = null; renderLiveStrip(); return; }
 
     const recent = (p) => p.hourly.slice(-24).reduce((a, h) => a + (h.aiBuy || 0) + (h.aiSell || 0), 0);
@@ -962,11 +976,46 @@ async function refreshLiveTail() {
       pointsByPool: Object.fromEntries(Object.entries(pointsByPool).map(([k, m]) => [k, [...m.values()].sort((a, b) => a.t - b.t)])),
       lastPrice: last ? last.price : null,
       minutes: Math.max(1, Math.round((head - from) * SEC_PER_BLOCK / 60)),
+      coversGap, gapMinutes: Math.round(gapBlocks * SEC_PER_BLOCK / 60),
     };
     renderLiveStrip();
+    renderStaleBanner();   // the live head is what reveals how old the index is
     paintHeaderMarket();   // the live print changes the canonical price
     if (!$("#p-investor").hidden) { try { renderInvestor(); } catch { /* never blank the tab */ } }
   } catch { /* the live tail is a bonus; its failure must not disturb the page */ }
+}
+
+const fmtAge = (mins) => (mins == null ? "—"
+  : mins < 90 ? `${Math.max(1, Math.round(mins))} minutes`
+  : mins < 48 * 60 ? `${(mins / 60).toFixed(1)} hours`
+  : `${Math.round(mins / 1440)} days`);
+
+/**
+ * How stale the indexed layer is, said out loud.
+ *
+ * This was a footnote at the bottom of the page, which was defensible when the
+ * refresh was believed to be every five minutes. It is not: GitHub throttles the
+ * schedule to roughly one run every four hours, and measured on the deployed site
+ * the indexed data was 4.8 hours behind the chain. Live price and live flow come
+ * straight from the browser's own RPC calls and are current; every LEVEL below
+ * them -- fee run-rate, leakage, cross-routing, the rating built on all three -- is
+ * as old as the last successful index. Someone deciding anything off those levels
+ * has to know that without hunting for it.
+ */
+function renderStaleBanner() {
+  const host = $("#staleBanner");
+  if (!host || !S.meta) return;
+  const headBlock = S.live?.head;
+  const lagMin = headBlock
+    ? Math.round((headBlock - S.meta.headBlock) * SEC_PER_BLOCK / 60)
+    : Math.round((Date.now() / 1000 - (S.meta.updatedAt || 0)) / 60);
+  if (!isFinite(lagMin) || lagMin < 45) { host.hidden = true; return; }
+  host.hidden = false;
+  host.className = lagMin >= 180 ? "bad" : "";
+  host.innerHTML = `The indexed history behind every level on this page is <b>${fmtAge(lagMin)} old</b>.
+    Price, market cap and the live flow strip are read from the chain directly and are current; the fee
+    run-rate, leakage, cross-routing and the rating built on them are not. The refresh is scheduled for
+    every five minutes but GitHub throttles it, so in practice it lands every few hours.`;
 }
 
 function renderLiveStrip() {
@@ -985,8 +1034,11 @@ function renderLiveStrip() {
           (${pctLevel(Math.abs(L.imbalance), 1)} imbalance)</span></div>
       <div class="detail">
         <b>${L.swaps.toLocaleString()} trades</b> across ${L.pools.map((s) => "AI/" + s).join(", ")} in the last
-        <b>${L.minutes} minutes</b>, read from the chain just now — ahead of the indexed history below, which
-        stops at block ${S.meta.headBlock.toLocaleString()}. Refreshes every 30s.
+        <b>${L.minutes} minutes</b>, read from the chain just now on these three venues. Refreshes every 30s.
+        ${L.coversGap === false
+          ? `<span class="warnline">This does not reach the indexed history below, which stops
+             ${fmtAge(L.gapMinutes)} back — there is an unmeasured window between them. The figures below exclude it.</span>`
+          : `It continues the indexed history below, which stops at block ${S.meta.headBlock.toLocaleString()}.`}
       </div>
     </div>`;
 }
@@ -2100,6 +2152,10 @@ function renderMethod() {
 /* ── boot ───────────────────────────────────────────────────────────────── */
 function renderAll() {
   renderInvestor(); renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
+  /* Also on first paint, from the artifact timestamp -- waiting for the live poll
+     would leave the staleness unreported for thirty seconds, or forever if the RPC
+     is blocked, which is exactly when it matters most. */
+  renderStaleBanner();
   const m = S.meta;
   $("#footMeta").innerHTML = `
     Indexed to block <span class="mono">${m.headBlock.toLocaleString()}</span>
