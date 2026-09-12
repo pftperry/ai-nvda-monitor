@@ -417,6 +417,32 @@ async function loadJSON(name) {
   return r.json();
 }
 
+/**
+ * Re-fetch the indexed artifacts and re-render when they actually move.
+ *
+ * Without this the page fetched its data once at load and never again, so every
+ * KPI below the live strip froze: a phone left open would show hours-old fees, κ
+ * and float while the strip above them refreshed every 30 seconds. The head block
+ * is the cheap test for whether a new index has landed at all.
+ */
+async function refreshData() {
+  try {
+    const meta = await loadJSON("meta.json");
+    if (!meta || meta.headBlock === S.meta?.headBlock) return;   // nothing newly indexed
+    const [flow, burns] = await Promise.all(["flow.json", "burns.json"].map(loadJSON));
+    const [routing, bridges, tape, pools] = await Promise.all(
+      ["routing.json", "bridges.json", "tape.json", "pools.json"].map((f) => loadJSON(f).catch(() => null))
+    );
+    Object.assign(S, {
+      meta, flow, burns,
+      routing: routing ?? S.routing, bridges: bridges ?? S.bridges,
+      tape: tape ?? S.tape, pools: pools ?? S.pools,
+    });
+    renderAll();
+    refreshLiveTail();   // the live window starts at the new head, so re-scope it
+  } catch { /* a failed refresh leaves the last good render in place */ }
+}
+
 async function rpcCall(method, params) {
   const r = await fetch(RPC, {
     method: "POST", headers: { "content-type": "application/json" },
@@ -1370,6 +1396,27 @@ function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capP
     : bullish === 1
       ? "Mixed: the structure is intact but the flow is not confirming it."
       : "The measurable parts are deteriorating together.";
+
+  /* The summary must not silently contradict the live strip directly above it.
+     The week and the last hour genuinely can point opposite ways, and when they
+     do, that divergence is information — not something to average away or leave
+     for the reader to notice. */
+  const L = S.live;
+  const diverges = L && L.swaps > 0 && (L.net >= 0) !== (net7 >= 0);
+  const liveLine = !L || !L.swaps ? ""
+    : diverges
+      ? `<b>Right now that has flipped:</b> the last ${L.minutes} minutes show net
+         ${L.net >= 0 ? "buying" : "selling"} of <b>${compact(Math.abs(L.net))} AI</b>, against the week's
+         net ${net7 >= 0 ? "buying" : "selling"}. One hour is not a trend, but a turn shows here first.`
+      : `The last ${L.minutes} minutes agree with the week: net ${L.net >= 0 ? "buying" : "selling"} of
+         <b>${compact(Math.abs(L.net))} AI</b>.`;
+
+  const stamp = S.meta?.headTime
+    ? `<div class="muted" style="font-size:11.5px;margin-top:9px">
+         Indexed history to block ${S.meta.headBlock.toLocaleString()} (${ago(S.meta.updatedAt)});
+         live tape read ${L?.at ? ago(L.at) : "—"}. Re-checks itself every 30s.</div>`
+    : "";
+
   $("#verdict").innerHTML = `
     <div class="verdict ${tone}">
       <div class="lead">${lead}</div>
@@ -1384,7 +1431,9 @@ function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capP
         The honest summary: the <i>asset</i> side is compounding quietly and verifiably, while the
         <i>monetary</i> case rests on hub conversion continuing AND on the protocol keeping a toll that
         permissionless pools can undercut at will.
+        ${liveLine}
       </div>
+      ${stamp}
     </div>`;
 }
 
@@ -1530,6 +1579,8 @@ async function boot() {
   // how often the indexer runs.
   refreshLiveTail();
   setInterval(refreshLiveTail, 30000);
+  // Pick up a newly published index without needing a page reload.
+  setInterval(refreshData, 180000);
   // Charts resize themselves via ResizeObserver; only the phone/desktop layout
   // switch needs a full re-render, since it changes chart chrome, not just width.
   let wasPhone = isPhone(), rt;

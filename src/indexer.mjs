@@ -210,6 +210,11 @@ if (!fast && !flag("no-bridges")) {
     const bridges = await analyseBridges(active, latest, tm, {
       window: BRIDGES_WINDOW,
       topN: BRIDGES_TOP,
+      // A few tokens per run, rotating oldest-first: bounded work that converges
+      // over successive runs rather than timing out trying to do everything.
+      perRun: opt("bridges-per-run", deep ? 8 : 4),
+      prior: flag("rebuild") ? null : readData("bridges.json"),
+      store,
     });
     writeData("bridges.json", { updatedAt: now, ...bridges });
   } catch (e) {
