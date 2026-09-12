@@ -142,8 +142,33 @@ if (fast) {
       `pin rule matched ${pinned.length} pools for ${TOP_FLOW} flow slots; it would crowd out the ranked set ` +
       `(${pinned.map((p) => p.pairSymbol || p.poolId.slice(0, 8)).join(", ")})`);
   }
-  selected = [...pinned, ...active.filter((p) => !PINNED.includes(p.poolId))].slice(0, TOP_FLOW);
+  /* History already paid for is not given up to a ranking wobble.
+
+     Selection is by recent activity, and flow.json holds exactly the pools selected
+     -- so a pool that slips one place past the cap is dropped from the artifact and
+     its whole backfill is gone, to be re-derived from genesis if it ever ranks
+     again. Some of these cost real time: BONER is 71,852 swaps over 533 hourly
+     buckets, SIT 69,074 over 376. Losing that to a quiet afternoon is pure waste,
+     and worse, it silently shrinks the coverage every cross-venue figure depends on.
+
+     So a pool that already has depth and is still trading keeps its slot, and TOP_FLOW
+     becomes the floor for new entrants rather than a hard ceiling. Retention cannot
+     grow without bound either, so there is a hard stop at twice TOP_FLOW; `active`
+     arrives sorted by swap count, so what gets cut first is the least active new
+     entrant, and only once every one of those is gone does a retained pool go. A
+     pool that stops trading altogether is not retained at all -- it is absent from
+     `active` -- which is the one case where dropping the history is correct. */
+  const priorDeep = new Set([...prev].filter(([, p2]) => (p2.hourly || []).length >= 24).map(([id]) => id));
+  const retained = active.filter((p) => priorDeep.has(p.poolId) && !PINNED.includes(p.poolId));
+  const fresh = active.filter((p) => !priorDeep.has(p.poolId) && !PINNED.includes(p.poolId));
+  const CEILING = TOP_FLOW * 2;
+  selected = [...pinned, ...retained, ...fresh].slice(0, Math.min(CEILING, Math.max(TOP_FLOW, pinned.length + retained.length)));
+  const droppedDeep = [...priorDeep].filter((id) => !selected.some((p) => p.poolId === id));
   console.log(`  pinned flagships: ${pinned.map((p) => "AI/" + (p.pairSymbol || "?")).join(", ")}`);
+  console.log(`  ${retained.length} pools retained for existing depth, ${Math.max(0, selected.length - pinned.length - retained.length)} new entrants, ${selected.length} indexed in all`);
+  if (droppedDeep.length) {
+    console.log(`  dropped ${droppedDeep.length} pool(s) that had depth but went dormant or fell past the ${CEILING} ceiling`);
+  }
 }
 
 step(`Indexing buy/sell flow for ${selected.length} pools`);

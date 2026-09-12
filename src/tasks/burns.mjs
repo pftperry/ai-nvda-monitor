@@ -2,7 +2,7 @@ import {
   AI, NVDA, USDG, COMMUNITY_VAULT, BURN_ADDRESS, FEE_SPLITTER,
   PLATFORM_FEE_RECIPIENT, POOL_MANAGER, GENESIS_BLOCK, TOKENS, LONG_HOOK,
 } from "../config.mjs";
-import { getLogsRange, padAddr } from "../rpc.mjs";
+import { getLogsRange, padAddr, blockNumber } from "../rpc.mjs";
 import { TOPICS, decodeTransfer, fmtUnits } from "../decode.mjs";
 import { erc20, balanceOf } from "../tokens.mjs";
 
@@ -23,36 +23,51 @@ export async function indexBurns(latest, tm, opts = {}) {
   const prev = opts.prev && opts.prev.cursor ? opts.prev : null;
   const from = prev ? Math.max(GENESIS_BLOCK, prev.cursor + 1) : GENESIS_BLOCK;
   if (prev) log(`  resuming burn ledger from block ${from.toLocaleString()} (+${(latest - from).toLocaleString()} blocks)`);
-  const scan = (filter) => (from > latest ? Promise.resolve([]) : getLogsRange(filter, from, latest, { chunk: 8_000_000 }));
+  /* Filters named once, because they are used twice: for the main scan, and again
+     to top up to whatever block the live balance reads answer for. See the
+     reconciliation note below. */
+  const FILTERS = {
+    burns:       { address: AI,   topics: [TOPICS.TRANSFER, null, padAddr(BURN_ADDRESS)] },
+    locks:       { address: AI,   topics: [TOPICS.TRANSFER, null, padAddr(COMMUNITY_VAULT)] },
+    nvda:        { address: NVDA, topics: [TOPICS.TRANSFER, null, padAddr(COMMUNITY_VAULT)] },
+    /* The fee split must be measured on the splitter's OWN outflows, constraining
+       both from and to. Summing everything that lands on the platform address
+       instead conflates the fee leg with every other transfer that address receives
+       -- which inflates its share by an order of magnitude and turns the "split"
+       into a statement about that wallet's total income rather than about the fee. */
+    legBurn:     { address: AI, topics: [TOPICS.TRANSFER, padAddr(FEE_SPLITTER), padAddr(BURN_ADDRESS)] },
+    legLock:     { address: AI, topics: [TOPICS.TRANSFER, padAddr(FEE_SPLITTER), padAddr(COMMUNITY_VAULT)] },
+    legPlatform: { address: AI, topics: [TOPICS.TRANSFER, padAddr(FEE_SPLITTER), padAddr(PLATFORM_FEE_RECIPIENT)] },
+    // Tracked separately and labelled as such: everything the platform address
+    // receives, from any source. Not the fee leg.
+    platform:    { address: AI, topics: [TOPICS.TRANSFER, null, padAddr(PLATFORM_FEE_RECIPIENT)] },
+    mints:       { address: AI, topics: [TOPICS.TRANSFER, padAddr(BURN_ADDRESS)] },
+  };
+  /* Sequential on purpose: the limiter counts sub-requests, and firing these in
+     parallel exhausts the window and costs far more than it saves. */
+  const scanRange = async (filter, a, b) =>
+    (a > b ? [] : (await getLogsRange(filter, a, b, { chunk: 8_000_000 })).map(decodeTransfer));
+  const scan = (filter) => scanRange(filter, from, latest);
 
   log("  scanning AI burns (Transfer -> 0x0)...");
-  const burns = (await scan({ address: AI, topics: [TOPICS.TRANSFER, null, padAddr(BURN_ADDRESS)] })).map(decodeTransfer);
+  const burns = await scan(FILTERS.burns);
 
   log("  scanning AI locks (Transfer -> community vault)...");
-  const locks = (await scan({ address: AI, topics: [TOPICS.TRANSFER, null, padAddr(COMMUNITY_VAULT)] })).map(decodeTransfer);
+  const locks = await scan(FILTERS.locks);
 
   log("  scanning NVDA reserve accretion (Transfer -> community vault)...");
-  const nvda = (await scan({ address: NVDA, topics: [TOPICS.TRANSFER, null, padAddr(COMMUNITY_VAULT)] })).map(decodeTransfer);
+  const nvda = await scan(FILTERS.nvda);
 
-  /* The fee split must be measured on the splitter's OWN outflows, constraining
-     both `from` and `to`. Summing everything that lands on the platform address
-     instead conflates the fee leg with every other transfer that address receives
-     -- which inflates its share by an order of magnitude and turns the "split"
-     into a statement about that wallet's total income rather than about the fee. */
   log("  scanning the fee splitter's three legs...");
-  const legFrom = (to) =>
-    scan({ address: AI, topics: [TOPICS.TRANSFER, padAddr(FEE_SPLITTER), padAddr(to)] }).then((l) => l.map(decodeTransfer));
-  const legBurn = await legFrom(BURN_ADDRESS);
-  const legLock = await legFrom(COMMUNITY_VAULT);
-  const legPlatform = await legFrom(PLATFORM_FEE_RECIPIENT);
+  const legBurn = await scan(FILTERS.legBurn);
+  const legLock = await scan(FILTERS.legLock);
+  const legPlatform = await scan(FILTERS.legPlatform);
 
-  // Tracked separately and labelled as such: everything the platform address
-  // receives, from any source. Not the fee leg.
   log("  scanning total AI inflow to the platform address (all sources)...");
-  const platform = (await scan({ address: AI, topics: [TOPICS.TRANSFER, null, padAddr(PLATFORM_FEE_RECIPIENT)] })).map(decodeTransfer);
+  const platform = await scan(FILTERS.platform);
 
   log("  scanning AI mints (Transfer from 0x0)...");
-  const mints = (await scan({ address: AI, topics: [TOPICS.TRANSFER, padAddr(BURN_ADDRESS)] })).map(decodeTransfer);
+  const mints = await scan(FILTERS.mints);
 
   // Seed from the stored series so merged buckets accumulate rather than restart.
   const daily = new Map();
@@ -99,6 +114,40 @@ export async function indexBurns(latest, tm, opts = {}) {
   const feeBurn = (carried.feeLegs?.burn || 0) + sum(legBurn);
   const feeLock = (carried.feeLegs?.lock || 0) + sum(legLock);
   const feePlatform = (carried.feeLegs?.platform || 0) + sum(legPlatform);
+
+  /* Close the race between the log scan and the live balance reads.
+
+     The scan covers up to the block captured when the run STARTED; balanceOf and
+     totalSupply answer for whatever block is current when they are called. On a
+     25-second refresh that is the same block and nobody notices. On a run that
+     backfills twenty pools it is twenty-six minutes and some fifteen thousand
+     blocks apart, and the ledger stops reconciling -- measured, the vault came back
+     423.88 AI above the sum of its own inbound transfers, and supply missed by the
+     same amount, because the fee splits 1:1 so both legs lose equally.
+
+     The reads cannot be pinned backwards: this node serves no archive state and
+     eth_call at any past block answers "metadata is not found". So the scan is
+     brought forward to meet them instead. What remains is the second between the
+     head read and the call rather than the length of the whole run. */
+  const stateBlock = await blockNumber();
+  if (stateBlock > latest) {
+    /* A loop, not push(...spread): spreading an array passes one argument per
+       element and overflows the call stack on a long one. This top-up is short by
+       construction, but that exact line has already taken down the bridge step. */
+    const topUp = async (filter, arr) => {
+      for (const x of await scanRange(filter, latest + 1, stateBlock)) arr.push(x);
+    };
+    await topUp(FILTERS.burns, burns);
+    await topUp(FILTERS.locks, locks);
+    await topUp(FILTERS.nvda, nvda);
+    await topUp(FILTERS.legBurn, legBurn);
+    await topUp(FILTERS.legLock, legLock);
+    await topUp(FILTERS.legPlatform, legPlatform);
+    await topUp(FILTERS.platform, platform);
+    await topUp(FILTERS.mints, mints);
+    log(`  topped up ${(stateBlock - latest).toLocaleString()} blocks so the ledger and the live balances agree on a block`);
+    latest = stateBlock;
+  }
 
   // Live state, straight from the chain.
   const [supply, vaultAI, vaultNVDA, pmAI, hookAI, nvdaSupply] = await Promise.all([

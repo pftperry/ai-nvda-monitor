@@ -1071,7 +1071,7 @@ async function refreshLiveTail() {
 }
 
 const fmtAge = (mins) => (mins == null ? "—"
-  : mins < 90 ? `${Math.max(1, Math.round(mins))} minutes`
+  : mins < 90 ? (Math.round(mins) <= 1 ? "a minute" : `${Math.round(mins)} minutes`)
   : mins < 48 * 60 ? `${(mins / 60).toFixed(1)} hours`
   : `${Math.round(mins / 1440)} days`);
 

@@ -116,25 +116,36 @@ jobs:
               then MODE="standard"; else MODE="fast"; fi
             echo "scheduled run -> $MODE"
           fi
+          # --top is how many pools get hourly depth, and it decides how much of the
+          # chain the site can actually see. Measured on the ranked set: the top 8
+          # pools carry 73% of swaps, the top 20 carry 90%, and the tail past that is
+          # long and thin. Eight was also biased, not merely partial -- it happened to
+          # include the big hookless venues and miss a dozen small hooked ones, so the
+          # leakage headline read 74% where the full active set says 65%.
+          #
+          # Twenty costs almost nothing per run once backfilled, because flow resumes
+          # from each pool's cursor, and nothing at all on the live layer: pool id is
+          # topic1, so the browser covers every indexed venue in one request whether
+          # that is three pools or thirty.
           case "$MODE" in
-            fast)    node src/indexer.mjs --fast --top 8 ;;
+            fast)    node src/indexer.mjs --fast --top 20 ;;
             quick)   node src/indexer.mjs --quick ;;
-            deep)    node src/indexer.mjs --top 18 ;;
+            deep)    node src/indexer.mjs --top 30 ;;
             # Discards stored series and re-derives every bucket. Needed when a
             # decoding input changes (a token's decimals, say), because resuming
             # from a cursor only adds new buckets and never revisits old ones.
-            rebuild) node src/indexer.mjs --rebuild --top 8 ;;
+            rebuild) node src/indexer.mjs --rebuild --top 20 ;;
             # Repair a decoding fix that only affected some venues, without paying
             # for a full re-derive of every pool. Bridges are skipped: a repair has
             # one job and the 75-minute ceiling is real -- re-deriving both USDG
             # pools from genesis is RPC-bound and took over an hour measured
             # locally, so spending any of that budget on bridge venue discovery
             # risks the timeout killing the repair itself.
-            repair-usdg) node src/indexer.mjs --rebuild-pools usdg --top 8 --no-bridges ;;
+            repair-usdg) node src/indexer.mjs --rebuild-pools usdg --top 20 --no-bridges ;;
             # Just the flagship AI/USDG venue -- the one the dollar price and market
             # cap read from. Half the work, for when the full repair will not fit.
-            repair-usdg-main) node src/indexer.mjs --rebuild-pools 0x7aebd805 --top 8 --no-bridges ;;
-            *)       node src/indexer.mjs --top 8 ;;
+            repair-usdg-main) node src/indexer.mjs --rebuild-pools 0x7aebd805 --top 20 --no-bridges ;;
+            *)       node src/indexer.mjs --top 20 ;;
           esac
 
       # A silently-wrong index is worse than a failed one, so bad data never ships.

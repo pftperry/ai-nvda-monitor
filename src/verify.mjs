@@ -5,11 +5,23 @@
 import { readData } from "./store.mjs";
 import * as C from "./config.mjs";
 
-let failures = 0, checks = 0;
+let failures = 0, checks = 0, warnings = 0;
 function check(name, ok, detail = "") {
   checks++;
   if (!ok) failures++;
   console.log(`${ok ? "  ok  " : " FAIL "} ${name}${detail ? `  — ${detail}` : ""}`);
+}
+
+/* Not everything that is worth saying should stop a deploy.
+   A failure means the data is WRONG and publishing it would mislead. Incomplete is
+   a different thing: if coverage drifts because the chain grew a busy new venue,
+   the right response is to widen the indexed set, not to take the site down and
+   leave readers on data that is now hours older still. Those report and carry on;
+   CI surfaces them as annotations. */
+function warn(name, ok, detail = "") {
+  checks++;
+  if (!ok) { warnings++; console.log(` WARN  ${name}${detail ? `  — ${detail}` : ""}`); if (process.env.GITHUB_ACTIONS) console.log(`::warning::${name}: ${detail}`); }
+  else console.log(`  ok   ${name}${detail ? `  — ${detail}` : ""}`);
 }
 
 const meta = readData("meta.json");
@@ -17,6 +29,7 @@ const burns = readData("burns.json");
 const flow = readData("flow.json");
 const routing = readData("routing.json");
 const bridges = readData("bridges.json");
+const poolsArtifact = readData("pools.json");
 
 if (!meta || !burns || !flow) {
   console.error("Missing data artifacts. Run `npm run index` first.");
@@ -103,6 +116,42 @@ check("buy/sell counts match bucket totals",
 check("distinct buyers never exceed buy count",
   flow.pools.every((p) => p.hourly.every((h) => h.buyers <= h.buys && h.sellers <= h.sells)));
 check("every pool records a resume cursor", flow.pools.every((p) => p.cursor > 0));
+/* Coverage, and the bias hiding inside it.
+   Every cross-venue figure on the site -- fee leakage above all -- is measured over
+   the pools indexed in depth, so how much of the chain that set represents is part
+   of what those figures mean. It is also not just a question of size: eight pools
+   covered 73% of swaps but happened to include the large hookless venues and miss a
+   dozen small hooked ones, so leakage read 74% against 65% for the full active set.
+   A partial sample is fine and unavoidable; a partial sample that leans one way is
+   a wrong answer. Both are asserted. */
+if (poolsArtifact?.pools?.length) {
+  const ranked = poolsArtifact.pools.filter((p) => p.swapsInWindow > 0);
+  const indexed = new Set(flow.pools.map((p) => p.poolId));
+  const swaps = (rows) => rows.reduce((s, p) => s + p.swapsInWindow, 0);
+  const totalSwaps = swaps(ranked);
+  const inSet = ranked.filter((p) => indexed.has(p.poolId));
+  const cover = totalSwaps > 0 ? swaps(inSet) / totalSwaps : 0;
+  /* Two thresholds for the same quantity, because they mean different things. Below
+     60% the cross-venue figures stop describing the chain and publishing them would
+     mislead, so that fails. Between 60% and 80% they are still broadly right but the
+     indexed set wants widening, which is work for a person and no reason to withhold
+     an otherwise-good refresh. */
+  check("the indexed pools cover enough activity to mean anything",
+    cover >= 0.6,
+    `${(cover * 100).toFixed(1)}% of swaps across ${inSet.length} of ${ranked.length} active pools`);
+  warn("the indexed pools cover most measured activity", cover >= 0.8,
+    `${(cover * 100).toFixed(1)}% — consider raising --top`);
+
+  const hooklessShare = (rows) => {
+    const t = swaps(rows);
+    return t > 0 ? swaps(rows.filter((p) => !p.isLongHook)) / t : 0;
+  };
+  const skew = Math.abs(hooklessShare(inSet) - hooklessShare(ranked));
+  warn("the indexed set is not skewed on hook status",
+    skew <= 0.07,
+    `indexed ${(hooklessShare(inSet) * 100).toFixed(1)}% hookless vs ${(hooklessShare(ranked) * 100).toFixed(1)}% across all active (gap ${(skew * 100).toFixed(1)}pt)`);
+}
+
 /* The indexed set must stay diverse. Everything that depends on it -- fee
    leakage, net flow, the USD price -- is a comparison ACROSS venues, and a set
    collapsed onto one counterparty still produces confident-looking numbers. A
@@ -175,7 +224,8 @@ if (bridges && bridges.tokens) {
   }
 } else console.log("  --  bridges.json absent (optional)");
 
-console.log(`\n${checks - failures}/${checks} checks passed.`);
+console.log(`
+${checks - failures}/${checks} checks passed${warnings ? `, ${warnings} warning${warnings === 1 ? "" : "s"}` : ""}.`);
 if (failures) {
   console.error(`${failures} FAILED — the indexed data is not trustworthy.`);
   process.exit(1);
