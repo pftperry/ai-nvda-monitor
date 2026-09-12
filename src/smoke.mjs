@@ -13,6 +13,7 @@
  * and it would have caught that immediately.
  */
 import { analyseRouting } from "./tasks/routing.mjs";
+import { getLogsRange } from "./rpc.mjs";
 import { TimeMap } from "./timemap.mjs";
 
 let failures = 0;
@@ -77,6 +78,30 @@ ok("an empty index does not throw or divide by zero", () => {
   assert(r.measuredKappaRatio === 0, "κ is zero, not NaN");
   assert(Array.isArray(r.daily), "daily is still an array");
 });
+
+console.log("\nScan deadline");
+
+/* Testable without a network because an expired deadline must short-circuit before
+   the first request. That is the whole point of it: the bridge step's budget used
+   to be checked only between tokens, so one token's discovery ran forty-five
+   minutes inside a single call. If this ever stops short-circuiting, that returns. */
+{
+  const t0 = Date.now();
+  let r = null, threw = null;
+  try { r = await getLogsRange({ address: "0x0", topics: [] }, 1000, 50_000_000, { deadline: Date.now() - 1 }); }
+  catch (e) { threw = e.message; }
+  const elapsed = Date.now() - t0;
+  ok("an expired deadline returns before any request", () => {
+    assert(!threw, `threw: ${threw}`);
+    assert(elapsed < 500, `took ${elapsed}ms — it made a network call`);
+    assert(r.length === 0, `returned ${r.length} logs`);
+  });
+  ok("an interrupted scan reports where it stopped", () => {
+    assert(!threw, `threw: ${threw}`);
+    assert(r.truncated === true, "truncated flag not set");
+    assert(r.reachedBlock === 999, `reachedBlock ${r.reachedBlock}, expected the block before the start`);
+  });
+}
 
 console.log(`\n${failures ? failures + " FAILED" : "all smoke tests passed"}`);
 process.exit(failures ? 1 : 0);
