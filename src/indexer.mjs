@@ -51,8 +51,8 @@ step("Verifying token metadata");
 await assertTokenMetadata();
 
 step("Building block -> time anchors");
-const tm = await loadTimeMap(store, latest);
-console.log(`  ${tm.toJSON().length} anchors; head = ${new Date(tm.at(latest) * 1000).toISOString()}`);
+const tm = await loadTimeMap(store, latest, { read: readData, write: writeData });
+console.log(`  head = ${new Date(tm.at(latest) * 1000).toISOString()}`);
 
 /* Feed the previous run's series back in so only new blocks are scanned.
 

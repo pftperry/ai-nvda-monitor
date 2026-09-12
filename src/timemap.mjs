@@ -66,9 +66,24 @@ export class TimeMap {
   dayBucket(block)  { const t = this.at(block); return t === null ? null : Math.floor(t / 86400) * 86400; }
 }
 
-export async function loadTimeMap(store, latest) {
-  const tm = TimeMap.fromJSON(store.get("timemap"));
+/**
+ * Anchors live in web/data, not only in the build cache.
+ *
+ * Measured on CI: rebuilding them costs 44s and 206 sequential calls — the second
+ * largest stage of a refresh, for data that never changes once sampled. They were
+ * held only in the Actions cache, which misses on a cold key, is evicted, and is
+ * not written at all when a run is cancelled. So in practice they were rebuilt
+ * almost every run. Storing them beside the other artifacts makes them durable
+ * and effectively free; the file is tiny (~200 pairs).
+ */
+export async function loadTimeMap(store, latest, io) {
+  const stored = io?.read?.("anchors.json")?.anchors || store.get("timemap") || [];
+  const tm = TimeMap.fromJSON(stored);
+  const before = tm.toJSON().length;
   await tm.build(GENESIS_BLOCK, latest);
+  const after = tm.toJSON().length;
   store.set("timemap", tm.toJSON());
+  if (io?.write) io.write("anchors.json", { updatedAt: Math.floor(Date.now() / 1000), anchors: tm.toJSON() });
+  console.log(`  ${after} anchors (${before} reused, ${after - before} fetched)`);
   return tm;
 }
