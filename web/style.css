@@ -330,3 +330,7 @@ footer h4 { color: var(--text-secondary); font-size: 12px; margin: 16px 0 7px; t
 #staleBanner.bad { border-color: color-mix(in srgb, var(--serious, var(--warning)) 55%, transparent);
   background: color-mix(in srgb, var(--serious, var(--warning)) 12%, transparent); }
 #staleBanner b { color: var(--warning); }
+
+/* A live reading beside a settled one; the contrast is the information. */
+.livenote { margin-top:7px; font-size:11.5px; line-height:1.5; color: var(--text-secondary); }
+.livenote b { color: var(--text-primary); }

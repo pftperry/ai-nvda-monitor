@@ -457,14 +457,27 @@ async function refreshData() {
   } catch { /* a failed refresh leaves the last good render in place */ }
 }
 
-async function rpcCall(method, params) {
-  const r = await fetch(RPC, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const j = await r.json();
-  if (j.error) throw new Error(j.error.message);
-  return j.result;
+async function rpcCall(method, params, tries = 2) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(RPC, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      const j = await r.json();
+      if (j.error) throw new Error(j.error.message);   // a real JSON-RPC error: do not retry
+      return j.result;
+    } catch (e) {
+      lastErr = e;
+      // Only a transport failure is worth retrying; a node that answered and said
+      // no will say no again.
+      const transport = e instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(e.message || "");
+      if (!transport || i === tries - 1) throw e;
+      await new Promise((res) => setTimeout(res, 400));
+    }
+  }
+  throw lastErr;
 }
 
 /* ── live header ─────────────────────────────────────────────────────────── */
@@ -879,14 +892,38 @@ const i128 = (hex, i) => BigInt.asIntN(128, BigInt("0x" + hex.slice(2 + 64 * i, 
 const u256 = (hex, i) => BigInt("0x" + hex.slice(2 + 64 * i, 2 + 64 * (i + 1)));
 const SEC_PER_BLOCK = 0.1022;   // measured; used only to bucket the live tail
 
-/** Swaps for one pool over a block range, decoded to the AI leg. */
-async function liveSwaps(pool, fromBlock, toBlock) {
+/**
+ * Swaps for MANY pools in one request.
+ *
+ * A v4 Swap log carries the pool id in topic1, and eth_getLogs accepts an array of
+ * accepted values for a topic position. So N pools cost one round trip, not N --
+ * which is the difference between a live layer that covers the three busiest venues
+ * and one that covers everything that matters. That matters more here than it
+ * normally would: the indexing workflow is throttled to roughly one run every few
+ * hours, so anything the browser cannot compute for itself is stale by default.
+ *
+ * Logs come back interleaved, so each is routed to its pool by topic1.
+ */
+async function liveSwapsMulti(pools, fromBlock, toBlock) {
+  if (!pools.length) return new Map();
+  const byId = new Map(pools.map((p) => [p.poolId.toLowerCase(), p]));
   const logs = await rpcCall("eth_getLogs", [{
-    address: POOL_MANAGER, topics: [SWAP_TOPIC, pool.poolId],
+    address: POOL_MANAGER,
+    topics: [SWAP_TOPIC, pools.map((p) => p.poolId)],
     fromBlock: "0x" + fromBlock.toString(16), toBlock: "0x" + toBlock.toString(16),
   }]);
+  const out = new Map(pools.map((p) => [p.poolId, []]));
+  for (const l of logs) {
+    const pool = byId.get((l.topics[1] || "").toLowerCase());
+    if (pool) out.get(pool.poolId).push(decodeLiveSwap(l, pool));
+  }
+  return out;
+}
+
+/** One Swap log, decoded to the AI leg of a given pool. */
+function decodeLiveSwap(l, pool) {
   const dec = pool.pairDecimals ?? 18;
-  return logs.map((l) => {
+  {
     const a0 = i128(l.data, 0), a1 = i128(l.data, 1);
     const aiRaw = pool.aiIsCurrency0 ? a0 : a1;
     const pairRaw = pool.aiIsCurrency0 ? a1 : a0;
@@ -900,13 +937,23 @@ async function liveSwaps(pool, fromBlock, toBlock) {
       buy: aiRaw > 0n,                        // swapper receives AI — see decode.mjs
       price: pool.aiIsCurrency0 ? p : (p ? 1 / p : 0),
     };
-  });
+  }
 }
 
 /**
  * Poll for everything since the last indexed block and keep it as a live tail.
- * Deliberately narrow: the busiest few venues and a bounded window, because this
- * runs in the viewer's browser against the same throttled endpoint, on a timer.
+ *
+ * This used to cover three venues, on the reasoning that the browser shares a
+ * throttled endpoint with the indexer and should be frugal. That reasoning was
+ * right about the constraint and wrong about the cost: pool id is topic1 on a v4
+ * Swap log, so twenty venues fit in the SAME single request as three. The narrow
+ * version was paying three round trips for a third of the coverage.
+ *
+ * Coverage matters because the indexed layer is hours old in practice, so anything
+ * outside the tail is stale. With the venues that carry essentially all the volume
+ * inside it, the live layer can carry not just price but the numbers that decide
+ * things -- how much flow is crossing pools that pay the vault nothing, and which
+ * way the net is running.
  */
 async function refreshLiveTail() {
   if (!S.flow || !S.meta || !S.flow.pools.length) return;
@@ -920,9 +967,9 @@ async function refreshLiveTail() {
 
        Twelve hours now, and the strip reports when even that cannot close the gap,
        because an unreported hole is worse than a visible one. The cost is bounded:
-       three pools, one getLogs each, and the endpoint caps a response at 10,000
+       one getLogs for every venue at once, and the endpoint caps a response at 10,000
        logs -- if a window is busier than that the tail is short rather than wrong,
-       which the strip also says. */
+       which the strip also says. All indexed venues ride in that one request. */
     const HOUR_BLOCKS = Math.round(3600 / SEC_PER_BLOCK);
     const MAX_TAIL_HOURS = 12;
     const from = Math.max(S.meta.headBlock + 1, head - MAX_TAIL_HOURS * HOUR_BLOCKS);
@@ -930,14 +977,21 @@ async function refreshLiveTail() {
     const coversGap = from <= S.meta.headBlock + 1;
     if (head <= from) { S.live = null; renderLiveStrip(); return; }
 
+    /* Every indexed venue, busiest first. One request covers them all; the order
+       only decides which pool is treated as the price leader below. */
     const recent = (p) => p.hourly.slice(-24).reduce((a, h) => a + (h.aiBuy || 0) + (h.aiSell || 0), 0);
-    const pools = [...S.flow.pools].sort((a, b) => recent(b) - recent(a)).slice(0, 3);
-    const perPool = await Promise.all(pools.map((p) => liveSwaps(p, from, head).catch(() => [])));
+    const pools = [...S.flow.pools].sort((a, b) => recent(b) - recent(a));
+    const byPool = await liveSwapsMulti(pools, from, head).catch(() => new Map());
+    const perPool = pools.map((p) => byPool.get(p.poolId) || []);
 
     const nowSec = Math.floor(Date.now() / 1000);
     const tOf = (b) => nowSec - Math.round((head - b) * SEC_PER_BLOCK);
 
-    let buy = 0, sell = 0, n = 0, last = null;
+    /* Toll leakage, live. This is the figure the page calls its dominant fact, and
+       it was only ever as fresh as the last index -- hours. The tail now has every
+       indexed venue and each one's hook status, so the same logs answer it for the
+       window just polled, at no extra request. */
+    let buy = 0, sell = 0, n = 0, last = null, hookedVol = 0, hooklessVol = 0;
     const priceByPool = {};
     /* Five-minute price buckets for the chart tail. Hourly is the right grain for
        settled history but far too coarse for "now": it makes a live chart look
@@ -952,6 +1006,7 @@ async function refreshLiveTail() {
         const row = bk.get(h) || { t: h, aiBuy: 0, aiSell: 0, buys: 0, sells: 0, buyers: 0, sellers: 0, close: 0, live: true };
         if (s.buy) { buy += s.ai; row.aiBuy += s.ai; row.buys++; }
         else { sell += -s.ai; row.aiSell += -s.ai; row.sells++; }
+        if (pools[i].isLongHook) hookedVol += Math.abs(s.ai); else hooklessVol += Math.abs(s.ai);
         row.close = s.price;
         bk.set(h, row);
         if (i === 0) last = s;
@@ -977,6 +1032,8 @@ async function refreshLiveTail() {
       lastPrice: last ? last.price : null,
       minutes: Math.max(1, Math.round((head - from) * SEC_PER_BLOCK / 60)),
       coversGap, gapMinutes: Math.round(gapBlocks * SEC_PER_BLOCK / 60),
+      venues: pools.length,
+      leak: hookedVol + hooklessVol > 0 ? hooklessVol / (hookedVol + hooklessVol) : null,
     };
     renderLiveStrip();
     renderStaleBanner();   // the live head is what reveals how old the index is
@@ -1033,8 +1090,9 @@ function renderLiveStrip() {
         <span style="font-size:13px;font-weight:400;color:var(--text-secondary)">
           (${pctLevel(Math.abs(L.imbalance), 1)} imbalance)</span></div>
       <div class="detail">
-        <b>${L.swaps.toLocaleString()} trades</b> across ${L.pools.map((s) => "AI/" + s).join(", ")} in the last
-        <b>${L.minutes} minutes</b>, read from the chain just now on these three venues. Refreshes every 30s.
+        <b>${L.swaps.toLocaleString()} trades</b> across ${L.venues} venues in the last <b>${fmtAge(L.minutes)}</b>,
+        read from the chain just now. Refreshes every 30s.
+        ${L.leak == null ? "" : `<b>${pctLevel(L.leak, 1)}</b> of it crossed pools that pay the vault nothing.`}
         ${L.coversGap === false
           ? `<span class="warnline">This does not reach the indexed history below, which stops
              ${fmtAge(L.gapMinutes)} back — there is an unmeasured window between them. The figures below exclude it.</span>`
@@ -1675,9 +1733,13 @@ function renderLeak() {
   const first = series[0];
   const leakNow = last ? last.leak : 0;
 
+  const liveLeak = S.live?.leak;
   $("#kpiLeak").innerHTML = kpiEl(pctLevel(leakNow, 1),
     first ? `from ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : "", leakNow > (first?.leak ?? 0) ? "down" : "up",
-    `of volume on the ${S.flow.pools.length} deepest-indexed venues pays no fee`);
+    `of volume on the ${S.flow.pools.length} deepest-indexed venues pays no fee`)
+    + (liveLeak == null ? "" : `<div class="livenote">Live: <b>${pctLevel(liveLeak, 1)}</b> over the last
+      ${fmtAge(S.live.minutes)} across ${S.live.venues} venues, read from the chain just now — the figure above is
+      settled daily history and is ${fmtAge(Math.round((Date.now() / 1000 - (S.meta.updatedAt || 0)) / 60))} old.</div>`);
   if (series.length > 1) {
     multiLine($("#cInvLeak"), series, {
       xKey: "t", zeroBase: true, area: true, xFmt: dayFmt,
