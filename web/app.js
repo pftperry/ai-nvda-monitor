@@ -908,20 +908,39 @@ const SEC_PER_BLOCK = 0.1022;   // measured; used only to bucket the live tail
  *
  * Logs come back interleaved, so each is routed to its pool by topic1.
  */
+const LOG_CAP = 10_000;          // the endpoint truncates a response at this many
+
 async function liveSwapsMulti(pools, fromBlock, toBlock) {
-  if (!pools.length) return new Map();
+  if (!pools.length) return { byPool: new Map(), from: fromBlock, truncated: false };
   const byId = new Map(pools.map((p) => [p.poolId.toLowerCase(), p]));
-  const logs = await rpcCall("eth_getLogs", [{
-    address: POOL_MANAGER,
-    topics: [SWAP_TOPIC, pools.map((p) => p.poolId)],
-    fromBlock: "0x" + fromBlock.toString(16), toBlock: "0x" + toBlock.toString(16),
-  }]);
+  const ids = pools.map((p) => p.poolId);
+
+  /* The endpoint caps a response at 10,000 logs and says nothing when it truncates,
+     so a window that overflows comes back looking like a quiet period. Widening
+     coverage from three venues to twenty made that reachable: about 21 trades a
+     minute across the indexed set puts twelve hours near 15,000 logs. So a response
+     at the cap is treated as a failure to cover the window, and the window is
+     halved until it fits. What is reported afterwards is the range actually
+     covered, never the range requested. */
+  let from = fromBlock, logs = null, truncated = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    logs = await rpcCall("eth_getLogs", [{
+      address: POOL_MANAGER, topics: [SWAP_TOPIC, ids],
+      fromBlock: "0x" + from.toString(16), toBlock: "0x" + toBlock.toString(16),
+    }]);
+    if (logs.length < LOG_CAP) break;
+    truncated = true;
+    const span = toBlock - from;
+    if (span < 2) break;
+    from = toBlock - Math.floor(span / 2);
+  }
+
   const out = new Map(pools.map((p) => [p.poolId, []]));
   for (const l of logs) {
     const pool = byId.get((l.topics[1] || "").toLowerCase());
     if (pool) out.get(pool.poolId).push(decodeLiveSwap(l, pool));
   }
-  return out;
+  return { byPool: out, from, truncated };
 }
 
 /** One Swap log, decoded to the AI leg of a given pool. */
@@ -985,8 +1004,12 @@ async function refreshLiveTail() {
        only decides which pool is treated as the price leader below. */
     const recent = (p) => p.hourly.slice(-24).reduce((a, h) => a + (h.aiBuy || 0) + (h.aiSell || 0), 0);
     const pools = [...S.flow.pools].sort((a, b) => recent(b) - recent(a));
-    const byPool = await liveSwapsMulti(pools, from, head).catch(() => new Map());
-    const perPool = pools.map((p) => byPool.get(p.poolId) || []);
+    const fetched = await liveSwapsMulti(pools, from, head)
+      .catch(() => ({ byPool: new Map(), from, truncated: false }));
+    const perPool = pools.map((p) => fetched.byPool.get(p.poolId) || []);
+    // What was actually covered, which is not always what was asked for.
+    const covFrom = fetched.from;
+    const coversGapReal = coversGap && covFrom <= S.meta.headBlock + 1;
 
     const nowSec = Math.floor(Date.now() / 1000);
     const tOf = (b) => nowSec - Math.round((head - b) * SEC_PER_BLOCK);
@@ -1034,8 +1057,9 @@ async function refreshLiveTail() {
       }), at: nowSec, priceByPool,
       pointsByPool: Object.fromEntries(Object.entries(pointsByPool).map(([k, m]) => [k, [...m.values()].sort((a, b) => a.t - b.t)])),
       lastPrice: last ? last.price : null,
-      minutes: Math.max(1, Math.round((head - from) * SEC_PER_BLOCK / 60)),
-      coversGap, gapMinutes: Math.round(gapBlocks * SEC_PER_BLOCK / 60),
+      minutes: Math.max(1, Math.round((head - covFrom) * SEC_PER_BLOCK / 60)),
+      coversGap: coversGapReal, gapMinutes: Math.round(gapBlocks * SEC_PER_BLOCK / 60),
+      truncated: fetched.truncated,
       venues: pools.length,
       leak: hookedVol + hooklessVol > 0 ? hooklessVol / (hookedVol + hooklessVol) : null,
     };
@@ -1099,7 +1123,8 @@ function renderLiveStrip() {
         ${L.leak == null ? "" : `<b>${pctLevel(L.leak, 1)}</b> of it crossed pools that pay the vault nothing.`}
         ${L.coversGap === false
           ? `<span class="warnline">This does not reach the indexed history below, which stops
-             ${fmtAge(L.gapMinutes)} back — there is an unmeasured window between them. The figures below exclude it.</span>`
+             ${fmtAge(L.gapMinutes)} back — there is an unmeasured window between them. The figures below exclude it.${
+             L.truncated ? " The endpoint capped the response, so the live window was shortened to fit." : ""}</span>`
           : `It continues the indexed history below, which stops at block ${S.meta.headBlock.toLocaleString()}.`}
       </div>
     </div>`;
