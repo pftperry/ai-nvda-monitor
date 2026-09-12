@@ -68,12 +68,23 @@ const rebuildOnly = (() => {
 })();
 const priorFlow = flag("rebuild") ? null : readData("flow.json");
 const prev = new Map((priorFlow?.pools || []).map((p) => [p.poolId, p]));
+/* Pools being repaired must survive the selection that follows.
+
+   Dropping a pool from `prev` is how a repair forces it to re-derive -- but
+   selection also keeps pools BECAUSE they are in `prev` with depth, so the drop
+   silently removed the target from the retention set and rotation then evicted it.
+   Asking to repair a pool was a way to lose it: measured, a targeted repair of one
+   AI/ETH venue produced a run that did not index that venue at all. They are
+   pinned for the run instead. */
+const rebuildTargets = [];
 if (rebuildOnly) {
-  let dropped = 0;
   for (const [id, p] of [...prev]) {
-    if (rebuildOnly.some((m) => `${id} ${p.pairSymbol || ""}`.toLowerCase().includes(m))) { prev.delete(id); dropped++; }
+    if (rebuildOnly.some((m) => `${id} ${p.pairSymbol || ""}`.toLowerCase().includes(m))) {
+      prev.delete(id);
+      rebuildTargets.push(id);
+    }
   }
-  console.log(`  --rebuild-pools ${rebuildOnly.join(",")}: re-deriving ${dropped} pool(s), resuming the rest`);
+  console.log(`  --rebuild-pools ${rebuildOnly.join(",")}: re-deriving ${rebuildTargets.length} pool(s) and pinning them for this run, resuming the rest`);
 }
 if (prev.size) console.log(`  resuming from stored series for ${prev.size} pools (--rebuild to force a full re-scan)`);
 
@@ -129,7 +140,7 @@ if (fast) {
     .sort((a, b) => b.swapsInWindow - a.swapsInWindow)
     .slice(0, 2)
     .map((p) => p.poolId);
-  const PINNED = [...new Set([C.AI_NVDA_POOL, C.AI_USDG_POOL, ...usdgVenues])];
+  const PINNED = [...new Set([C.AI_NVDA_POOL, C.AI_USDG_POOL, ...usdgVenues, ...rebuildTargets])];
   const pinned = PINNED
     .map((id) => active.find((p) => p.poolId === id) || all.find((p) => p.poolId === id))
     .filter(Boolean);
@@ -137,7 +148,7 @@ if (fast) {
      than intended silently filled all eight flow slots with USDG dust and evicted
      AI/ETH, AI/OPEN and AI/HENT -- the run looked healthy and produced a useless
      index. Half the slots is a generous ceiling for a deliberate pin list. */
-  if (pinned.length > Math.floor(TOP_FLOW / 2)) {
+  if (pinned.length - rebuildTargets.length > Math.floor(TOP_FLOW / 2)) {
     throw new Error(
       `pin rule matched ${pinned.length} pools for ${TOP_FLOW} flow slots; it would crowd out the ranked set ` +
       `(${pinned.map((p) => p.pairSymbol || p.poolId.slice(0, 8)).join(", ")})`);

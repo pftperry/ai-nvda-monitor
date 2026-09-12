@@ -187,13 +187,16 @@ if (poolsArtifact?.pools?.length) {
    "+1,170,701,449,776x" without anything failing. Incremental indexing makes this
    a whole class of bug -- a decode fix repairs the future and leaves the past -- so
    the seam itself is what gets asserted.
-   The threshold is 10,000x, and the first three hours of a pool's life are
-   exempt: a launch can legitimately print an absurd first price before real
-   trading sets a level (AI/OPEN's largest real hourly ratio is 30x, in its
-   opening hour). Every decimals error is a power of ten at least 1e3 and usually
-   1e12, so the gap between "loud price move" and "wrong units" is wide. */
+   The threshold is 10,000x and NOTHING is exempt. There used to be a three-hour
+   grace at the start of each pool's life, on the reasoning that a launch can print
+   an absurd first price before real trading sets a level. That reasoning was sound
+   and the exemption was still wrong: the largest genuine opening-hour move measured
+   anywhere here is AI/OPEN at 30x, nowhere near the threshold, so the grace period
+   protected nothing legitimate -- while hiding a 1.2e34 seam sitting at index 2 of
+   an AI/ETH pool, which passed CI and shipped. An exemption that only ever excuses
+   real faults is not a tolerance, it is a blind spot. */
 for (const p of flow.pools) {
-  const closes = p.hourly.filter((h) => h.close > 0).slice(3);
+  const closes = p.hourly.filter((h) => h.close > 0);
   let worst = null;
   for (let i = 1; i < closes.length; i++) {
     const r = Math.max(closes[i].close / closes[i - 1].close, closes[i - 1].close / closes[i].close);
