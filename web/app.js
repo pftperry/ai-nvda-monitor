@@ -943,6 +943,16 @@ async function liveSwapsMulti(pools, fromBlock, toBlock) {
   return { byPool: out, from, truncated };
 }
 
+/* Uniswap's tick bounds, mirrored from decode.mjs. A swap that leaves the pool
+   sitting on one of these exhausted it rather than pricing it: AI/OPENAIx1L
+   printed MAX_SQRT_PRICE - 1 and decoded to 3.4e38 pair-units per AI. Real chain
+   state, correct arithmetic, not a price. The browser derives prices independently
+   of the indexer, so the guard has to exist in both places or the live tail
+   reintroduces exactly what the indexer now discards. */
+const MIN_SQRT_PRICE = 4295128739n;
+const MAX_SQRT_PRICE = 1461446703485210103287273052203988822378723970342n;
+const atPriceBound = (v) => v <= MIN_SQRT_PRICE + 1n || v >= MAX_SQRT_PRICE - 1n;
+
 /** One Swap log, decoded to the AI leg of a given pool. */
 function decodeLiveSwap(l, pool) {
   const dec = pool.pairDecimals ?? 18;
@@ -950,15 +960,17 @@ function decodeLiveSwap(l, pool) {
     const a0 = i128(l.data, 0), a1 = i128(l.data, 1);
     const aiRaw = pool.aiIsCurrency0 ? a0 : a1;
     const pairRaw = pool.aiIsCurrency0 ? a1 : a0;
-    const r = Number(u256(l.data, 2)) / 2 ** 96;
+    const sq = u256(l.data, 2);
+    const bounded = atPriceBound(sq);
+    const r = Number(sq) / 2 ** 96;
     const d0 = pool.aiIsCurrency0 ? 18 : dec, d1 = pool.aiIsCurrency0 ? dec : 18;
-    const p = r * r * 10 ** (d0 - d1);
+    const p = bounded ? 0 : r * r * 10 ** (d0 - d1);
     return {
       block: parseInt(l.blockNumber, 16),
       ai: Number(aiRaw) / 1e18,
       pair: Number(pairRaw) / 10 ** dec,
       buy: aiRaw > 0n,                        // swapper receives AI — see decode.mjs
-      price: pool.aiIsCurrency0 ? p : (p ? 1 / p : 0),
+      price: bounded ? 0 : (pool.aiIsCurrency0 ? p : (p ? 1 / p : 0)),
     };
   }
 }
@@ -1034,10 +1046,10 @@ async function refreshLiveTail() {
         if (s.buy) { buy += s.ai; row.aiBuy += s.ai; row.buys++; }
         else { sell += -s.ai; row.aiSell += -s.ai; row.sells++; }
         if (pools[i].isLongHook) hookedVol += Math.abs(s.ai); else hooklessVol += Math.abs(s.ai);
-        row.close = s.price;
+        if (s.price > 0) row.close = s.price;   // a boundary print leaves the close alone
         bk.set(h, row);
         if (i === 0) last = s;
-        priceByPool[pools[i].poolId] = s.price;   // last print per venue
+        if (s.price > 0) priceByPool[pools[i].poolId] = s.price;   // last GENUINE print per venue
         if (s.price > 0) {
           const slot = Math.floor(tOf(s.block) / 300) * 300;
           const pid = pools[i].poolId;

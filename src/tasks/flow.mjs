@@ -1,6 +1,6 @@
 import { POOL_MANAGER } from "../config.mjs";
 import { getLogsRange } from "../rpc.mjs";
-import { TOPICS, decodeSwap, priceFromSqrt, fmtUnits } from "../decode.mjs";
+import { TOPICS, decodeSwap, priceFromSqrt, fmtUnits, atPriceBound } from "../decode.mjs";
 
 const r6 = (x) => (x === 0 ? 0 : +x.toPrecision(6));
 
@@ -62,8 +62,10 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
 
       const d0 = p.aiIsCurrency0 ? 18 : (p.pairDecimals ?? 18);
       const d1 = p.aiIsCurrency0 ? (p.pairDecimals ?? 18) : 18;
-      const raw = priceFromSqrt(s.sqrtPriceX96, d0, d1);
-      const price = p.aiIsCurrency0 ? raw : (raw ? 1 / raw : 0); // pair units per AI
+      // A print sitting on a tick bound exhausted the pool rather than pricing it.
+      const bounded = atPriceBound(s.sqrtPriceX96);
+      const raw = bounded ? 0 : priceFromSqrt(s.sqrtPriceX96, d0, d1);
+      const price = bounded ? 0 : (p.aiIsCurrency0 ? raw : (raw ? 1 / raw : 0)); // pair units per AI
 
       const h = tm.hourBucket(s.block);
       if (h !== null) {
@@ -74,10 +76,11 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
         }));
         if (isBuy) { row.buys++; row.aiBuy += ai;  row.pairBuy += -pair; row._b.add(s.sender); }
         else       { row.sells++; row.aiSell += -ai; row.pairSell += pair; row._s.add(s.sender); }
-        row.close = price;
+        if (price > 0) row.close = price;   // a boundary print leaves the close alone
         row.feePips = s.fee;
       }
-      lastPrice = price; lastLiq = s.liquidity; lastFee = s.fee;
+      if (price > 0) lastPrice = price;
+      lastLiq = s.liquidity; lastFee = s.fee;
 
       // A short live tape, kept only for the handful of pools shown in the UI.
       // (Cross-routing is measured in the pool-discovery task instead, which already

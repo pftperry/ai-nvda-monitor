@@ -95,6 +95,24 @@ export function decodeTransfer(log) {
   };
 }
 
+/* Uniswap's tick bounds. A swap that leaves the pool sitting exactly on one of
+   these did not discover a price -- it exhausted the pool. The AI/OPENAIx1L pool
+   printed sqrtPriceX96 = MAX_SQRT_PRICE - 1 on 12 September, which decodes to
+   3.4e38 "OPENAIx1L per AI" and produced a 1.5e39 hour-on-hour jump that failed
+   the units-seam invariant and blocked the deploy. The number was real chain
+   state and a correct decode; it simply is not a price, and treating it as one
+   poisons the close, the change figures and any percentile computed from them.
+
+   So a boundary print is reported as no price. The trade still counts toward
+   volume and flow -- it happened -- but the hour keeps whatever close the last
+   genuine print established. */
+const MIN_SQRT_PRICE = 4295128739n;
+const MAX_SQRT_PRICE = 1461446703485210103287273052203988822378723970342n;
+export const atPriceBound = (sqrtPriceX96) => {
+  const v = BigInt(sqrtPriceX96);
+  return v <= MIN_SQRT_PRICE + 1n || v >= MAX_SQRT_PRICE - 1n;
+};
+
 /**
  * Pool price as token1 per token0, from sqrtPriceX96.
  * Validated: the AI/NVDA pool yields 1.3037e-3 NVDA per AI against

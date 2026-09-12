@@ -13,7 +13,11 @@ on:
         required: false
         default: "standard"
         type: choice
-        options: [standard, quick, deep, rebuild, repair-usdg, repair-usdg-main]
+        options: [standard, quick, deep, rebuild, repair-usdg, repair-usdg-main, repair-pool]
+      pool:
+        description: "For repair-pool: pool id prefix or pair symbol to re-derive"
+        required: false
+        type: string
   push:
     branches: [main]
 
@@ -157,6 +161,16 @@ jobs:
             # Just the flagship AI/USDG venue -- the one the dollar price and market
             # cap read from. Half the work, for when the full repair will not fit.
             repair-usdg-main) node src/indexer.mjs --rebuild-pools 0x7aebd805 --top 20 --no-bridges ;;
+            # Re-derive one named venue. A decode fix only ever repairs the future --
+            # resuming from a cursor never revisits a stored bucket -- so when one
+            # lands, the pools it affected have to be re-derived by hand. Cheaper
+            # than a full rebuild by roughly the number of pools you are not
+            # touching. Pass the pool id prefix or the pair symbol in "pool".
+            repair-pool)
+              if [ -z "${{ github.event.inputs.pool }}" ]; then
+                echo "::error::repair-pool needs a pool id prefix or symbol in the 'pool' input"; exit 1
+              fi
+              node src/indexer.mjs --rebuild-pools "${{ github.event.inputs.pool }}" --top 20 --no-bridges ;;
             *)       node src/indexer.mjs --top 20 ;;
           esac
 
