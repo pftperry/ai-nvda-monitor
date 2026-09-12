@@ -13,7 +13,7 @@ on:
         required: false
         default: "standard"
         type: choice
-        options: [standard, quick, deep, rebuild]
+        options: [standard, quick, deep, rebuild, repair-usdg]
   push:
     branches: [main]
 
@@ -69,6 +69,9 @@ jobs:
             # decoding input changes (a token's decimals, say), because resuming
             # from a cursor only adds new buckets and never revisits old ones.
             rebuild) node src/indexer.mjs --rebuild --top 8 ;;
+            # Repair a decoding fix that only affected some venues, without paying
+            # for a full re-derive of every pool.
+            repair-usdg) node src/indexer.mjs --rebuild-pools usdg --top 8 ;;
             *)       node src/indexer.mjs --top 8 ;;
           esac
 

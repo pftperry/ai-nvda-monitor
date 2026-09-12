@@ -65,9 +65,27 @@ const pinned = PINNED
   .filter(Boolean);
 const selected = [...pinned, ...active.filter((p) => !PINNED.includes(p.poolId))].slice(0, TOP_FLOW);
 console.log(`  pinned flagships: ${pinned.map((p) => "AI/" + (p.pairSymbol || "?")).join(", ")}`);
-// Feed the previous run's series back in so only new blocks are scanned.
+/* Feed the previous run's series back in so only new blocks are scanned.
+
+   --rebuild-pools <match,match> drops the stored series for just the matching
+   pools, forcing those to re-derive while every other pool resumes from its
+   cursor. A decoding fix usually touches a couple of venues -- USDG's wrong
+   decimals corrupted exactly two pools' prices -- and re-deriving all eight to
+   repair two turned a two-minute job into a forty-five-minute one. Match is a
+   substring of the pool id or the pair symbol. */
+const rebuildOnly = (() => {
+  const i = argv.indexOf("--rebuild-pools");
+  return i >= 0 && argv[i + 1] ? argv[i + 1].split(",").map((s) => s.trim().toLowerCase()).filter(Boolean) : null;
+})();
 const priorFlow = flag("rebuild") ? null : readData("flow.json");
 const prev = new Map((priorFlow?.pools || []).map((p) => [p.poolId, p]));
+if (rebuildOnly) {
+  let dropped = 0;
+  for (const [id, p] of [...prev]) {
+    if (rebuildOnly.some((m) => `${id} ${p.pairSymbol || ""}`.toLowerCase().includes(m))) { prev.delete(id); dropped++; }
+  }
+  console.log(`  --rebuild-pools ${rebuildOnly.join(",")}: re-deriving ${dropped} pool(s), resuming the rest`);
+}
 if (prev.size) console.log(`  resuming from stored series for ${prev.size} pools (--rebuild to force a full re-scan)`);
 
 step(`Indexing buy/sell flow for top ${selected.length} pools`);
