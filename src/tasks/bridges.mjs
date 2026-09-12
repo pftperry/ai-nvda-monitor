@@ -206,7 +206,9 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
     row[key]++;
     formation.set(d, row);
   };
-  for (const p of (opts.allPools || aiPools)) bump(p, "opened");
+  // An empty array is truthy, so fall back on length, not on presence: a run
+  // without pool discovery would otherwise report 0 opened against N still trading.
+  for (const p of (opts.allPools?.length ? opts.allPools : aiPools)) bump(p, "opened");
   for (const p of aiPools) if (p.swapsInWindow) bump(p, "stillTrading");
   return {
     windowBlocks: window,

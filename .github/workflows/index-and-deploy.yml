@@ -13,7 +13,7 @@ on:
         required: false
         default: "standard"
         type: choice
-        options: [standard, quick, deep, rebuild, repair-usdg]
+        options: [standard, quick, deep, rebuild, repair-usdg, repair-usdg-main]
   push:
     branches: [main]
 
@@ -113,8 +113,15 @@ jobs:
             # from a cursor only adds new buckets and never revisits old ones.
             rebuild) node src/indexer.mjs --rebuild --top 8 ;;
             # Repair a decoding fix that only affected some venues, without paying
-            # for a full re-derive of every pool.
-            repair-usdg) node src/indexer.mjs --rebuild-pools usdg --top 8 ;;
+            # for a full re-derive of every pool. Bridges are skipped: a repair has
+            # one job and the 75-minute ceiling is real -- re-deriving both USDG
+            # pools from genesis is RPC-bound and took over an hour measured
+            # locally, so spending any of that budget on bridge venue discovery
+            # risks the timeout killing the repair itself.
+            repair-usdg) node src/indexer.mjs --rebuild-pools usdg --top 8 --no-bridges ;;
+            # Just the flagship AI/USDG venue -- the one the dollar price and market
+            # cap read from. Half the work, for when the full repair will not fit.
+            repair-usdg-main) node src/indexer.mjs --rebuild-pools 0x7aebd805 --top 8 --no-bridges ;;
             *)       node src/indexer.mjs --top 8 ;;
           esac
 
