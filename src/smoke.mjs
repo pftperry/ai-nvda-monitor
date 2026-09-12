@@ -31,6 +31,50 @@ const pools = [
   { poolId: "0xccc", pairToken: "0xtok1", pairSymbol: "TOK1" }, // same token, 2nd venue
 ];
 
+console.log("Module graph");
+
+/* Every relative import in src/ must resolve to a file that exists.
+   `node --check` parses a file without resolving anything it imports, so a deleted
+   or renamed module leaves every syntax check passing and the program dead on
+   startup. That happened three times in one day here -- most recently after a task
+   file was replaced and its import left behind, which parsed clean and could not
+   load. Checking the graph statically costs milliseconds and needs no network, no
+   execution and no side effects, which is why it can sit in front of everything
+   else. */
+{
+  const { readdirSync, readFileSync, existsSync } = await import("fs");
+  const { join, dirname, resolve } = await import("path");
+  const root = "src";
+  const files = [];
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const f = join(d, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (e.name.endsWith(".mjs")) files.push(f);
+    }
+  };
+  walk(root);
+
+  const broken = [];
+  let edges = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    for (const m of src.matchAll(/(?:^|\n)\s*(?:import|export)[^'"\n]*from\s+['"](\.[^'"]+)['"]/g)) {
+      edges++;
+      const target = resolve(dirname(f), m[1]);
+      if (!existsSync(target)) broken.push(`${f} -> ${m[1]}`);
+    }
+    for (const m of src.matchAll(/import\(\s*['"](\.[^'"]+)['"]\s*\)/g)) {
+      edges++;
+      const target = resolve(dirname(f), m[1]);
+      if (!existsSync(target)) broken.push(`${f} -> ${m[1]} (dynamic)`);
+    }
+  }
+  ok(`all ${edges} relative imports across ${files.length} modules resolve`, () => {
+    assert(!broken.length, `missing:\n         ${broken.join("\n         ")}`);
+  });
+}
+
 console.log("Routing");
 
 ok("a single-leg tx counts as direct volume", () => {

@@ -91,3 +91,49 @@ export const LIMITS = {
   // Wide log scans are legitimately slow, but nothing may hang forever.
   requestTimeoutMs: 90_000,
 };
+
+/**
+ * The anchors on the LONG platform, and what kind of thing each one is.
+ *
+ * Discovered rather than assumed: every LONG-hook pool was counted and the tokens
+ * appearing in hundreds of them are the anchors, while 18,340 of 18,442 tokens
+ * appear in three pools or fewer. That degree gap is unambiguous and the platform
+ * shape falls straight out of it -- roughly forty real-world assets, three quote
+ * assets, and eighteen thousand memecoins matched against them.
+ *
+ * The list is curated even so, because the distinction that matters is semantic and
+ * the chain cannot supply it. Degree alone cannot tell a stock from a memecoin that
+ * became popular: AI appears in 1,083 pools, more than AAPL and TSLA combined, and
+ * it is a dog coin anchored to NVDA. So the classification is written down where it
+ * can be argued with, and the indexer reports any high-degree token missing from it
+ * rather than silently reclassifying the platform underneath us.
+ *
+ * What counts as a launch follows directly: a pool with exactly one RWA side and a
+ * counterparty that is neither an RWA nor a quote asset. AI/NVDA is a launch and AI
+ * is the launched token; AAPL/USDG is a listing, not a launch; BONER/HIMS and
+ * MOO/MCD are launches; anything paired against AI is an AI bridge, which this
+ * project already tracks elsewhere.
+ */
+export const LAUNCHPAD = {
+  /* Quote assets. A token paired only with these has been listed, not launched. */
+  quotes: new Set([
+    "0x0000000000000000000000000000000000000000",   // native ETH
+    "0x5fc5360d0400a0fd4f2af552add042d716f1d168",   // USDG
+  ]),
+  /* Symbols of the real-world assets tokens get anchored to: equities, ETFs,
+     commodities, pre-IPO exposure and the leveraged wrappers of those. Matched by
+     symbol because the addresses are numerous and the symbols are what the platform
+     itself displays. */
+  rwaSymbols: new Set([
+    "NVDA", "SPCX", "GOOGL", "AAPL", "TSLA", "SPY", "GME", "META", "DJT", "MSFT",
+    "SGOV", "AMC", "GLD", "MSTR", "AMZN", "HOOD", "QQQ", "PLTR", "HIMS", "F",
+    "COIN", "SHOP", "SNOW", "TTWO", "RDDT", "USO", "SNDK", "PFE", "RBLX", "LULU",
+    "MCD", "MU", "OPENAI", "ANTHROPIC",
+  ]),
+  /* Leveraged and pre-IPO wrappers: NVDAx3L, OPENAIx1L, ANTHROPICx1L and friends.
+     Still real-world exposure, so still an anchor rather than a launch. */
+  rwaSuffix: /x\d+[LS]$/i,
+  /* Degree at which a token is treated as an anchor for reporting purposes. Only
+     used to flag anchors missing from the list above, never to classify silently. */
+  anchorDegree: 40,
+};
