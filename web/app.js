@@ -34,6 +34,10 @@ const signed = (x, d) => {
   return (v > 0 ? "+" : "") + v.toFixed(d);
 };
 const pct = (x, d = 1) => (x == null || !isFinite(x) ? "—" : `${signed(x, d)}%`);
+const pctOrMult = (x, d = 1) => (x == null || !isFinite(x) ? "—"
+  : x > 9 ? `${(1 + x).toFixed(1)}×`
+  : x < -0.9 ? `${(1 / (1 + x)).toFixed(1)}× lower`
+  : pct(x, d));
 const sig = (x, n = 6) => (x == null || !isFinite(x) || x === 0 ? "—" : x.toPrecision(n).replace(/\.?0+$/, ""));
 const short = (a) => (a ? `${a.slice(0, 8)}…${a.slice(-6)}` : "—");
 /* Times render in Central explicitly rather than in the viewer's local zone.
@@ -191,10 +195,10 @@ function _lineChart(host, rows, o) {
   const f = frame(host, { height: o.height || 210 });
   const vals = rows.map((r) => r[o.yKey]).filter((v) => isFinite(v));
   let min = minOf(vals), max = maxOf(vals);
-  const nonNegative = o.zeroBase && min >= 0;
+  const nonNegative = min >= 0;
   if (o.zeroBase) min = Math.min(0, min);
   const padv = (max - min) * 0.08 || Math.abs(max) * 0.1 || 1;
-  min = nonNegative ? 0 : min - padv;
+  min = nonNegative ? Math.max(0, min - padv) : min - padv;
   max += padv;
   yAxis(f, min, max, o.fmt || compact);
   const X = (i) => f.padL + (rows.length === 1 ? f.iw / 2 : (i / (rows.length - 1)) * f.iw);
@@ -1574,12 +1578,39 @@ function renderPrice(feeSeries) {
   };
   const M = marketState();
   const px = M.price || last.close;
-  /* A change is only meaningful if the historical leg sits on the same scale as
-     the current price. Stored buckets can predate a decoding fix — the USDG
-     decimals error left old closes 10^12 too small — and comparing today against
-     one of those rendered "+139,740,061,052,265% 24h" on screen. Implausible
-     comparisons are withheld, because an absurd number is still read as a number. */
-  const sane = (h) => (h && px && h / px > 0.05 && h / px < 20 ? h : null);
+  /* Withhold history that is on a different SCALE, not history that is merely far
+     from today's price.
+
+     The first version of this compared each point against the current price and
+     rejected anything outside a 20x band. That caught the bug it was written for --
+     USDG's decimals error left old closes 10^12 too small and rendered
+     "+139,740,061,052,265% 24h" -- but it also threw away the truth: AI traded at
+     $0.0107 on 22 July and $0.34 now, a genuine 32x, so two thirds of the real
+     dollar history failed the test and the chart claimed 23 days of a 52-day record.
+     Absolute distance from today cannot distinguish a big move from a wrong unit.
+     Continuity can. A units error is a STEP -- one adjacent-hour ratio in the
+     thousands with smooth series either side -- while a rally is a slope. So the
+     series is cut at the last such discontinuity and everything after it is kept,
+     however far that is from today. The server-side invariant fails the build on
+     the same signature, so this is the second line of defence rather than the only
+     one. */
+  const SCALE_STEP = 1000;
+  const scaleCut = (rows) => {
+    let cut = 0;
+    for (let i = 1; i < rows.length; i++) {
+      const a = rows[i - 1].close, b = rows[i].close;
+      if (a > 0 && b > 0 && Math.max(a / b, b / a) > SCALE_STEP) cut = i;
+    }
+    return cut;
+  };
+  const cutAt = scaleCut(hrs);
+  const onScaleAll = hrs.slice(cutAt);
+  const sane = (h) => {
+    if (h == null || !px) return null;
+    const first = onScaleAll.length ? onScaleAll[0].close : null;
+    // Anything at or after the cut is on the current scale by construction.
+    return first != null && h >= Math.min(first, px) / SCALE_STEP ? h : null;
+  };
   const raw24 = at(24), raw168 = at(168), raw720 = at(720);
   const p24 = sane(raw24), p7d = sane(raw168), p30d = sane(raw720);
   const historySuspect = (raw24 && !p24) || (raw168 && !p7d) || (raw720 && !p30d);
@@ -1602,14 +1633,14 @@ function renderPrice(feeSeries) {
   const disagrees = M.disagrees;
 
   $("#kpiPrice").innerHTML = kpiEl(money(px),
-    c24 == null ? "" : `${pct(c24, 1)} 24h`, c24 >= 0 ? "up" : "down",
+    c24 == null ? "" : `${pctOrMult(c24, 1)} 24h`, c24 >= 0 ? "up" : "down",
     `market cap $${compact(mcap)}`);
 
   /* Chart = settled hourly history + the live five-minute tail. Without the tail
      the line simply stops at the last indexed hour, which on a page that calls
      itself a monitor reads as broken rather than as "not yet indexed". */
-  const onScale = hrs.filter((h) => sane(h.close) != null);
-  const offScale = hrs.length - onScale.length;
+  const onScale = onScaleAll;
+  const offScale = cutAt;
   const livePts = (S.live?.pointsByPool?.[pool.poolId] || []).filter((pt) => pt.t > (onScale.at(-1)?.t || 0));
   const chartRows = [...onScale.slice(-24 * 30), ...livePts];
   lineChart($("#cInvPrice"), chartRows, {
@@ -1641,7 +1672,7 @@ function renderPrice(feeSeries) {
     disagrees
       ? `<b>On-chain and aggregator prices disagree materially</b> (${money(px)} vs $${agg.toPrecision(4)}).
          Treat both as suspect until reconciled; this normally means a token's decimals or the chosen pool is wrong.`
-      : `AI is <b>${money(px)}</b>, a market cap of <b>$${compact(mcap)}</b>${c24 == null ? "" : `, <b>${pct(c24, 1)}</b> over 24h`}${c7 == null ? "" : ` and <b>${pct(c7, 1)}</b> over 7 days`}${c30 == null ? "" : `, <b>${pct(c30, 1)}</b> over 30 days`}.
+      : `AI is <b>${money(px)}</b>, a market cap of <b>$${compact(mcap)}</b>${c24 == null ? "" : `, <b>${pct(c24, 1)}</b> over 24h`}${c7 == null ? "" : ` and <b>${pctOrMult(c7, 1)}</b> over 7 days`}${c30 == null ? "" : `, <b>${pctOrMult(c30, 1)}</b> over 30 days`}.
          ${feeChg == null ? "" : `Fees over the same week ${feeChg >= 0 ? "rose" : "fell"} <b>${pctLevel(Math.abs(feeChg), 0)}</b>, so price is ${verdict}.`}
          ${agg ? `<span class="muted">Aggregator cross-check: ${agg.toPrecision(4)}.</span>` : ""}${suspectNote}${scaleNote}${sourceNote}`);
   return { px, mcap };
