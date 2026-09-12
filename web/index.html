@@ -49,6 +49,7 @@
 
   <!-- ───────────────────────── Investor View ───────────────────────── -->
   <section class="panel" id="p-investor" role="tabpanel" aria-labelledby="tab-investor" hidden>
+    <div id="liveStrip"></div>
     <div id="verdict"></div>
 
     <h2 class="section-title">Where the measured inputs actually sit</h2>
@@ -101,8 +102,16 @@
         <div id="takeVault"></div>
       </div>
       <div class="card">
-        <h3>4. Hub conversion</h3>
-        <p class="sub">Share of AI volume that is other tokens routing <i>through</i> AI. The single best test of whether the liquidity-hub thesis is happening.</p>
+        <h3>4. Hub conversion (κ)</h3>
+        <p class="sub">
+          <b>Cross-routed AI volume ÷ direct AI volume.</b> Swaps are grouped by transaction: one AI swap in a
+          transaction is <i>direct</i> — someone wanted AI. Two or more, where the trader receives AI in one leg
+          and spends it in another, means AI was a pass-through hop (<code>BONER → AI → MEME</code>); the routed
+          amount is <code>min(received, spent)</code> and any residual counts as direct.
+          It separates “people want to own AI” from “AI is the plumbing everything else moves through”. Only the
+          second is the liquidity-hub thesis, and it is the more durable, because it does not need anyone to hold
+          an opinion on AI at all.
+        </p>
         <div id="kpiKappa"></div>
         <div class="chart" id="cInvKappa"></div>
         <div id="takeKappa"></div>

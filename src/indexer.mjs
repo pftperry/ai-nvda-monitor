@@ -50,6 +50,9 @@ step("Discovering AI pools");
 const { all, active, seedTxIndex, seedFrom } = await discoverPools(latest, {
   activityWindow: ACTIVITY_WINDOW,
   nameTop: quick ? 40 : 120,
+  // Initialize events are append-only, so the pool catalogue resumes too.
+  knownPools: flag("rebuild") ? null : store.get("poolCatalogue"),
+  store,
 });
 
 // The two flagship venues are always indexed in depth regardless of how they rank.
@@ -81,7 +84,7 @@ console.log(`  measured cross-routing = ${(routing.measuredKappaRatio * 100).toF
 console.log(`  ${routing.transactions.crossRouting.toLocaleString()} cross-routing txs of ${routing.transactions.multiLeg.toLocaleString()} multi-leg`);
 
 step("Indexing burn / lock / vault ledger");
-const burns = await indexBurns(latest, tm, {});
+const burns = await indexBurns(latest, tm, { prev: flag("rebuild") ? null : readData("burns.json") });
 console.log(`  burned ${burns.burned.toLocaleString()} AI over ${burns.burnEvents} events`);
 console.log(`  vault holds ${burns.vault.aiBalance.toLocaleString()} AI + ${burns.vault.nvdaBalance.toLocaleString()} NVDA`);
 console.log(`  observed fee split burn:lock:platform = 1 : ${burns.observedSplit?.lock} : ${burns.observedSplit?.platform}`);

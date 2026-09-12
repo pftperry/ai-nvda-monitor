@@ -15,7 +15,15 @@ import { erc20, balanceOf } from "../tokens.mjs";
  */
 export async function indexBurns(latest, tm, opts = {}) {
   const log = opts.log || console.log;
-  const scan = (filter) => getLogsRange(filter, GENESIS_BLOCK, latest, { chunk: 8_000_000 });
+
+  /* Incremental, like flow. Rescanning all ~51M blocks across five filters every
+     run cost minutes and dominated the refresh, which is what made a short cron
+     interval impossible. Transfers are append-only, so resuming from a cursor and
+     merging is exact; only the cumulative columns need recomputing at the end. */
+  const prev = opts.prev && opts.prev.cursor ? opts.prev : null;
+  const from = prev ? Math.max(GENESIS_BLOCK, prev.cursor + 1) : GENESIS_BLOCK;
+  if (prev) log(`  resuming burn ledger from block ${from.toLocaleString()} (+${(latest - from).toLocaleString()} blocks)`);
+  const scan = (filter) => (from > latest ? Promise.resolve([]) : getLogsRange(filter, from, latest, { chunk: 8_000_000 }));
 
   log("  scanning AI burns (Transfer -> 0x0)...");
   const burns = (await scan({ address: AI, topics: [TOPICS.TRANSFER, null, padAddr(BURN_ADDRESS)] })).map(decodeTransfer);
@@ -46,7 +54,14 @@ export async function indexBurns(latest, tm, opts = {}) {
   log("  scanning AI mints (Transfer from 0x0)...");
   const mints = (await scan({ address: AI, topics: [TOPICS.TRANSFER, padAddr(BURN_ADDRESS)] })).map(decodeTransfer);
 
+  // Seed from the stored series so merged buckets accumulate rather than restart.
   const daily = new Map();
+  if (prev && Array.isArray(prev.daily)) {
+    for (const d of prev.daily) {
+      daily.set(d.t, { t: d.t, burnAI: d.burnAI || 0, lockAI: d.lockAI || 0, nvdaIn: d.nvdaIn || 0,
+                       platformAI: d.platformAI || 0, burnEvents: d.burnEvents || 0 });
+    }
+  }
   const bump = (block, key, amount) => {
     const d = tm.dayBucket(block);
     if (d === null) return;
@@ -72,10 +87,18 @@ export async function indexBurns(latest, tm, opts = {}) {
     r.cumPlatformAI = cp += r.platformAI;
   }
 
+  /* Totals carry forward: the scans above now cover only the new range, so each
+     total is the prior run's plus what arrived since. The live balances read from
+     the chain below are independent, which makes them a running cross-check on
+     this arithmetic -- verify asserts vault balance equals summed inbound locks. */
   const sum = (a) => a.reduce((s, x) => s + fmtUnits(x.value), 0);
-  const totalBurn = sum(burns), totalLock = sum(locks), totalPlatform = sum(platform);
-  // The fee split proper: only what the splitter itself sent to each destination.
-  const feeBurn = sum(legBurn), feeLock = sum(legLock), feePlatform = sum(legPlatform);
+  const carried = prev || {};
+  const totalBurn = (carried.burned || 0) + sum(burns);
+  const totalLock = (carried.lockedInVault || 0) + sum(locks);
+  const totalPlatform = (carried.platformInflowAllSources || 0) + sum(platform);
+  const feeBurn = (carried.feeLegs?.burn || 0) + sum(legBurn);
+  const feeLock = (carried.feeLegs?.lock || 0) + sum(legLock);
+  const feePlatform = (carried.feeLegs?.platform || 0) + sum(legPlatform);
 
   // Live state, straight from the chain.
   const [supply, vaultAI, vaultNVDA, pmAI, hookAI, nvdaSupply] = await Promise.all([
@@ -100,12 +123,13 @@ export async function indexBurns(latest, tm, opts = {}) {
   return {
     updatedAt: Math.floor(Date.now() / 1000),
     latestBlock: latest,
+    cursor: latest,           // next run resumes from cursor + 1
     genesisSupply: genesis,
-    mintEvents: mints.length,
-    mintedTotal: mints.reduce((s, x) => s + fmtUnits(x.value), 0),
+    mintEvents: (carried.mintEvents || 0) + mints.length,
+    mintedTotal: (carried.mintedTotal || 0) + mints.reduce((s, x) => s + fmtUnits(x.value), 0),
     totalSupply,
     burned: totalBurn,
-    burnEvents: burns.length,
+    burnEvents: (carried.burnEvents || 0) + burns.length,
     lockedInVault: totalLock,
     // Everything the platform address received, from any source. NOT the fee leg.
     platformInflowAllSources: totalPlatform,

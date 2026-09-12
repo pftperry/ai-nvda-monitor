@@ -2,9 +2,10 @@ name: Index and deploy
 
 on:
   schedule:
-    # hourly. GitHub delays scheduled runs under load, and the concurrency group
-    # below means a long backfill is never interrupted by the next tick.
-    - cron: "7 * * * *"
+    # Every 5 minutes, GitHub's documented minimum. It delays scheduled runs under
+    # load, so treat this as a target rather than a guarantee; the page's live tail
+    # reads the chain directly and is current regardless of when this last ran.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -35,11 +36,16 @@ jobs:
         with:
           node-version: 20
 
-      # Resumable cursor state (block -> time anchors) so repeat runs stay cheap.
+      # Resume state AND the generated data. Caching web/data is what lets a
+      # 5-minute cadence work without committing 288 times a day: each run resumes
+      # from the previous run's artifacts, and git only receives a periodic
+      # snapshot as a durable fallback for when the cache is evicted.
       - name: Restore indexer cache
         uses: actions/cache@v4
         with:
-          path: .cache
+          path: |
+            .cache
+            web/data
           key: indexer-state-${{ github.run_id }}
           restore-keys: indexer-state-
 
@@ -72,17 +78,31 @@ jobs:
         if: steps.index.outcome == 'success'
         run: node src/verify.mjs
 
-      - name: Commit refreshed data
+      # Snapshot to git at most every SNAPSHOT_MINUTES. At a 5-minute cadence,
+      # committing every run would be ~288 commits and ~200MB of superseded JSON a
+      # day. The cache carries data between runs; git only needs a periodic
+      # fallback for cache eviction, and the deploy publishes from the workspace
+      # either way, so the live site is always the freshest data regardless.
+      - name: Snapshot data to git (periodically)
         if: steps.index.outcome == 'success' && steps.verify.outcome == 'success'
+        env:
+          SNAPSHOT_MINUTES: "120"
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          LAST=$(git log -1 --format=%ct -- web/data || echo 0)
+          AGE=$(( $(date +%s) - ${LAST:-0} ))
+          if [ "$AGE" -lt $(( SNAPSHOT_MINUTES * 60 )) ]; then
+            echo "Last snapshot ${AGE}s ago; skipping commit (threshold $(( SNAPSHOT_MINUTES * 60 ))s)."
+            exit 0
+          fi
           git add web/data
           if git diff --staged --quiet; then
             echo "No data change."
           else
-            git commit -m "chore(data): refresh on-chain index [skip ci]"
-            git push
+            git commit -m "chore(data): periodic snapshot of on-chain index [skip ci]"
+            git pull --rebase --autostash origin main || true
+            git push || echo "push raced another run; the cache still carries the data"
           fi
 
       - name: Report refresh outcome

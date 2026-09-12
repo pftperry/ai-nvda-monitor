@@ -15,17 +15,33 @@ export async function discoverPools(latest, opts = {}) {
   const activityWindow = opts.activityWindow ?? 2_000_000; // ~2.4 days
   const log = opts.log || console.log;
 
-  log("  scanning Initialize events for AI pools...");
+  /* The pool catalogue is append-only -- a pool, once initialised, never
+     un-initialises -- so it resumes from a cursor like everything else. A refresh
+     then costs two small queries instead of two full-history scans. */
+  const known = opts.knownPools;
+  const catalogueFrom = known && known.cursor ? Math.max(GENESIS_BLOCK, known.cursor + 1) : GENESIS_BLOCK;
+  log(known && known.cursor
+    ? `  scanning Initialize from block ${catalogueFrom.toLocaleString()} (${known.pools.length} pools already known)...`
+    : "  scanning Initialize events for AI pools...");
   const asC0 = await getLogsRange(
     { address: POOL_MANAGER, topics: [TOPICS.INITIALIZE, null, padAddr(AI)] },
-    GENESIS_BLOCK, latest, { chunk: 25_000_000 }
+    catalogueFrom, latest, { chunk: 25_000_000 }
   );
   const asC1 = await getLogsRange(
     { address: POOL_MANAGER, topics: [TOPICS.INITIALIZE, null, null, padAddr(AI)] },
-    GENESIS_BLOCK, latest, { chunk: 25_000_000 }
+    catalogueFrom, latest, { chunk: 25_000_000 }
   );
-  const pools = [...asC0, ...asC1].map(decodeInitialize);
-  log(`  found ${pools.length} pools containing AI (${asC0.length} as currency0, ${asC1.length} as currency1)`);
+  const fresh = [...asC0, ...asC1].map(decodeInitialize);
+  // Stored entries come back with sqrtPriceX96 as a string; restore the bigint.
+  const restored = (known && known.pools ? known.pools : []).map((p) => ({ ...p, sqrtPriceX96: BigInt(p.sqrtPriceX96) }));
+  const pools = [...restored, ...fresh];
+  if (opts.store) {
+    opts.store.set("poolCatalogue", {
+      cursor: latest,
+      pools: pools.map((p) => ({ ...p, sqrtPriceX96: String(p.sqrtPriceX96) })),
+    });
+  }
+  log(`  ${pools.length} pools contain AI (${fresh.length} new this run)`);
 
   // Measure activity so dust can be dropped.
   const ids = pools.map((p) => p.poolId);

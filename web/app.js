@@ -730,6 +730,110 @@ function renderBridges() {
   ], r.topCounterparties);
 }
 
+/* ── live tail ───────────────────────────────────────────────────────────
+   Indexed artifacts are minutes-to-hours old by construction. The things a
+   decision actually turns on -- price, and which way flow is leaning right now --
+   are read straight from the chain in the browser instead and spliced onto the
+   end of the indexed series. This decouples freshness from the cron: the schedule
+   governs how much history exists, not how current the top line is. */
+
+const i128 = (hex, i) => BigInt.asIntN(128, BigInt("0x" + hex.slice(2 + 64 * i, 2 + 64 * (i + 1))));
+const u256 = (hex, i) => BigInt("0x" + hex.slice(2 + 64 * i, 2 + 64 * (i + 1)));
+const SEC_PER_BLOCK = 0.1022;   // measured; used only to bucket the live tail
+
+/** Swaps for one pool over a block range, decoded to the AI leg. */
+async function liveSwaps(pool, fromBlock, toBlock) {
+  const logs = await rpcCall("eth_getLogs", [{
+    address: POOL_MANAGER, topics: [SWAP_TOPIC, pool.poolId],
+    fromBlock: "0x" + fromBlock.toString(16), toBlock: "0x" + toBlock.toString(16),
+  }]);
+  const dec = pool.pairDecimals ?? 18;
+  return logs.map((l) => {
+    const a0 = i128(l.data, 0), a1 = i128(l.data, 1);
+    const aiRaw = pool.aiIsCurrency0 ? a0 : a1;
+    const pairRaw = pool.aiIsCurrency0 ? a1 : a0;
+    const r = Number(u256(l.data, 2)) / 2 ** 96;
+    const d0 = pool.aiIsCurrency0 ? 18 : dec, d1 = pool.aiIsCurrency0 ? dec : 18;
+    const p = r * r * 10 ** (d0 - d1);
+    return {
+      block: parseInt(l.blockNumber, 16),
+      ai: Number(aiRaw) / 1e18,
+      pair: Number(pairRaw) / 10 ** dec,
+      buy: aiRaw > 0n,                        // swapper receives AI — see decode.mjs
+      price: pool.aiIsCurrency0 ? p : (p ? 1 / p : 0),
+    };
+  });
+}
+
+/**
+ * Poll for everything since the last indexed block and keep it as a live tail.
+ * Deliberately narrow: the busiest few venues and a bounded window, because this
+ * runs in the viewer's browser against the same throttled endpoint, on a timer.
+ */
+async function refreshLiveTail() {
+  if (!S.flow || !S.meta || !S.flow.pools.length) return;
+  try {
+    const head = parseInt(await rpcCall("eth_blockNumber", []), 16);
+    const HOUR_BLOCKS = Math.round(3600 / SEC_PER_BLOCK);
+    const from = Math.max(S.meta.headBlock + 1, head - 4 * HOUR_BLOCKS);
+    if (head <= from) { S.live = null; renderLiveStrip(); return; }
+
+    const pools = S.flow.pools.slice(0, 3);
+    const perPool = await Promise.all(pools.map((p) => liveSwaps(p, from, head).catch(() => [])));
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const tOf = (b) => nowSec - Math.round((head - b) * SEC_PER_BLOCK);
+
+    let buy = 0, sell = 0, n = 0, last = null;
+    const buckets = new Map();
+    perPool.forEach((swaps, i) => {
+      for (const s of swaps) {
+        n++;
+        const h = Math.floor(tOf(s.block) / 3600) * 3600;
+        const row = buckets.get(h) || { t: h, aiBuy: 0, aiSell: 0, buys: 0, sells: 0, buyers: 0, sellers: 0, close: 0, live: true };
+        if (s.buy) { buy += s.ai; row.aiBuy += s.ai; row.buys++; }
+        else { sell += -s.ai; row.aiSell += -s.ai; row.sells++; }
+        row.close = s.price;
+        buckets.set(h, row);
+        if (i === 0) last = s;
+      }
+    });
+
+    S.live = {
+      head, from, swaps: n, buy, sell, net: buy - sell,
+      imbalance: buy + sell > 0 ? (buy - sell) / (buy + sell) : 0,
+      buckets: [...buckets.values()].sort((a, b) => a.t - b.t),
+      pools: pools.map((p) => p.pairSymbol), at: nowSec,
+      lastPrice: last ? last.price : null,
+      minutes: Math.max(1, Math.round((head - from) * SEC_PER_BLOCK / 60)),
+    };
+    renderLiveStrip();
+    if (!$("#p-investor").hidden) { try { renderInvestor(); } catch { /* never blank the tab */ } }
+  } catch { /* the live tail is a bonus; its failure must not disturb the page */ }
+}
+
+function renderLiveStrip() {
+  const host = $("#liveStrip");
+  if (!host) return;
+  const L = S.live;
+  if (!L || !L.swaps) {
+    host.innerHTML = `<div class="verdict"><div class="detail">No trades on the busiest venues since the last
+      indexed block. Everything below is current as of block ${S.meta.headBlock.toLocaleString()}.</div></div>`;
+    return;
+  }
+  host.innerHTML = `
+    <div class="verdict ${L.net >= 0 ? "pos" : "neg"}">
+      <div class="lead">Live: net ${L.net >= 0 ? "buying" : "selling"} of ${compact(Math.abs(L.net))} AI
+        <span style="font-size:13px;font-weight:400;color:var(--text-secondary)">
+          (${pctLevel(Math.abs(L.imbalance), 1)} imbalance)</span></div>
+      <div class="detail">
+        <b>${L.swaps.toLocaleString()} trades</b> across ${L.pools.map((s) => "AI/" + s).join(", ")} in the last
+        <b>${L.minutes} minutes</b>, read from the chain just now — ahead of the indexed history below, which
+        stops at block ${S.meta.headBlock.toLocaleString()}. Refreshes every 30s.
+      </div>
+    </div>`;
+}
+
 /* ── tab 0: investor view ────────────────────────────────────────────────
    Everything here is derived from the same artifacts the other tabs use. No
    number is hardcoded and no takeaway is written in advance: each conclusion is
@@ -812,6 +916,7 @@ function renderInvestor() {
   const net7p = trailing(flows, 7, (d) => d.net, 7);
   const buy7 = trailing(flows, 7, (d) => d.buy), sell7 = trailing(flows, 7, (d) => d.sell);
   const imb7 = buy7 + sell7 > 0 ? (buy7 - sell7) / (buy7 + sell7) : 0;
+  const liveNet = S.live ? S.live.net : 0;
   $("#kpiFlow").innerHTML = kpiEl(
     `${net7 >= 0 ? "+" : ""}${compact(net7)}`,
     `${pctLevel(imb7, 1)} imbalance`, net7 >= 0 ? "up" : "down", "AI net, 7d");
@@ -821,13 +926,16 @@ function renderInvestor() {
     tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>net ${compact(d.net)} AI</div>
       <div class="k">${compact(d.buy)} bought · ${compact(d.sell)} sold</div>`,
   });
+  const liveNote = S.live && S.live.swaps
+    ? ` Live, in the last ${S.live.minutes} minutes: net <b>${liveNet >= 0 ? "buying" : "selling"} of ${compact(Math.abs(liveNet))} AI</b> across ${S.live.swaps.toLocaleString()} trades, which is ahead of the indexed series above.`
+    : "";
   const flipped = (net7 >= 0) !== (net7p >= 0);
   $("#takeFlow").innerHTML = takeEl(net7 >= 0 ? "pos" : "neg",
     `Traders were net <b>${net7 >= 0 ? "buyers" : "sellers"} of ${compact(Math.abs(net7))} AI</b> over the last 7 days
      (prior 7 days: ${net7p >= 0 ? "+" : ""}${compact(net7p)}).
      ${flipped ? "<b>Direction flipped</b> versus the previous week, which is the signal worth watching."
                : `Direction is unchanged week over week${Math.abs(net7) > Math.abs(net7p) ? " and intensifying" : " and easing"}.`}
-     Sustained one-sided absorption is what moves price; a single day is noise.`);
+     Sustained one-sided absorption is what moves price; a single day is noise.${liveNote}`);
 
   /* ── 2. fee run-rate ──────────────────────────────────────────────── */
   const fee = (d) => (d.burnAI || 0) + (d.lockAI || 0) + (d.platformAI || 0);
@@ -1418,6 +1526,10 @@ async function boot() {
   renderAll();
   refreshLive();
   setInterval(refreshLive, 20000);
+  // The live tail is the real-time layer: it makes the top line independent of
+  // how often the indexer runs.
+  refreshLiveTail();
+  setInterval(refreshLiveTail, 30000);
   // Charts resize themselves via ResizeObserver; only the phone/desktop layout
   // switch needs a full re-render, since it changes chart chrome, not just width.
   let wasPhone = isPhone(), rt;
