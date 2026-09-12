@@ -70,6 +70,18 @@ jobs:
           key: indexer-data-v3-${{ github.run_id }}
           restore-keys: indexer-data-v3-
 
+      # Runs BEFORE indexing, and unlike indexing it is a hard gate.
+      #
+      # The index step is continue-on-error on purpose: a throttled public RPC must
+      # not take the published site down. But that also makes a code fault look
+      # exactly like a rate limit -- a ReferenceError in the routing stage killed
+      # every run for hours while each one still reported success and quietly
+      # republished four-hour-old data. `node --check` parses without executing, so
+      # it saw nothing. This exercises the task logic offline in seconds, and a
+      # failure here stops the run instead of hiding behind stale data.
+      - name: Smoke-test task logic (no network)
+        run: node src/smoke.mjs
+
       # The first run backfills ~59 days from scratch and is the slow one; every run
       # after it resumes from the committed cursor and only scans new blocks.
       # Flow depth is bounded by --top because per-pool backfill dominates the clock,

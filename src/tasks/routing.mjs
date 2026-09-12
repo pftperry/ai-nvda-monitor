@@ -49,10 +49,14 @@ export function analyseRouting(txIndex, pools, tm, opts = {}) {
          tokens sharing a ticker, which silently merged their volumes into one line. */
       const cp = pools[flat[1]];
       const key = cp?.pairToken || "unknown";
-      const row = hubCounterparties.get(key)
+      /* Named cpRow, not row: `row` is the day bucket declared above with let, and a
+         block-scoped const of the same name put it in TDZ for the whole branch --
+         so `row.direct += v` two lines up threw ReferenceError and took the routing
+         stage down with it. */
+      const cpRow = hubCounterparties.get(key)
         || { token: cp?.pairToken || null, symbol: cp?.pairSymbol || null, ai: 0 };
-      row.ai += v;
-      hubCounterparties.set(key, row);
+      cpRow.ai += v;
+      hubCounterparties.set(key, cpRow);
       continue;
     }
 
