@@ -111,6 +111,18 @@ jobs:
           # refreshes, on a site whose whole point is a five-minute cadence. Pool
           # ranking, routing and bridges measure things that move over days, so
           # four passes a day is ample and the fast path gets the lock back.
+          # A PUSH changes code, not chain data, so it has no business re-deriving
+          # pool discovery, cross-routing and bridges. It was doing exactly that, and
+          # that is where the contention actually came from: measured on one run,
+          # discovery 8.3 min, cross-routing 20.6 min and bridges ~45 min, for a
+          # 1h15m job holding the only lock -- on every single commit. A day of
+          # commits therefore starved the five-minute schedule almost continuously.
+          # Pushes take the fast path; the deep figures are refreshed on their own
+          # cadence below, which is what they were always meant to be on.
+          if [ -z "$MODE" ] && [ "${{ github.event_name }}" = "push" ]; then
+            MODE="fast"
+            echo "push -> fast (code changed, chain data did not)"
+          fi
           if [ -z "$MODE" ] && [ "${{ github.event_name }}" = "schedule" ]; then
             if [ "$(date -u +%M)" -lt 5 ] && [ "$(( $(date -u +%H) % 6 ))" -eq 0 ]
               then MODE="standard"; else MODE="fast"; fi

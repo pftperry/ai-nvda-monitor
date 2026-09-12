@@ -63,11 +63,19 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
     const T = c.pairToken;
     const cached = venueCache[T];
     const vFrom = cached?.cursor ? Math.max(GENESIS_BLOCK, cached.cursor + 1) : GENESIS_BLOCK;
-    // Every pool containing T, on either side — only the part we have not seen.
-    const [a, b] = [
-      await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.INITIALIZE, null, padAddr(T)] }, vFrom, latest, { chunk: 25_000_000 }),
-      await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.INITIALIZE, null, null, padAddr(T)] }, vFrom, latest, { chunk: 25_000_000 }),
-    ];
+    /* Every pool containing T, on either side — only the part we have not seen, and
+       only for as long as the budget allows. The deadline is what actually bounds
+       this step: the between-tokens check above cannot help once a single token's
+       discovery is already running, and one of them ran forty-five minutes inside
+       these two calls while the budget sat unconsulted. Whatever the scan reaches
+       becomes the token's new cursor, so an interrupted discovery resumes next run
+       instead of starting over. */
+    const deadline = startedAt + budgetMs;
+    const a = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.INITIALIZE, null, padAddr(T)] }, vFrom, latest, { chunk: 25_000_000, deadline });
+    const b = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.INITIALIZE, null, null, padAddr(T)] }, vFrom, latest, { chunk: 25_000_000, deadline });
+    // Resume from the earlier of the two, so neither side can skip a range.
+    const venueCursor = Math.min(a.reachedBlock ?? latest, b.reachedBlock ?? latest);
+    const venuesPartial = a.truncated || b.truncated;
     const meta = new Map();
     for (const v of cached?.venues || []) meta.set(v.poolId, { tIsC0: v.tIsC0, isAIPool: v.isAIPool, block: v.block });
     for (const p of [...a, ...b].map(decodeInitialize)) {
@@ -76,7 +84,12 @@ export async function analyseBridges(aiPools, latest, tm, opts = {}) {
       meta.set(p.poolId, { tIsC0, isAIPool: (tIsC0 ? p.currency1 : p.currency0) === AI, block: p.block });
     }
     if (store) {
-      venueCache[T] = { cursor: latest, venues: [...meta].map(([poolId, m]) => ({ poolId, ...m })) };
+      venueCache[T] = { cursor: venueCursor, venues: [...meta].map(([poolId, m]) => ({ poolId, ...m })) };
+    }
+    if (venuesPartial) {
+      log(`    ${c.pairSymbol}: venue discovery hit the budget at block ${venueCursor.toLocaleString()}; resuming next run`);
+      skippedForTime++;
+      continue;   // an incomplete venue list would understate this token's share
     }
 
     /* Native launch vs organic bridge -- the distinction the thesis turns on.

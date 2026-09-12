@@ -193,7 +193,20 @@ export async function blockNumber() {
 export async function getLogsRange(filter, from, to, opts = {}) {
   const chunk = opts.chunk || LIMITS.defaultChunk;
   const onProgress = opts.onProgress;
+  /* An optional wall-clock deadline, because a caller's own budget cannot bound
+     what happens inside one of these scans. The bridge step learned this the hard
+     way: it had a ten-minute budget checked between tokens, and a single token's
+     venue discovery then ran forty-five minutes inside one call, holding the only
+     CI lock the whole time. The budget was never even consulted.
+
+     On expiry the scan stops and reports how far it actually got via
+     `reachedBlock`, so the caller can persist a cursor and resume rather than
+     discarding the work. Partial and honest about it beats complete and never
+     finishing. */
+  const deadline = opts.deadline || Infinity;
   const out = [];
+  out.reachedBlock = to;
+  out.truncated = false;
   let cursor = from;
   let size = chunk;
 
@@ -207,6 +220,11 @@ export async function getLogsRange(filter, from, to, opts = {}) {
   let wins = 0;
 
   while (cursor <= to) {
+    if (Date.now() > deadline) {
+      out.reachedBlock = cursor - 1;
+      out.truncated = true;
+      break;
+    }
     const end = Math.min(cursor + size - 1, to);
     try {
       const logs = await rpc("eth_getLogs", [{ ...filter, fromBlock: hexBlock(cursor), toBlock: hexBlock(end) }]);
