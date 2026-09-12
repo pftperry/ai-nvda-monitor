@@ -115,6 +115,40 @@
       </div>
     </div>
 
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card">
+        <h3>7. Cash-flow multiple, over time</h3>
+        <p class="sub">
+          Market cap divided by the annualised fee run-rate. Both scale with the AI price, so it cancels:
+          this multiple is <b>price-invariant</b> and needs no oracle. Lower is cheaper.
+        </p>
+        <div id="kpiMultiple"></div>
+        <div class="chart" id="cInvMultiple"></div>
+        <div id="takeMultiple"></div>
+      </div>
+      <div class="card">
+        <h3>8. Where the fees leak</h3>
+        <p class="sub">
+          Share of AI volume on fee-bearing (hooked) pools versus hookless ones. Anyone can open a v4 pool
+          for AI with no hook and a lower fee; routers will prefer it, and the vault gets nothing.
+        </p>
+        <div class="legend">
+          <span><i style="background:var(--series-1)"></i>Fee-bearing (funds vault)</span>
+          <span><i style="background:var(--series-2)"></i>Hookless (pays nothing)</span>
+        </div>
+        <div id="kpiLeak"></div>
+        <div class="chart" id="cInvLeak"></div>
+        <div id="takeLeak"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>Venue competition</h3>
+      <p class="sub">Every indexed venue for AI, its fee, and whether it pays the vault. Sorted by recent volume.</p>
+      <div class="scroll"><table id="tVenues"></table></div>
+      <div id="takeVenues"></div>
+    </div>
+
     <h2 class="section-title">Valuation frame</h2>
     <div class="card">
       <h3>What the measured revenue supports</h3>

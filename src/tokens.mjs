@@ -48,10 +48,13 @@ export async function resolveTokens(addresses, opts = {}) {
   for (const a0 of addresses) {
     const a = a0.toLowerCase();
     if (out.has(a)) continue;
-    if (c[a]) { out.set(a, { address: a, ...c[a] }); continue; }
+    // Curated entries win over the cache: the cache may hold a value learned
+    // before a name was known (native ETH resolved to "0x000000" until the zero
+    // address was added), and a stale cache must not outrank a corrected one.
     const k = known.get(a);
-    if (k) out.set(a, { address: a, symbol: k.symbol, decimals: k.decimals });
-    else todo.push(a);
+    if (k) { out.set(a, { address: a, symbol: k.symbol, decimals: k.decimals }); continue; }
+    if (c[a]) { out.set(a, { address: a, ...c[a] }); continue; }
+    todo.push(a);
   }
   if (todo.length) log(`  resolving ${todo.length} new token(s), ${out.size} from cache`);
 

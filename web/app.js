@@ -939,10 +939,118 @@ function renderInvestor() {
      <span class="muted">Burned and vault-locked are different tokens, not one counted twice: burned AI is destroyed and
      outside totalSupply, vault AI still exists inside it. They are near-identical in size only because the fee splits 1:1.</span>`);
 
+  const leak = renderLeak();
+  renderVenues();
+  renderMultiple(feeSeries);
   renderRegime(kappa, sc, capNow, feeAnnual, impliedVol);
   renderValuation(feeAnnual, impliedVol, vols);
-  renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p);
-  renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed);
+  renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak);
+  renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak);
+}
+
+/**
+ * Cash-flow multiple: market cap divided by the annualised fee run-rate.
+ *
+ * Both terms scale linearly with the AI price, so it cancels exactly and the
+ * multiple reduces to supply / annual-fee-in-AI. That is worth stating plainly,
+ * because it has a conclusion most holders will not expect: a price fall does
+ * NOT make this token cheaper on cash flow. Revenue is denominated in the token
+ * itself, so it falls with the price. Only rising AI-denominated fee income --
+ * that is, rising volume through pools that actually charge -- re-rates it.
+ */
+function renderMultiple(feeSeries) {
+  const b = S.burns;
+  const byDay = new Map(b.daily.map((d) => [d.t, d]));
+  const series = [];
+  for (let i = 6; i < feeSeries.length; i++) {
+    const window = feeSeries.slice(i - 6, i + 1);
+    const annual = (window.reduce((s, d) => s + d.fee, 0) / 7) * 365;
+    const cum = byDay.get(feeSeries[i].t)?.cumBurnAI ?? 0;
+    const supply = b.genesisSupply - cum;
+    if (annual > 0) series.push({ t: feeSeries[i].t, mult: supply / annual });
+  }
+  const now = series.length ? series[series.length - 1].mult : null;
+  const prior = series.length > 7 ? series[series.length - 8].mult : null;
+  const chg = prior ? now / prior - 1 : null;
+
+  $("#kpiMultiple").innerHTML = kpiEl(now == null ? "—" : `${now.toFixed(1)}×`,
+    chg == null ? "" : `${pct(chg, 0)} wk/wk`, chg <= 0 ? "up" : "down", "supply ÷ annual fees");
+  if (series.length > 1) {
+    lineChart($("#cInvMultiple"), series, {
+      xKey: "t", yKey: "mult", color: "var(--series-1)", xFmt: dayFmt,
+      fmt: (v) => `${v.toFixed(0)}×`,
+      tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.mult.toFixed(1)}× cash flow</div>`,
+    });
+  } else $("#cInvMultiple").innerHTML = `<p class="muted" style="padding:16px 0">Not enough complete days yet.</p>`;
+
+  $("#takeMultiple").innerHTML = takeEl(chg == null ? "" : chg <= 0 ? "pos" : "neg",
+    now == null ? "No fee history yet."
+    : `AI trades at <b>${now.toFixed(1)}× its annualised fee run-rate</b>${chg == null ? "" :
+        `, ${chg > 0 ? "up" : "down"} ${pctLevel(Math.abs(chg), 0)} on the week — ${chg > 0 ? "more expensive" : "cheaper"} than seven days ago`}.
+       The counterintuitive part: <b>this number does not move when the price moves.</b> Fees are earned in AI, so
+       revenue and market cap rise and fall together and the ratio cancels. You cannot buy this dip on cash flow —
+       only more volume through fee-bearing pools can re-rate it.`);
+}
+
+/**
+ * Where the fees leak: fee-bearing (hooked) venues versus hookless ones.
+ *
+ * This is the mechanism behind the revenue decline, and it is not a demand
+ * problem. v4 pools are permissionless, so anyone can open a competing AI pool
+ * with no hook and a lower fee. Routers then prefer it on price, and the volume
+ * that used to pay the vault stops paying anything.
+ */
+function renderLeak() {
+  const DAYS = 30;
+  const perDay = new Map();
+  for (const p of S.flow.pools) {
+    for (const h of p.hourly) {
+      const d = Math.floor(h.t / DAY) * DAY;
+      const row = perDay.get(d) || { t: d, hooked: 0, hookless: 0 };
+      const v = (h.aiBuy || 0) + (h.aiSell || 0);
+      if (p.isLongHook) row.hooked += v; else row.hookless += v;
+      perDay.set(d, row);
+    }
+  }
+  const series = completeDays([...perDay.values()].sort((a, b) => a.t - b.t))
+    .map((r) => ({ ...r, total: r.hooked + r.hookless, leak: (r.hooked + r.hookless) > 0 ? r.hookless / (r.hooked + r.hookless) : 0 }))
+    .slice(-DAYS);
+
+  const last = series[series.length - 1];
+  const first = series[0];
+  const leakNow = last ? last.leak : 0;
+
+  $("#kpiLeak").innerHTML = kpiEl(pctLevel(leakNow, 1),
+    first ? `from ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : "", leakNow > (first?.leak ?? 0) ? "down" : "up",
+    "of AI volume pays no fee");
+  if (series.length > 1) {
+    multiLine($("#cInvLeak"), series, {
+      xKey: "t", zeroBase: true, area: true, xFmt: dayFmt,
+      series: [{ key: "hooked", color: "var(--series-1)" }, { key: "hookless", color: "var(--series-2)" }],
+      tip: (d) => `<div class="k">${dayFmt(d.t)}</div>
+        <div><span style="color:var(--series-1)">●</span> fee-bearing ${compact(d.hooked)} AI</div>
+        <div><span style="color:var(--series-2)">●</span> hookless ${compact(d.hookless)} AI</div>
+        <div class="k">${pctLevel(d.leak, 1)} of volume pays nothing</div>`,
+    });
+  }
+
+  // Name the venue actually doing the damage, rather than describing it abstractly.
+  const recent = (p) => p.hourly.slice(-72).reduce((s, h) => s + (h.aiBuy || 0) + (h.aiSell || 0), 0);
+  const worst = S.flow.pools.filter((p) => !p.isLongHook)
+    .map((p) => ({ p, v: recent(p) })).sort((a, b) => b.v - a.v)[0];
+  const feeOf = (p) => p.lastFeePips != null ? pctLevel(p.lastFeePips / 1e6, 2) : (p.dynamicFee ? "dynamic" : pctLevel(p.fee / 1e6, 2));
+  const main = S.flow.pools.find((p) => p.poolId === S.meta.contracts.aiNvdaPool);
+
+  $("#takeLeak").innerHTML = takeEl(leakNow > 0.5 ? "neg" : leakNow > 0.25 ? "warn" : "pos",
+    `<b>${pctLevel(leakNow, 1)} of AI volume now crosses pools that pay the vault nothing</b>${first ? `, against ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : ""}.
+     ${worst && worst.v > 0
+        ? `The largest of them is <b>AI / ${worst.p.pairSymbol} at ${feeOf(worst.p)}</b>, opened ${dayFmt(worst.p.createdAt)} with no hook —
+           versus <b>${feeOf(main)}</b> on the tolled AI/NVDA pool. Routers choose on execution cost, so the cheaper hookless venue wins the flow.`
+        : ""}
+     This is why revenue fell while total volume did not. It is a <b>structural</b> problem, not a cyclical one:
+     v4 pools are permissionless, so the toll can always be undercut by a pool that provides no funding to the protocol.`);
+
+  return { leakNow, worst, series };
 }
 
 function regimeWord(v, sc) {
@@ -1020,8 +1128,33 @@ function renderValuation(feeAnnual, impliedVol, vols) {
          Treat this as a floor calculation: it values the toll and ignores both the NVDA reserve and any monetary premium.`);
 }
 
-function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p) {
+function renderVenues() {
+  const recent = (p) => p.hourly.slice(-72).reduce((s, h) => s + (h.aiBuy || 0) + (h.aiSell || 0), 0);
+  const rows = S.flow.pools.map((p) => ({ p, v: recent(p) })).sort((a, b) => b.v - a.v);
+  const total = rows.reduce((s, r) => s + r.v, 0) || 1;
+  table($("#tVenues"), [
+    { h: "Venue", f: (r) => `AI / ${r.p.pairSymbol || "?"}${r.p.poolId === S.meta.contracts.aiNvdaPool ? " <b>(tolled)</b>" : ""}` },
+    { h: "Fee", f: (r) => r.p.lastFeePips != null ? pctLevel(r.p.lastFeePips / 1e6, 2) : (r.p.dynamicFee ? "dynamic" : pctLevel(r.p.fee / 1e6, 2)) },
+    { h: "Pays vault?", f: (r) => r.p.isLongHook ? `<span class="band bull">yes</span>` : `<span class="band bear">no</span>` },
+    { h: "Vol (72h)", f: (r) => compact(r.v) },
+    { h: "Share", attrs: () => ({ class: "bar-cell" }),
+      f: (r) => `<div class="fill" style="width:${(r.v / total) * 110}px"></div><span>${pctLevel(r.v / total, 1)}</span>` },
+    { h: "Opened", f: (r) => dayFmt(r.p.createdAt) },
+    { h: "Swaps", f: (r) => r.p.totalSwaps.toLocaleString() },
+  ], rows);
+  const paying = rows.filter((r) => r.p.isLongHook).reduce((s, r) => s + r.v, 0);
+  $("#takeVenues").innerHTML = takeEl(paying / total < 0.5 ? "neg" : "pos",
+    `Of the last 72 hours of indexed AI volume, <b>${pctLevel(paying / total, 1)}</b> crossed a venue that funds the vault.
+     The tolled pool is the oldest and the most expensive; every newer hookless pool competes with it directly on price
+     while contributing nothing to the burn. Fee capture is therefore a function of venue competition, not of demand —
+     which is why it can fall on a day when total volume rises.`);
+}
+
+function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak) {
   const rows = [
+    ["Hookless share of AI volume keeps climbing",
+     `${leak ? pctLevel(leak.leakNow, 1) : "—"} of volume now pays the vault nothing. This is the live cause of the revenue decline; if it keeps rising, fee-based valuation keeps falling regardless of how well the ecosystem does.`,
+     leak && leak.leakNow > 0.5 ? "neg" : "warn"],
     ["Hub conversion breaks above " + pctLevel(sc.bull, 0),
      `κ is ${pctLevel(kappa, 1)}. Clearing ${pctLevel(sc.bull, 0)} on a sustained basis would move the thesis from "plausible" to "happening" and is the strongest add signal here.`,
      kappa >= sc.bull ? "pos" : "warn"],
@@ -1047,7 +1180,7 @@ function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p) {
     </div>`).join("");
 }
 
-function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed) {
+function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak) {
   const b = S.burns;
   const bullish = (net7 >= 0 ? 1 : 0) + (feeTrend >= 0 ? 1 : 0) + (kappa >= sc.base ? 1 : 0);
   const tone = bullish >= 2 ? "pos" : bullish === 1 ? "" : "neg";
@@ -1066,9 +1199,10 @@ function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capP
         hub conversion measures <b>${pctLevel(kappa, 1)}</b>, ${regimeWord(kappa, sc)}; and
         <b>${pctLevel(removed / b.genesisSupply, 2)}</b> of genesis supply is now destroyed or locked, backed by
         <b>${nf(b.vault.nvdaBalance, 1)} NVDA</b> that has never been withdrawn.
+        ${leak ? `The dominant fact right now is that <b>${pctLevel(leak.leakNow, 1)} of AI volume crosses pools that pay the vault nothing</b>, so revenue is falling even though total volume is not — this is venue competition, not weakening demand.` : ""}
         The honest summary: the <i>asset</i> side is compounding quietly and verifiably, while the
-        <i>monetary</i> case still rests on hub conversion continuing — which is measurable, and measured here,
-        rather than assumed.
+        <i>monetary</i> case rests on hub conversion continuing AND on the protocol keeping a toll that
+        permissionless pools can undercut at will.
       </div>
     </div>`;
 }

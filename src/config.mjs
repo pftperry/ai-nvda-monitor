@@ -15,6 +15,10 @@ export const TOKENS = {
   NVDA: { address: "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec", symbol: "NVDA", decimals: 18 },
   USDG: { address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", symbol: "USDG", decimals: 18 },
   WETH: { address: "0x0bd7d308f8e1639fab988df18a8011f41eacad73", symbol: "WETH", decimals: 18 },
+  // v4 represents native ETH as the zero address. Without this it resolves to no
+  // symbol and renders as "0x000000", which reads like an unnamed dust token
+  // rather than the second-largest venue for AI.
+  ETH:  { address: "0x0000000000000000000000000000000000000000", symbol: "ETH",  decimals: 18 },
 };
 
 export const AI = TOKENS.AI.address;
