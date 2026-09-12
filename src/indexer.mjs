@@ -28,7 +28,16 @@ const ROUTING_WINDOW = opt("routing-window", quick ? 600_000 : deep ? DAY_BLOCKS
 const BRIDGES_WINDOW = opt("bridges-window", quick ? 400_000 : deep ? DAY_BLOCKS * 7 : 1_500_000);
 const BRIDGES_TOP = opt("bridges", quick ? 4 : deep ? 16 : 8);
 const t0 = Date.now();
-const step = (m) => console.log(`\n[${((Date.now() - t0) / 1000).toFixed(0)}s] ${m}`);
+/* Report the cost of the stage just finished, in seconds and RPC calls. Tuning a
+   refresh without this is guesswork: the obvious suspect is rarely the expensive
+   one, and "300 calls somewhere in a 221s run" is not an actionable number. */
+let lastAt = Date.now(), lastCalls = 0;
+const step = (m) => {
+  const dt = (Date.now() - lastAt) / 1000, dc = rpcCalls() - lastCalls;
+  if (lastCalls || dc) console.log(`      ...previous stage: ${dt.toFixed(1)}s, ${dc} rpc calls`);
+  lastAt = Date.now(); lastCalls = rpcCalls();
+  console.log(`\n[${((Date.now() - t0) / 1000).toFixed(0)}s] ${m}`);
+};
 
 const store = new Store();
 const latest = await blockNumber();
@@ -114,18 +123,34 @@ if (fast) {
 step(`Indexing buy/sell flow for ${selected.length} pools`);
 const flow = await indexFlow(selected, latest, tm, { prev });
 
+/* Routing is now incremental: a transaction sits in one day, so only days the new
+   scan touches are recomputed and the rest of the daily series carries forward.
+   A fast run therefore still refreshes κ -- it just scans the last couple of hours
+   instead of three days, and merges. The headline ratio is always taken from the
+   merged series over a fixed trailing window, so it means the same thing whichever
+   mode produced it. */
+step("Measuring cross-routing (κ)");
+const priorRouting = flag("rebuild") ? null : readData("routing.json");
+const routingScan = fast ? Math.round(DAY_BLOCKS / 8) : ROUTING_WINDOW;   // ~3h vs full
+const rankedPools = all.length ? all : (readData("pools.json")?.pools || []);
+const activeForRouting = active.length ? active : rankedPools.slice(0, 250);
+
 let routing = null, routingFrom = null;
-if (!fast) {
-  step("Measuring real cross-routing (κ)");
-  // Routing wants depth (several days) but only over pools that actually trade.
-  const built = await buildRoutingIndex(all, active, latest, {
-    window: ROUTING_WINDOW,
+if (activeForRouting.length) {
+  const built = await buildRoutingIndex(rankedPools, activeForRouting, latest, {
+    window: routingScan,
     seed: seedTxIndex, seedFrom,
   });
   routingFrom = built.routingFrom;
-  routing = analyseRouting(built.txIndex, all, tm);
-  console.log(`  measured cross-routing = ${(routing.measuredKappaRatio * 100).toFixed(2)}% of direct volume -> regime "${routing.impliedRegime}"`);
-  console.log(`  ${routing.transactions.crossRouting.toLocaleString()} cross-routing txs of ${routing.transactions.multiLeg.toLocaleString()} multi-leg`);
+  routing = analyseRouting(built.txIndex, rankedPools, tm, {
+    priorDaily: priorRouting?.daily || [],
+    rescanFromDay: tm.dayBucket(built.routingFrom),
+    windowDays: 3,
+  });
+  console.log(`  κ = ${(routing.measuredKappaRatio * 100).toFixed(2)}% of direct volume over ${routing.kappaWindowDays}d -> regime "${routing.impliedRegime}"`);
+  console.log(`  this scan: ${routing.transactions.crossRouting.toLocaleString()} cross-routing txs of ${routing.transactions.multiLeg.toLocaleString()} multi-leg`);
+} else {
+  console.log("  no ranked pools available; leaving routing.json untouched");
 }
 
 step("Indexing burn / lock / vault ledger");

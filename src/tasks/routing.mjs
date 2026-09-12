@@ -11,12 +11,25 @@ const r6 = (x) => (x === 0 ? 0 : +x.toPrecision(6));
  * those two legs overlap, so min(AI received, AI spent) within a tx is the routed
  * amount, and the remainder is genuine directional demand.
  */
-export function analyseRouting(txIndex, pools, tm) {
+export function analyseRouting(txIndex, pools, tm, opts = {}) {
   let directAI = 0, crossAI = 0;
   let nDirectTx = 0, nCrossTx = 0, nMultiTx = 0;
   const routes = new Map();       // "FROM>TO" -> routed AI
   const daily = new Map();        // day -> { direct, cross }
   const hubCounterparties = new Map();
+
+  /* Routing is decomposable by transaction, and a transaction sits in exactly one
+     block and therefore one day. That means the daily series can be merged across
+     runs instead of recomputed: only days touched by the new scan change. Without
+     this, κ required re-reading a multi-day window every run, which is what kept a
+     refresh at tens of minutes and made a short schedule impossible. */
+  const priorDaily = opts.priorDaily || [];
+  const rescanFrom = opts.rescanFromDay ?? -Infinity;
+  for (const d of priorDaily) {
+    // Days the new scan covers are recomputed; older ones carry forward untouched.
+    if (d.t >= rescanFrom) continue;
+    daily.set(d.t, { t: d.t, direct: d.direct || 0, cross: d.cross || 0, crossTx: d.crossTx || 0, directTx: d.directTx || 0 });
+  }
 
   // Each value is a flat array: [block, poolIdx, aiAmount, poolIdx, aiAmount, ...]
   for (const [, flat] of txIndex) {
@@ -61,18 +74,30 @@ export function analyseRouting(txIndex, pools, tm) {
   const series = [...daily.values()].filter((d) => d.t).sort((a, b) => a.t - b.t)
     .map((d) => ({ ...d, direct: r6(d.direct), cross: r6(d.cross), ratio: d.direct > 0 ? +(d.cross / d.direct).toFixed(4) : 0 }));
 
+  /* κ is taken from the merged daily series over a trailing window, not from this
+     scan alone. Otherwise the headline would silently mean "κ over whatever range
+     happened to be scanned", which changes run to run -- exactly the ambiguity
+     that produced 37.7% on one window and 24.2% on another earlier today. */
+  const windowDays = opts.windowDays || 3;
+  const cutoff = series.length ? series[series.length - 1].t - windowDays * 86400 : 0;
+  const win = series.filter((d) => d.t > cutoff);
+  const winDirect = win.reduce((s, d) => s + d.direct, 0);
+  const winCross = win.reduce((s, d) => s + d.cross, 0);
+
   // The writeup's κ × pair-mass products, for direct comparison.
   const scenarios = { bear: 0.04, base: 0.23, bull: 0.34, extraBull: 0.40 };
-  const measured = directAI > 0 ? crossAI / directAI : 0;
+  const measured = winDirect > 0 ? winCross / winDirect : (directAI > 0 ? crossAI / directAI : 0);
   let regime = "below bear";
   for (const [k, v] of Object.entries(scenarios)) if (measured >= v) regime = k;
 
   return {
     measuredKappaRatio: +measured.toFixed(4),
+    kappaWindowDays: windowDays,
     scenarios,
     impliedRegime: regime,
-    directAI: r6(directAI),
-    crossRoutedAI: r6(crossAI),
+    directAI: r6(winDirect || directAI),
+    crossRoutedAI: r6(winCross || crossAI),
+    // Counts describe this scan; the ratio above describes the trailing window.
     transactions: { direct: nDirectTx, multiLeg: nMultiTx, crossRouting: nCrossTx },
     topRoutes: [...routes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)
       .map(([route, ai]) => ({ route, ai: r6(ai) })),
