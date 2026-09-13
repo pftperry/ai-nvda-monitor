@@ -308,12 +308,32 @@ export async function priceLaunchpadTokens(pools, rank, anchorUsd, store, opts =
     });
   }
   rows.sort((a, b) => b.mcapUsd - a.mcapUsd);
-  const backed = rows.filter((r) => r.mcapUsd >= RUNNER_FLOOR && r.capToBacking != null && r.capToBacking <= 20).length;
-  log(`  priced ${rows.length} of ${jobs.length} ranked launchpad tokens; ` +
-      `${rows.filter((r) => r.mcapUsd >= RUNNER_FLOOR).length} at or above $1M, ${backed} of those backed within 20x`);
+  const bigRows = rows.filter((r) => r.mcapUsd >= RUNNER_FLOOR);
+  log(`  priced ${rows.length} of ${jobs.length} ranked launchpad tokens; ${bigRows.length} at or above $1M, median cap/backing ${ratioStats(bigRows).median ?? "n/a"}x`);
   return rows;
 }
 
+/**
+ * Cap-to-backing across a cohort, described by the cohort.
+ *
+ * This used to be a count of tokens "backed within 20x". Twenty was borrowed from
+ * nowhere, and on this platform nothing clears it: ratios across tokens above $1M run
+ * from roughly 60x to 1,200x, so the count was a constant zero presented as a
+ * measurement -- and the card led with it, which is why the page appeared to say no
+ * token was above a million when twenty were. Backing is also a floor rather than a
+ * total: it reads active liquidity within 10% of spot in the single busiest pool, so
+ * a token trading across several pools is understated and its ratio overstated. A
+ * comparison against a fixed constant survives neither fact. A median and a multiple
+ * of it do, and they move when the platform moves.
+ */
+export function ratioStats(rows) {
+  const xs = rows.map((r) => r.capToBacking).filter((x) => x != null && isFinite(x)).sort((a, b) => a - b);
+  if (!xs.length) return { median: null, thinThreshold: null, thin: 0, n: 0 };
+  const m = xs.length % 2 ? xs[(xs.length - 1) / 2] : (xs[xs.length / 2 - 1] + xs[xs.length / 2]) / 2;
+  const median = +m.toFixed(1);
+  const thinThreshold = +(median * 3).toFixed(1);
+  return { median, thinThreshold, thin: xs.filter((x) => x >= thinThreshold).length, n: xs.length };
+}
 /** Launch cadence and the size distribution, assembled for the Launchpad tab. */
 export function summariseLaunchpad(pools, priced, dayOf, prior) {
   const byDay = new Map();
@@ -339,14 +359,19 @@ export function summariseLaunchpad(pools, priced, dayOf, prior) {
   });
   history.sort((a, b) => a.t - b.t);
 
+  const runnerRows = priced.filter((r) => r.mcapUsd >= RUNNER_FLOOR);
+  const stats = ratioStats(runnerRows);
+
   return {
     runnerFloor: RUNNER_FLOOR,
     poolsTotal: pools.length,
     aiPaired: pools.filter((p) => p.c0 === AI || p.c1 === AI).length,
     priced: priced.length,
-    runners: priced.filter((r) => r.mcapUsd >= RUNNER_FLOOR).length,
-    runnersBacked: priced.filter((r) => r.mcapUsd >= RUNNER_FLOOR && r.capToBacking != null && r.capToBacking <= 20).length,
-    backedRatioCap: 20,
+    runners: runnerRows.length,
+    capToBackingMedian: stats.median,
+    thinThreshold: stats.thinThreshold,
+    thinRunners: stats.thin,
+    ratioMeasured: stats.n,
     buckets, launchesByDay, history,
     top: priced.slice(0, 30),
   };

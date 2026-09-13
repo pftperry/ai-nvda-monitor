@@ -2449,7 +2449,7 @@ function renderLaunches() {
       `, ${trend >= 0 ? "up" : "down"} <b>${pctLevel(Math.abs(trend), 0)}</b> on the week before`},
      bringing the total to <b>${total.toLocaleString()}</b>.
      <span class="muted">Launch count on its own says how busy the mint is, not whether anything survives it:
-     of the ${priced} tokens currently priced, ${big} carry a nominal cap above ${compact(r.runnerFloor || 1e6)}.
+     of the ${priced} tokens currently priced, ${big} carry a nominal cap above $${compact(r.runnerFloor || 1e6, 0)}.
      Read this chart with the size distribution below.</span>${(r.unlistedAnchors || []).length ? `<br><b>Undercounting.</b> ${r.unlistedAnchors.length} token(s) are used as an anchor by dozens of pools but are absent from the real-world-asset list (${r.unlistedAnchors.slice(0, 4).map((u) => (u.symbol || u.token.slice(0, 8)) + " " + u.pools).join(", ")}). Launches against them are not counted until that list is updated, so every figure here is a floor.` : ""}`);
 }
 
@@ -2461,45 +2461,71 @@ function renderRunners() {
     return;
   }
 
-  $("#kpiRunners").innerHTML = kpiEl(`${r.runnersBacked ?? 0}`,
-    `of ${r.runners} above $${compact(r.runnerFloor)}`, (r.runnersBacked ?? 0) > 0 ? "up" : "down",
-    `launchpad tokens at $1M+ whose cap is within ${r.backedRatioCap}x its liquidity`)
-    + `<div class="livenote"><b>${r.priced}</b> LONG-hook tokens priced
-       \u00b7 combined nominal cap <b>${compact((r.history?.at(-1)?.totalMcapUsd) ?? 0)}</b>
-       \u00b7 a cap-to-backing ratio above ${r.backedRatioCap}x means the valuation rests on a thin last print</div>`;
+  /* The headline is the count of tokens above the floor.
 
-  barChart($("#cRunners"), r.buckets.map((b) => ({ label: b.label, n: b.count })), {
-    xKey: "label", yKey: "n", color: "var(--series-1)",
-    fmt: (v) => v.toFixed(0), xFmt: (v) => v,
-    tip: (d) => `<div class="k">${d.label}</div><div>${d.n} token${d.n === 1 ? "" : "s"}</div>`,
-  });
+     It used to be the count "backed within 20x", a gate nothing on this platform
+     passes, so the tile read "0 of 20 above $1 million" while the table beneath it
+     listed twenty such tokens. A figure that is structurally zero belongs nowhere
+     near the top of a card. Backing is still reported, as the distribution it is. */
+  /* The 24h change is only sometimes a measurement.
+
+     Pricing a token costs two calls, so only the most active few hundred get priced,
+     and the runner count is drawn from that rationed set. The first reading of this
+     showed "-4 in 24h" while the set itself grew from 213 tokens to 300: four tokens
+     had not fallen below a million, a different population had been measured. A delta
+     across two populations is not a delta, so it is shown only when the set is the
+     same size to within 5% and the comparison point is genuinely a day old. */
+  const last = (r.history || []).at(-1);
+  const dayAgo = (r.history || []).find((h) => h.t >= (last?.t ?? 0) - 86400 && h.t <= (last?.t ?? 0) - 20 * 3600);
+  const comparable = dayAgo && dayAgo.runners != null && dayAgo.priced > 0 &&
+    Math.abs(dayAgo.priced - r.priced) / r.priced <= 0.05;
+  const rDelta = comparable ? r.runners - dayAgo.runners : null;
+  $("#kpiRunners").innerHTML = kpiEl(`${r.runners}`,
+    rDelta == null ? "" : `${rDelta >= 0 ? "+" : ""}${rDelta} in 24h`, (rDelta ?? 0) >= 0 ? "up" : "down",
+    `launchpad tokens whose nominal cap is above $${compact(r.runnerFloor, 0)}`)
+    + `<div class="livenote"><b>${r.priced}</b> LONG-hook tokens priced
+       \u00b7 combined nominal cap <b>$${compact((r.history?.at(-1)?.totalMcapUsd) ?? 0)}</b>
+       ${r.capToBackingMedian == null ? "" : `\u00b7 median cap-to-backing among the ${r.runners}:
+          <b>${r.capToBackingMedian}\u00d7</b>, with <b>${r.thinRunners}</b> at ${r.thinThreshold}\u00d7 or worse`}</div>`;
+
+  /* A list, not a bar chart.
+
+     The distribution runs from 246 tokens in the smallest bucket to 1 in the
+     largest, and on a linear axis a bar of 4 beside a bar of 246 is 1.6% of the
+     height -- indistinguishable from empty. The chart was read, reasonably, as
+     saying one coin was above ten million when five are. A log axis would fix the
+     geometry and still make the reader do arithmetic to recover a count; five
+     labelled numbers do not need a chart at all. */
+  $("#cRunners").innerHTML = `<div class="bucketrow">${r.buckets.map((b) => `<div class="bucket${b.count ? "" : " empty"}"><div class="bn">${b.count}</div><div class="bl">${b.label}</div></div>`).join("")}</div>`;
 
   table($("#tRunners"), [
     { h: "Token", f: (t) => t.symbol || `<span class="muted" title="${t.token}">unnamed</span>` },
-    { h: "Nominal cap", f: (t) => `${compact(t.mcapUsd)}` },
-    { h: "Liquidity \u00b110%", f: (t) => (t.backingUsd == null ? "\u2014" : `${compact(t.backingUsd)}`) },
+    { h: "Nominal cap", f: (t) => `$${compact(t.mcapUsd)}` },
+    { h: "Liquidity \u00b110%", f: (t) => (t.backingUsd == null ? "\u2014" : `$${compact(t.backingUsd)}`) },
     { h: "Cap / backing", f: (t) => {
         if (t.capToBacking == null) return "\u2014";
-        const hot = t.capToBacking > (r.backedRatioCap ?? 20);
+        const hot = r.thinThreshold != null && t.capToBacking >= r.thinThreshold;
         return `<span class="band ${hot ? "bear" : "bull"}">${t.capToBacking}\u00d7</span>`;
       } },
     { h: "Swaps", f: (t) => (t.swaps || 0).toLocaleString() },
   ], r.top);
 
-  const big = r.buckets.find((b) => b.key === "small");
-  const share = r.priced ? (big?.count ?? 0) / r.priced : 0;
-  $("#takeRunners").innerHTML = takeEl((r.runnersBacked ?? 0) >= 3 ? "pos" : "warn",
-    `The launchpad has <b>${r.priced}</b> priced tokens, and <b>${pctLevel(share, 0)}</b> of them sit between
-     $10k and $100k. <b>${r.runners}</b> clear $1M on nominal cap; <b>${r.runnersBacked}</b> of those has
-     liquidity within ${r.backedRatioCap}\u00d7 of that valuation.
-     ${(r.runnersBacked ?? 0) <= 1
-       ? `On this evidence the platform is producing volume of launches rather than a supply of durable assets \u2014
-          the distribution is overwhelmingly small, and the large caps are mostly nominal.`
-       : `That is a real spread of surviving assets rather than one outlier carrying the platform.`}
-     <span class="muted">Two things to hold in mind. This counts tokens that still trade, so launches that died
-     are absent and the census flatters the present. And the population is overwhelmingly memecoins: the one
-     genuine tokenised real-world asset here is NVDA, whose cap should track the underlying rather than its pool,
-     which makes the cap-to-backing ratio the wrong lens for it specifically.</span>`);
+  /* The honest headline of the distribution is the floor of it: four in five priced
+     tokens never clear $100k. */
+  const smallB = r.buckets.find((b) => b.key === "dust");
+  const share = r.priced ? (smallB?.count ?? 0) / r.priced : 0;
+  $("#takeRunners").innerHTML = takeEl(r.runners >= 10 ? "pos" : "warn",
+    `The launchpad has <b>${r.priced}</b> priced tokens, <b>${pctLevel(share, 0)}</b> of them under
+     $100k, and <b>${r.runners}</b> above $1M on nominal cap.
+     ${r.capToBackingMedian == null ? "" : `Across those ${r.runners}, the median token carries
+       <b>${r.capToBackingMedian}\u00d7</b> more nominal cap than the liquidity standing within 10% of its
+       price, and <b>${r.thinRunners}</b> are at ${r.thinThreshold}\u00d7 or worse. Read those caps as prices a
+       thin book printed, not as money that could leave.`}
+     <span class="muted">Three things to hold in mind. Backing is measured in each token\u2019s busiest pool only,
+     so a token trading across several pools is understated and its ratio overstated. This counts tokens that
+     still trade, so launches that died are absent and the census flatters the present. And the population is
+     overwhelmingly memecoins: the tokenised real-world assets here should track their underlying rather than
+     their pool, which makes the cap-to-backing ratio the wrong lens for those specifically.</span>`);
 }
 
 function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kappaHist = []) {

@@ -24,6 +24,8 @@ function warn(name, ok, detail = "") {
   else console.log(`  ok   ${name}${detail ? `  — ${detail}` : ""}`);
 }
 
+const compactUsd = (n) => "$" + (n >= 1e6 ? (n / 1e6).toFixed(0) + "M" : (n / 1e3).toFixed(0) + "k");
+
 const meta = readData("meta.json");
 const burns = readData("burns.json");
 const flow = readData("flow.json");
@@ -31,6 +33,7 @@ const routing = readData("routing.json");
 const bridges = readData("bridges.json");
 const poolsArtifact = readData("pools.json");
 const depth = readData("depth.json");
+const launchpad = readData("launchpad.json");
 
 if (!meta || !burns || !flow) {
   console.error("Missing data artifacts. Run `npm run index` first.");
@@ -287,6 +290,61 @@ if (depth && depth.pools?.length) {
   warn("every indexed venue has a replayed tick ladder", !depth.skipped,
     depth.skipped ? `${depth.skipped} venue(s) not yet replayed; depth understates until they are` : "");
 } else console.log("  --  depth.json absent (optional)");
+
+console.log("\nLaunchpad census");
+if (launchpad && launchpad.buckets?.length) {
+  /* This section exists because the Launchpad tab shipped two figures that
+     contradicted the table directly beneath them, and nothing here noticed.
+
+     One was a bucket chart whose smallest bar was 0.4% of the tallest, so four
+     tokens above $10M rendered as nothing and the card appeared to claim there was
+     one. The other was a headline count of tokens "backed within 20x" -- a
+     threshold borrowed from no measurement, which on this platform nothing clears,
+     so the tile led with a structural zero and read as "0 of 20 above $1 million".
+
+     Both were presentation faults over correct data, which is the failure mode a
+     verifier of values alone cannot see. So these check the figures AGAINST EACH
+     OTHER: the count, the buckets, and the rows in the table must tell one story,
+     and no headline may be a constant. */
+  const lp = launchpad;
+  const floor = lp.runnerFloor || 1e6;
+  const aboveFloor = lp.buckets.filter((b) => b.lo >= floor).reduce((n, b) => n + b.count, 0);
+  check("the runner count equals the buckets above the floor",
+    lp.runners === aboveFloor, `${lp.runners} reported vs ${aboveFloor} summed from buckets`);
+
+  const topAbove = (lp.top || []).filter((t) => t.mcapUsd >= floor).length;
+  /* The table is a truncated top-N, so it can hold fewer than the total but never
+     more -- and when it is not full, it must hold exactly the total. */
+  check("the table agrees with the runner count",
+    topAbove <= lp.runners && ((lp.top || []).length >= 30 || topAbove === lp.runners),
+    `${topAbove} of ${(lp.top || []).length} listed rows clear ${compactUsd(floor)} vs ${lp.runners} counted`);
+
+  check("every bucket count is a non-negative integer and they sum to the priced set",
+    lp.buckets.every((b) => Number.isInteger(b.count) && b.count >= 0) &&
+      lp.buckets.reduce((n, b) => n + b.count, 0) === lp.priced,
+    `${lp.buckets.reduce((n, b) => n + b.count, 0)} bucketed vs ${lp.priced} priced`);
+
+  /* A threshold derived from the cohort cannot be a constant, and a count taken
+     against it cannot be everything or nothing. Either would mean the figure has
+     stopped measuring and started asserting. */
+  if (lp.ratioMeasured > 0) {
+    check("the cap-to-backing median is finite and positive",
+      lp.capToBackingMedian > 0 && isFinite(lp.capToBackingMedian), `${lp.capToBackingMedian}x`);
+    check("the thin-backing count is a strict subset of the runners",
+      lp.thinRunners >= 0 && lp.thinRunners < lp.runners,
+      `${lp.thinRunners} of ${lp.runners} at ${lp.thinThreshold}x or worse`);
+  } else console.log("  --  no cap-to-backing ratios measured yet");
+
+  /* A launch census that is still walking back to genesis reports floors. That is
+     fine, and it is declared on the page -- but it must be declared, because a
+     partial count looks exactly like a complete one. */
+  warn("the launch census has reached genesis", lp.censusPartial !== true,
+    lp.censusPartial ? "still resuming from a cursor; every count on the tab is a floor" : "");
+
+  const cum = (lp.launchesByDay || []).map((d) => d.cumulative);
+  check("cumulative launches never decrease",
+    cum.every((v, i) => i === 0 || v >= cum[i - 1]), `${cum.length} day(s)`);
+} else console.log("  --  launchpad.json absent (optional)");
 console.log(`
 ${checks - failures}/${checks} checks passed${warnings ? `, ${warnings} warning${warnings === 1 ? "" : "s"}` : ""}.`);
 if (failures) {
