@@ -8,8 +8,29 @@ export const CHAIN_ID = 4663;
    site it builds are public. The chain's own endpoint stays as the fallback, so
    a provider outage degrades the refresh to slow rather than failing it. */
 const PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com";
-export const DEDICATED_RPC = !!process.env.RPC_URL;
-export const RPCS = DEDICATED_RPC ? [process.env.RPC_URL, PUBLIC_RPC] : [PUBLIC_RPC];
+
+/* Read the secret forgivingly, and never let a bad one stop the indexer.
+   The first real secret failed `new URL()` at import time, which killed every run
+   before a single block was read. Pasted values arrive in a few shapes: the full
+   URL, the URL wrapped in quotes or with stray whitespace, or just the Alchemy key.
+   All of those are accepted. Anything else logs a warning -- without echoing the
+   value, which is the key -- and the run continues on the public endpoint. */
+function dedicatedEndpoint(raw) {
+  if (!raw) return { url: null, problem: null };
+  let v = String(raw).trim().replace(/^["']+|["']+$/g, "").trim();
+  if (/^[A-Za-z0-9_-]{16,}$/.test(v)) v = `https://robinhood-mainnet.g.alchemy.com/v2/${v}`;   // a bare key
+  try {
+    const u = new URL(v);
+    if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("not http(s)");
+    return { url: u.toString(), problem: null };
+  } catch {
+    return { url: null, problem: `RPC_URL is set but is not a usable URL or Alchemy key (${v.length} characters); using the public endpoint` };
+  }
+}
+const dedicated = dedicatedEndpoint(process.env.RPC_URL);
+if (dedicated.problem) console.log(process.env.GITHUB_ACTIONS ? `::warning::${dedicated.problem}` : `warning: ${dedicated.problem}`);
+export const DEDICATED_RPC = !!dedicated.url;
+export const RPCS = DEDICATED_RPC ? [dedicated.url, PUBLIC_RPC] : [PUBLIC_RPC];
 /** Safe to publish: the host only, never the path, which is where a key lives. */
 export const RPC_LABEL = new URL(RPCS[0]).host + (DEDICATED_RPC ? " (dedicated)" : " (public)");
 
