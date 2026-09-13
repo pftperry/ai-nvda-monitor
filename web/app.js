@@ -2936,7 +2936,7 @@ function renderTreasury() {
   const T = S.treasury;
   if (!T?.feeWallet) {
     host.innerHTML = `<p class="muted">The fee ledger is built on the slow path; it appears after the next standard run.</p>`;
-    for (const id of ["#tTreasury", "#tPlatformFees", "#takeTreasury", "#readTreasury", "#cSankey", "#cTreasuryWeekly", "#tTreasuryPools"]) $(id).innerHTML = "";
+    for (const id of ["#tTreasury", "#tPlatformFees", "#takeTreasury", "#readTreasury", "#cSankey", "#cTreasuryWeekly", "#tTreasuryPools", "#treasuryDest"]) $(id).innerHTML = "";
     return;
   }
   const px = marketState().price || 0;
@@ -2997,6 +2997,18 @@ function renderTreasury() {
      <span class="muted">Every transaction is netted for the wallet across all tokens: sent one token and received another is a sale of what was sent,
      whichever router carried it (Robinhood Wallet's 0x Settler, Rainbow, Relay or the v4 pools directly); sent alongside a positive
      ModifyLiquidity is liquidity seeded; sent to Relay's depository is bridged off the chain. Prices are today's throughout.</span>`);
+
+  /* Where it went: bridge destinations by chain and recipient, and who ended up
+     holding the AI on the far side of every sale or hand-off. */
+  const wentTo = {};
+  for (const w of W) for (const [label, v] of Object.entries(w.aiU.wentTo || {})) wentTo[label] = (wentTo[label] || 0) + v;
+  const wentRows = Object.entries(wentTo).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const bridgesRows = (T.bridges || []).filter((b) => b.deposits > 0);
+  const destLabel = (label) => label.startsWith("0x") ? addrCell(label) : label.startsWith("treasury wallet ") ? `<b>treasury</b> ${addrCell(label.slice(16))}` : `<b>${label}</b>`;
+  $("#treasuryDest").innerHTML =
+    (bridgesRows.length ? `<div class="livenote"><b>Bridged off the chain</b> (Relay's index, by destination): ${bridgesRows.map((b) =>
+      `${Object.entries(b.byToken).map(([s, v]) => `${s === "USDG" ? "$" : ""}${compact(v)}${s === "USDG" ? "" : " " + s}`).join(" + ")} → <b>${b.chain}</b>${b.recipient ? ` <span class="mono" title="${b.recipient}">${b.recipient.slice(0, 6)}…${b.recipient.slice(-4)}</span>` : ""} in ${b.deposits} deposit${b.deposits === 1 ? "" : "s"}`).join(" · ")}.</div>` : "")
+    + (wentRows.length ? `<div class="livenote"><b>Where the AI that left ended up</b>, by the address holding it at the end of each transaction: ${wentRows.map(([l, v]) => `${destLabel(l)} <b>${compact(v)}</b>`).join(" · ")}.</div>` : "");
 
   /* The flow diagram. */
   const wallets = W.map((w, i) => ({ id: `w${i}`, label: knownName(w.a) || short(w.a), v: w.agg.inUsd, color: "var(--series-3)", labelRight: false }));

@@ -50,9 +50,39 @@ export const NAMES = {
 const BRIDGES = new Set(["0x4cd00e387622c35bddb9b4c962c136462338bc31"]);
 const MACHINERY = new Set([POOL_MANAGER, LONG_HOOK, FEE_SPLITTER, COMMUNITY_VAULT, BURN_ADDRESS]);
 const HOPS = 4;          // how many of the fee wallet's destinations to follow
+const HOP2 = 4;          // and how many of THEIR wallet-like destinations (the operator's other accounts)
+const MAX_WALLETS = 12;
 const TOP_TOKENS = 40;   // platform-wide fee tokens to name and price
 const WEEK = 7 * 86400;
-const CLASS_VERSION = 2; // bump when the classification rule changes; cached kinds are discarded
+const CLASS_VERSION = 3; // bump when the classification rule changes; cached kinds are discarded
+/* Relay's chain ids for the destinations seen so far; anything else shows its id. */
+const CHAIN_NAMES = { 792703809: "Solana", 1: "Ethereum", 8453: "Base", 42161: "Arbitrum", 10: "Optimism", 137: "Polygon", 56: "BNB Chain", 43114: "Avalanche", 4663: "Robinhood Chain", 1329: "Sei", 2741: "Abstract", 33139: "ApeChain", 480: "World Chain", 57073: "Ink", 130: "Unichain", 1868: "Soneium", 34443: "Mode", 8333: "B3", 59144: "Linea", 534352: "Scroll", 81457: "Blast", 7777777: "Zora", 1135: "Lisk", 999: "HyperEVM", 5000: "Mantle", 100: "Gnosis", 324: "zkSync", 1101: "Polygon zkEVM", 728126428: "Tron", 8253038: "Bitcoin", 9286185: "Eclipse" };
+
+/** Wallet-like: an EOA, an EIP-7702 delegated EOA (23 bytes), or a small proxy such as a Safe. Routers and settlers are far larger. */
+async function walletLike(a) {
+  try { const code = await rpc("eth_getCode", [a, "latest"]); return !code || code === "0x" || (code.length - 2) / 2 <= 200; } catch { return false; }
+}
+
+/**
+ * Where a bridge deposit landed, from Relay's public request index: destination
+ * chain, recipient, and the delivered amount. One lookup per deposit, cached.
+ */
+async function relayDestination(tx, cache) {
+  if (cache[tx]) return cache[tx];
+  try {
+    const r = await fetch(`https://api.relay.link/requests/v2?hash=${tx}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+    const j = await r.json();
+    const q = (j.requests || [])[0];
+    if (!q) return (cache[tx] = { unknown: true });
+    const d = q.data || {};
+    const chainId = d.outTxs?.[0]?.chainId ?? d.currencyOut?.currency?.chainId ?? null;
+    return (cache[tx] = {
+      status: q.status, chainId, chain: chainId != null ? (CHAIN_NAMES[chainId] || `chain ${chainId}`) : "unknown",
+      recipient: q.recipient || null, outTx: d.outTxs?.[0]?.hash || null,
+      outSymbol: d.currencyOut?.currency?.symbol || null, outAmount: d.currencyOut?.amountFormatted ? Number(d.currencyOut.amountFormatted) : null,
+    });
+  } catch { return null; }   // not cached: try again next run
+}
 
 const emptyLedger = () => ({ in: 0, out: 0, bySource: {}, byDest: {}, transfersIn: 0, transfersOut: 0, txs: [] });
 
@@ -88,13 +118,24 @@ async function classifyTx(tx, block, wallet, cache) {
   ]);
   const net = {};        // token -> bigint string
   const cps = new Set();  // direct counterparties of the wallet
+  const aiNet = new Map(); // every address's net AI in the transaction: who ended up with what the wallet let go of
   for (const l of transfers) {
     if (l.transactionHash !== tx || l.topics.length < 3) continue;
     const t = decodeTransfer(l);
     const tok = l.address.toLowerCase();
     if (t.from === wallet) { net[tok] = ((BigInt(net[tok] || "0")) - t.value).toString(); cps.add(t.to); }
     if (t.to === wallet) { net[tok] = ((BigInt(net[tok] || "0")) + t.value).toString(); cps.add(t.from); }
+    if (tok === AI.toLowerCase()) {
+      aiNet.set(t.from, (aiNet.get(t.from) || 0n) - t.value);
+      aiNet.set(t.to, (aiNet.get(t.to) || 0n) + t.value);
+    }
   }
+  /* The address that ended the transaction holding the most AI it did not start
+     with, other than the wallet itself and the pool manager: the buyer on the far
+     side of a sale through a router, or the recipient of a hand-off. Pools take
+     AI on a direct sale, and that is recorded as the pool manager. */
+  let aiTo = null, aiToAmount = 0n;
+  for (const [a, d] of aiNet) if (a !== wallet && a !== BURN_ADDRESS && d > aiToAmount) { aiTo = a; aiToAmount = d; }
   let lpDelta = 0n, poolId = null, swapped = false;
   for (const l of pm) {
     if (l.transactionHash !== tx) continue;
@@ -112,7 +153,7 @@ async function classifyTx(tx, block, wallet, cache) {
   else kind = "none";
   const via = [...cps].find((c) => NAMES[c] && !MACHINERY.has(c)) || null;   // a named router or bridge, if one was the counterparty
   const bridged = [...cps].some((c) => BRIDGES.has(c));
-  return (cache[key] = { kind, poolId, net, via, bridged, swapped });
+  return (cache[key] = { kind, poolId, net, via, bridged, swapped, aiTo, aiToAmount: aiToAmount.toString() });
 }
 
 export async function indexTreasury(latest, tm, opts = {}) {
@@ -141,8 +182,28 @@ export async function indexTreasury(latest, tm, opts = {}) {
   const feeAI = state.wallets[PLATFORM_FEE_RECIPIENT].AI;
   const hops = Object.entries(feeAI.byDest).filter(([a]) => !NAMES[a]).sort((a, b) => b[1] - a[1]).slice(0, HOPS).map(([a]) => a);
   for (const h of hops) wallets.add(h);
-  for (const w of wallets) if (w !== PLATFORM_FEE_RECIPIENT) await walk(w);
-  log(`  fee wallet forwards AI to ${hops.length} address(es); ledgers for ${wallets.size} wallets to block ${cursor.toLocaleString()}`);
+  for (const w of [...wallets]) if (w !== PLATFORM_FEE_RECIPIENT) await walk(w);
+  /* Second tier: the largest AI destinations of those wallets that are themselves
+     wallet-like (an EOA, a 7702 account, a Safe), which is how the operator's other
+     accounts are found without anyone naming them. Routers are large contracts and
+     are skipped; they are counterparties, not custody. */
+  const second = new Map();
+  for (const w of [...wallets]) {
+    if (w === PLATFORM_FEE_RECIPIENT) continue;
+    for (const [a, v] of Object.entries(state.wallets[w].AI?.byDest || {})) {
+      if (NAMES[a] || MACHINERY.has(a) || wallets.has(a)) continue;
+      second.set(a, (second.get(a) || 0) + v);
+    }
+  }
+  state.walletLike ||= {};
+  for (const [a] of [...second].sort((x, y) => y[1] - x[1])) {
+    if (wallets.size >= MAX_WALLETS || [...wallets].length - 1 - hops.length >= HOP2) break;
+    if (state.walletLike[a] == null) state.walletLike[a] = await walletLike(a);
+    if (!state.walletLike[a]) continue;
+    wallets.add(a);
+    await walk(a);
+  }
+  log(`  fee wallet forwards AI to ${hops.length} address(es), and those to ${wallets.size - 1 - hops.length} more wallet-like account(s); ledgers for ${wallets.size} wallets to block ${cursor.toLocaleString()}`);
 
   /* 2. Classify every transaction of the treasury wallets (not the fee wallet's
      own, which are forwards by construction), skipping ones whose counterparty is
@@ -160,6 +221,16 @@ export async function indexTreasury(latest, tm, opts = {}) {
     }
   }
   log(`  classified ${classified} treasury transactions${pending ? `; ${pending} deferred to the next run` : ""}`);
+
+  /* 2b. Where every bridge deposit landed, from Relay's index. */
+  state.relay ||= {};
+  let looked = 0;
+  for (const w of wallets) for (const L of Object.values(state.wallets[w])) for (const p of L.txs) {
+    if (p.dir !== "out" || !BRIDGES.has(p.cp) || state.relay[p.tx]) continue;
+    if (deadline && Date.now() > deadline) { partial = true; break; }
+    if (await relayDestination(p.tx, state.relay)) looked++;
+  }
+  if (looked) log(`  resolved ${looked} bridge deposit(s) to their destination chain and recipient`);
 
   /* 3. Every token the fee wallet has ever received. */
   const feeFrom = Math.max(GENESIS_BLOCK, state.feeCursor + 1);
@@ -201,7 +272,7 @@ export async function indexTreasury(latest, tm, opts = {}) {
      transaction is counted once per wallet; the token's own net in that
      transaction decides which bucket it lands in. */
   const uses = (w) => {
-    const u = {}; for (const s of Object.keys(TRACK)) u[s] = { sold: 0, bought: 0, lpAdded: 0, lpRemoved: 0, sentOn: 0, internal: 0, bridged: 0, received: 0, pools: {}, via: {} };
+    const u = {}; for (const s of Object.keys(TRACK)) u[s] = { sold: 0, bought: 0, lpAdded: 0, lpRemoved: 0, sentOn: 0, internal: 0, bridged: 0, received: 0, pools: {}, via: {}, wentTo: {}, bridgedTo: {} };
     const seen = new Set();
     for (const L of Object.values(state.wallets[w])) for (const p of L.txs) {
       if (seen.has(p.tx)) continue; seen.add(p.tx);
@@ -214,8 +285,23 @@ export async function indexTreasury(latest, tm, opts = {}) {
         if (k.kind === "lp+" && outFlow) { u[s].lpAdded += v; const n = pairName(k.poolId); u[s].pools[n] = (u[s].pools[n] || 0) + v; }
         else if (k.kind === "lp-" && !outFlow) u[s].lpRemoved += v;
         else if (k.kind === "swap") { if (outFlow) { u[s].sold += v; const vn = k.via ? NAMES[k.via] : (k.swapped ? "v4 pools directly" : "unnamed counterparty"); u[s].via[vn] = (u[s].via[vn] || 0) + v; } else u[s].bought += v; }
-        else if (k.kind === "out") { if (k.bridged) u[s].bridged += v; else if (wallets.has(p.cp)) u[s].internal += v; else u[s].sentOn += v; }
+        else if (k.kind === "out") {
+          if (k.bridged) {
+            u[s].bridged += v;
+            const r = state.relay?.[p.tx];
+            const dest = r && !r.unknown ? `${r.chain} · ${r.recipient || "?"}` : "destination not resolved";
+            u[s].bridgedTo[dest] = (u[s].bridgedTo[dest] || 0) + v;
+          } else if (wallets.has(p.cp)) u[s].internal += v;
+          else u[s].sentOn += v;
+        }
         else if (k.kind === "in") u[s].received += v;
+        /* Who ended up with the AI, for anything that left: a sale's far side, or a
+           hand-off's recipient. Named where the page can name it. */
+        if (s === "AI" && outFlow && (k.kind === "swap" || k.kind === "out") && k.aiTo) {
+          const to = k.aiTo;
+          const label = to === POOL_MANAGER ? "v4 pools" : NAMES[to] ? NAMES[to] : wallets.has(to) ? `treasury wallet ${to}` : to;
+          u[s].wentTo[label] = (u[s].wentTo[label] || 0) + v;
+        }
       }
     }
     return u;
@@ -246,6 +332,24 @@ export async function indexTreasury(latest, tm, opts = {}) {
 
   if (store) store.set("treasury", { ...state, cursor, feeCursor });
 
+  /* Bridge destinations across every wallet, for the page's headline. */
+  const bridgeSummary = {};
+  for (const w of wallets) for (const L of Object.values(state.wallets[w])) for (const p of L.txs) {
+    if (p.dir !== "out" || !BRIDGES.has(p.cp)) continue;
+    const r = state.relay?.[p.tx];
+    const key = r && !r.unknown ? `${r.chain}|${r.recipient || "?"}` : "unresolved|";
+    const b = (bridgeSummary[key] ||= { chain: r && !r.unknown ? r.chain : "unresolved", recipient: r?.recipient || null, deposits: 0, byToken: {} });
+    b.deposits++;
+  }
+  // token amounts per destination, keyed by ledger symbol
+  for (const w of wallets) for (const [sym, L] of Object.entries(state.wallets[w])) for (const p of L.txs) {
+    if (p.dir !== "out" || !BRIDGES.has(p.cp)) continue;
+    const r = state.relay?.[p.tx];
+    const key = r && !r.unknown ? `${r.chain}|${r.recipient || "?"}` : "unresolved|";
+    const b = bridgeSummary[key]; if (!b) continue;
+    b.byToken[sym] = (b.byToken[sym] || 0) + p.v;
+  }
+
   const r4 = (x) => +Number(x).toFixed(4);
   const view = (w) => {
     const W = state.wallets[w] || {};
@@ -266,6 +370,7 @@ export async function indexTreasury(latest, tm, opts = {}) {
     updatedAt: Math.floor(Date.now() / 1000),
     cursor, partial, feeCursor, classVersion: CLASS_VERSION, unclassified: pending,
     names: NAMES,
+    bridges: Object.values(bridgeSummary).map((b) => ({ ...b, byToken: Object.fromEntries(Object.entries(b.byToken).map(([k, v]) => [k, r4(v)])) })).sort((a, b) => b.deposits - a.deposits),
     feeWallet: view(PLATFORM_FEE_RECIPIENT),
     treasuryWallets: [...wallets].filter((w) => w !== PLATFORM_FEE_RECIPIENT).map(view),
     weeklyAi: [...weekly.values()].sort((a, b) => a.t - b.t).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, k === "t" ? v : +v.toFixed(2)]))),
