@@ -42,19 +42,42 @@ export const NAMES = {
   [POOL_MANAGER]: "v4 pool manager", [LONG_HOOK]: "LONG hook", [FEE_SPLITTER]: "fee splitter",
   [COMMUNITY_VAULT]: "community vault", [BURN_ADDRESS]: "0x0", [PLATFORM_FEE_RECIPIENT]: "platform fee wallet",
   "0xe72688f7d25d7318b9a81f21edda640ca948c83b": "RobinHoodSettler (Robinhood Wallet swaps, 0x Settler)",
+  "0x1d4b86491ec211257cbedd77a4380a7494624eff": "RobinHoodSettler (Robinhood Wallet swaps, 0x Settler)",
   "0x00000000009726632680fb29d3f7a9734e3010e2": "Rainbow router",
   "0xb92fe925dc43a0ecde6c8b1a2709c170ec4fff4f": "Relay router",
   "0x4cd00e387622c35bddb9b4c962c136462338bc31": "Relay depository (bridge out of the chain)",
   "0x000000000022d473030f116ddee9f6b43ac78ba3": "Permit2",
+  "0xc4a21f9d6485fc5893dd4a491b320a83daf4da1d": "Uniswap v3 pool",
+  "0xd78480cafef722d75519e13b9f516e5704d0d659": "Uniswap v3 pool",
+  "0x52e65b17fb6e5ba00ed806f37afcd2daa50271ca": "Uniswap v3 pool",
+  "0x3bf2a8c1443446c11bf8bbdbbd27eda5941c2f8a": "Algebra pool",
 };
+/* Uniswap v3 and Algebra pools hold their own liquidity and emit their own events,
+   unlike v4's singleton. The treasury has used both, so a transaction is also read
+   for these signatures on any address. */
+const V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+const V3_MINT = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde";
+const V3_BURN = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c";
+const ALGEBRA_SWAP = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83";
+const ALGEBRA_MINT = V3_MINT;   // Algebra keeps Uniswap's Mint/Burn signatures
 const BRIDGES = new Set(["0x4cd00e387622c35bddb9b4c962c136462338bc31"]);
+/* Off-chain destinations identified by hand (public Solana RPC, 13 Sep 2026), kept
+   as investigator's notes and labelled as such on the page. They are not measured
+   by this task; they say what the measured recipients are. */
+export const OFFCHAIN_NOTES = {
+  "6Kbjdqz6tgYkfDdVXUUWcdTLWJskhcFBWx7zvEkXpCv8": "Solana wallet active since 25 Jul 2026 holding ~34 memecoin balances; forwards its USDC to 2Z3ZTA…",
+  "3cHpU4duLFpN8L2MxjjYpwi5G3pMVh8NySkJub2mKj8Y": "Solana Squads multisig vault (active since Oct 2025); pays USDC out to 2Z3ZTA…",
+  "683tpX79E9uWH8eaqa1Phfk3YGLSQFRu1yjxqYKheFDb": "Solana wallet active May–Jul 2026, before AI launched",
+  "2Z3ZTALEr4MTh6k2tcU2ZQqWETtHVNrBjrfa8d9CRf7V": "Solana collector wallet (19 transactions): receives USDC from the two above and sends it on to GSFdsv…",
+  "GSFdsvuANvVJ2MvX5kpt2optkQEYs4dE4mAjzpDDyQWE": "Solana address with exchange-scale activity (~46 transactions an hour): consistent with an exchange deposit address, the last hop visible on chain",
+};
 const MACHINERY = new Set([POOL_MANAGER, LONG_HOOK, FEE_SPLITTER, COMMUNITY_VAULT, BURN_ADDRESS]);
 const HOPS = 4;          // how many of the fee wallet's destinations to follow
 const HOP2 = 4;          // and how many of THEIR wallet-like destinations (the operator's other accounts)
 const MAX_WALLETS = 12;
 const TOP_TOKENS = 40;   // platform-wide fee tokens to name and price
 const WEEK = 7 * 86400;
-const CLASS_VERSION = 3; // bump when the classification rule changes; cached kinds are discarded
+const CLASS_VERSION = 4; // bump when the classification rule changes; cached kinds are discarded
 /* Relay's chain ids for the destinations seen so far; anything else shows its id. */
 const CHAIN_NAMES = { 792703809: "Solana", 1: "Ethereum", 8453: "Base", 42161: "Arbitrum", 10: "Optimism", 137: "Polygon", 56: "BNB Chain", 43114: "Avalanche", 4663: "Robinhood Chain", 1329: "Sei", 2741: "Abstract", 33139: "ApeChain", 480: "World Chain", 57073: "Ink", 130: "Unichain", 1868: "Soneium", 34443: "Mode", 8333: "B3", 59144: "Linea", 534352: "Scroll", 81457: "Blast", 7777777: "Zora", 1135: "Lisk", 999: "HyperEVM", 5000: "Mantle", 100: "Gnosis", 324: "zkSync", 1101: "Polygon zkEVM", 728126428: "Tron", 8253038: "Bitcoin", 9286185: "Eclipse" };
 
@@ -68,10 +91,16 @@ async function walletLike(a) {
  * chain, recipient, and the delivered amount. One lookup per deposit, cached.
  */
 async function relayDestination(tx, cache) {
-  if (cache[tx]) return cache[tx];
+  if (cache[tx] && !cache[tx].unknown) return cache[tx];
   try {
-    const r = await fetch(`https://api.relay.link/requests/v2?hash=${tx}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
-    const j = await r.json();
+    let r, j;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      r = await fetch(`https://api.relay.link/requests/v2?hash=${tx}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+      if (r.status !== 429) break;
+      await new Promise((res) => setTimeout(res, 1500 * 2 ** attempt));   // the index rate-limits; a 429 is not "no such request"
+    }
+    if (!r.ok) return null;                                                 // not cached: try again next run
+    j = await r.json();
     const q = (j.requests || [])[0];
     if (!q) return (cache[tx] = { unknown: true });
     const d = q.data || {};
@@ -112,9 +141,10 @@ async function extend(ledger, token, wallet, from, to, deadline) {
 async function classifyTx(tx, block, wallet, cache) {
   const key = `${tx}:${wallet}`;
   if (cache[key]) return cache[key];
-  const [transfers, pm] = await Promise.all([
+  const [transfers, pm, v3] = await Promise.all([
     rpc("eth_getLogs", [{ fromBlock: hexBlock(block), toBlock: hexBlock(block), topics: [TOPICS.TRANSFER] }]),
     rpc("eth_getLogs", [{ address: POOL_MANAGER, fromBlock: hexBlock(block), toBlock: hexBlock(block), topics: [[TOPICS.SWAP, TOPICS.MODIFY_LIQUIDITY]] }]),
+    rpc("eth_getLogs", [{ fromBlock: hexBlock(block), toBlock: hexBlock(block), topics: [[V3_SWAP, V3_MINT, V3_BURN, ALGEBRA_SWAP]] }]),
   ]);
   const net = {};        // token -> bigint string
   const cps = new Set();  // direct counterparties of the wallet
@@ -140,6 +170,14 @@ async function classifyTx(tx, block, wallet, cache) {
   for (const l of pm) {
     if (l.transactionHash !== tx) continue;
     if (l.topics[0] === TOPICS.MODIFY_LIQUIDITY) { const m = decodeModifyLiquidity(l); lpDelta += m.liquidityDelta; poolId = poolId || m.poolId; }
+    else swapped = true;
+  }
+  /* v3 / Algebra: Mint adds liquidity, Burn removes it, Swap is a swap; the pool
+     is the emitting contract, named as such. */
+  for (const l of v3) {
+    if (l.transactionHash !== tx) continue;
+    if (l.topics[0] === V3_MINT) { lpDelta += 1n; poolId = poolId || `v3:${l.address.toLowerCase()}`; }
+    else if (l.topics[0] === V3_BURN) { lpDelta -= 1n; poolId = poolId || `v3:${l.address.toLowerCase()}`; }
     else swapped = true;
   }
   const sent = Object.entries(net).filter(([, v]) => BigInt(v) < 0n).map(([t]) => t);
@@ -222,12 +260,14 @@ export async function indexTreasury(latest, tm, opts = {}) {
   }
   log(`  classified ${classified} treasury transactions${pending ? `; ${pending} deferred to the next run` : ""}`);
 
-  /* 2b. Where every bridge deposit landed, from Relay's index. */
+  /* 2b. Where every bridge deposit landed, from Relay's index. Earlier runs cached
+     a rate-limited answer as "unknown"; those are retried until the index answers. */
   state.relay ||= {};
   let looked = 0;
   for (const w of wallets) for (const L of Object.values(state.wallets[w])) for (const p of L.txs) {
-    if (p.dir !== "out" || !BRIDGES.has(p.cp) || state.relay[p.tx]) continue;
+    if (p.dir !== "out" || !BRIDGES.has(p.cp) || (state.relay[p.tx] && !state.relay[p.tx].unknown)) continue;
     if (deadline && Date.now() > deadline) { partial = true; break; }
+    await new Promise((res) => setTimeout(res, 250));   // stay under the index's rate limit
     if (await relayDestination(p.tx, state.relay)) looked++;
   }
   if (looked) log(`  resolved ${looked} bridge deposit(s) to their destination chain and recipient`);
@@ -264,7 +304,10 @@ export async function indexTreasury(latest, tm, opts = {}) {
   const meta = await resolveTokens([...tokAddrs], { log: () => {} });
   const sym = (a) => meta.get(a)?.symbol ?? a.slice(0, 8);
   const decOf = (a) => meta.get(a)?.decimals ?? 18;
-  const pairName = (id) => { const c = poolPairs.get(id); return c ? `${sym(c[0])} / ${sym(c[1])}` : (id ? id.slice(0, 10) : "?"); };
+  const pairName = (id) => {
+    if (id && id.startsWith("v3:")) { const a = id.slice(3); return `${NAMES[a] || "v3-style pool"} ${a.slice(0, 8)}`; }
+    const c = poolPairs.get(id); return c ? `${sym(c[0])} / ${sym(c[1])}` : (id ? id.slice(0, 10) : "?");
+  };
   const price = opts.priceOf || (() => null);
   const byAddr = Object.fromEntries(Object.entries(TRACK).map(([s, t]) => [t.address.toLowerCase(), s]));
 
@@ -297,7 +340,7 @@ export async function indexTreasury(latest, tm, opts = {}) {
         else if (k.kind === "in") u[s].received += v;
         /* Who ended up with the AI, for anything that left: a sale's far side, or a
            hand-off's recipient. Named where the page can name it. */
-        if (s === "AI" && outFlow && (k.kind === "swap" || k.kind === "out") && k.aiTo) {
+        if (s === "AI" && outFlow && (k.kind === "swap" || k.kind === "out" || k.kind === "lp+") && k.aiTo) {
           const to = k.aiTo;
           const label = to === POOL_MANAGER ? "v4 pools" : NAMES[to] ? NAMES[to] : wallets.has(to) ? `treasury wallet ${to}` : to;
           u[s].wentTo[label] = (u[s].wentTo[label] || 0) + v;
@@ -370,6 +413,7 @@ export async function indexTreasury(latest, tm, opts = {}) {
     updatedAt: Math.floor(Date.now() / 1000),
     cursor, partial, feeCursor, classVersion: CLASS_VERSION, unclassified: pending,
     names: NAMES,
+    notes: OFFCHAIN_NOTES,
     bridges: Object.values(bridgeSummary).map((b) => ({ ...b, byToken: Object.fromEntries(Object.entries(b.byToken).map(([k, v]) => [k, r4(v)])) })).sort((a, b) => b.deposits - a.deposits),
     feeWallet: view(PLATFORM_FEE_RECIPIENT),
     treasuryWallets: [...wallets].filter((w) => w !== PLATFORM_FEE_RECIPIENT).map(view),

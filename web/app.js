@@ -2936,7 +2936,7 @@ function renderTreasury() {
   const T = S.treasury;
   if (!T?.feeWallet) {
     host.innerHTML = `<p class="muted">The fee ledger is built on the slow path; it appears after the next standard run.</p>`;
-    for (const id of ["#tTreasury", "#tPlatformFees", "#takeTreasury", "#readTreasury", "#cSankey", "#cTreasuryWeekly", "#tTreasuryPools", "#treasuryDest"]) $(id).innerHTML = "";
+    for (const id of ["#tTreasury", "#tPlatformFees", "#takeTreasury", "#readTreasury", "#cSankey", "#cTreasuryWeekly", "#tTreasuryPools", "#treasuryDest", "#tTerminals"]) $(id).innerHTML = "";
     return;
   }
   const px = marketState().price || 0;
@@ -3005,10 +3005,51 @@ function renderTreasury() {
   const wentRows = Object.entries(wentTo).sort((a, b) => b[1] - a[1]).slice(0, 8);
   const bridgesRows = (T.bridges || []).filter((b) => b.deposits > 0);
   const destLabel = (label) => label.startsWith("0x") ? addrCell(label) : label.startsWith("treasury wallet ") ? `<b>treasury</b> ${addrCell(label.slice(16))}` : `<b>${label}</b>`;
+  const notes = T.notes || {};
+  const treasurySet2 = new Set(W.map((w) => w.a));
+
+  /* Every unit's end state, in one table. AI by where it ended up; the bridged
+     dollars by chain and recipient; balances still held. Categories, not
+     addresses, so the answer to "what did they do with it" is one screen. */
+  const usdAi = (v) => v * px;
+  const cat = { soldV4: 0, soldRouters: 0, parked: 0, lp: 0, external: { n: 0, v: 0, addrs: [] }, v3: 0, internalOnly: 0 };
+  for (const [label, v] of Object.entries(wentTo)) {
+    if (label === "v4 pools") cat.soldV4 += v;
+    else if (/Uniswap v3|Algebra/.test(label)) cat.v3 += v;
+    else if (label.startsWith("treasury wallet ")) cat.internalOnly += v;
+    else if (label.startsWith("0x")) { cat.external.n++; cat.external.v += v; cat.external.addrs.push([label, v]); }
+    else cat.soldRouters += v;   // a named router kept the AI at the end of the transaction: sold through it, buyer unresolved
+  }
+  cat.parked = W.reduce((s, w) => s + (w.ai.balance || 0), 0);
+  cat.lp = W.reduce((s, w) => s + (w.aiU.lpAdded || 0), 0);
+  const seeded = {};
+  for (const w of W) for (const [k, v] of Object.entries(w.aiU.pools || {})) seeded[k] = (seeded[k] || 0) + v;
+  const bridgedByChain = {};
+  for (const b of bridgesRows) { const key = b.chain; bridgedByChain[key] = (bridgedByChain[key] || 0) + (b.byToken.USDG || 0); }
+  const termRows = [
+    { k: "Sold into v4 pools (AI)", ai: cat.soldV4, usd: usdAi(cat.soldV4), note: "the pool manager held the AI at the end of the transaction; sold on Robinhood Chain's own DEX, through whichever router" },
+    { k: "Sent into Uniswap v3 / Algebra pools (AI)", ai: cat.v3, usd: usdAi(cat.v3), note: "sold or seeded on v3-style venues; classified per transaction by their own Swap and Mint events" },
+    { k: "Sold through a router, buyer unresolved (AI)", ai: cat.soldRouters, usd: usdAi(cat.soldRouters), note: "a Settler or router still held the AI when the transaction ended" },
+    { k: `Paid to ${cat.external.n} external wallets (AI)`, ai: cat.external.v, usd: usdAi(cat.external.v), note: "round amounts to smart accounts and EOAs outside the operator's set; most have since sold or moved it" },
+    { k: "Parked in the operator's accounts (AI)", ai: cat.parked, usd: usdAi(cat.parked), note: "still held; the largest is untouched since mid-July" },
+    { k: "Seeded as liquidity (AI)", ai: cat.lp, usd: usdAi(cat.lp), note: Object.entries(seeded).map(([k, v]) => `${k} ${compact(v)}`).join(", ") || "none observed" },
+    ...Object.entries(bridgedByChain).sort((a, b) => b[1] - a[1]).map(([chain, v]) => ({ k: `Bridged to ${chain} (USDG)`, ai: null, usd: v,
+      note: bridgesRows.filter((b) => b.chain === chain).map((b) => b.recipient ? `${b.recipient.slice(0, 6)}…${b.recipient.slice(-4)}${notes[b.recipient] ? ` (${notes[b.recipient].split(";")[0]})` : /^0x/.test(b.recipient) && (treasurySet2.has(b.recipient.toLowerCase()) || b.recipient.toLowerCase() === (S.meta.contracts.platformFeeRecipient || "").toLowerCase()) ? " (the operator's own address on that chain)" : ""} $${compact(b.byToken.USDG || 0)}` : `unresolved $${compact(b.byToken.USDG || 0)}`).join(" · ") })),
+  ].filter((r) => (r.ai || 0) > 0 || (r.usd || 0) > 0);
+  const termTotal = termRows.reduce((s, r) => s + (r.usd || 0), 0);
+  table($("#tTerminals"), [
+    { h: "End state", f: (r) => r.k },
+    { h: "AI", f: (r) => (r.ai == null ? "—" : compact(r.ai)) },
+    { h: "USD today", f: (r) => `$${compact(r.usd)}` },
+    { h: "Share", f: (r) => pctLevel(r.usd / Math.max(1, termTotal), 1) },
+    { h: "Detail", f: (r) => `<span class="muted">${r.note}</span>` },
+  ], termRows);
+
   $("#treasuryDest").innerHTML =
     (bridgesRows.length ? `<div class="livenote"><b>Bridged off the chain</b> (Relay's index, by destination): ${bridgesRows.map((b) =>
-      `${Object.entries(b.byToken).map(([s, v]) => `${s === "USDG" ? "$" : ""}${compact(v)}${s === "USDG" ? "" : " " + s}`).join(" + ")} → <b>${b.chain}</b>${b.recipient ? ` <span class="mono" title="${b.recipient}">${b.recipient.slice(0, 6)}…${b.recipient.slice(-4)}</span>` : ""} in ${b.deposits} deposit${b.deposits === 1 ? "" : "s"}`).join(" · ")}.</div>` : "")
-    + (wentRows.length ? `<div class="livenote"><b>Where the AI that left ended up</b>, by the address holding it at the end of each transaction: ${wentRows.map(([l, v]) => `${destLabel(l)} <b>${compact(v)}</b>`).join(" · ")}.</div>` : "");
+      `${Object.entries(b.byToken).map(([s, v]) => `${s === "USDG" ? "$" : ""}${compact(v)}${s === "USDG" ? "" : " " + s}`).join(" + ")} → <b>${b.chain}</b>${b.recipient ? ` <span class="mono" title="${b.recipient}${notes[b.recipient] ? " — " + notes[b.recipient] : ""}">${b.recipient.slice(0, 6)}…${b.recipient.slice(-4)}</span>` : ""} in ${b.deposits} deposit${b.deposits === 1 ? "" : "s"}`).join(" · ")}.</div>` : "")
+    + (wentRows.length ? `<div class="livenote"><b>Where the AI that left ended up</b>, by the address holding it at the end of each transaction: ${wentRows.map(([l, v]) => `${destLabel(l)} <b>${compact(v)}</b>`).join(" · ")}.</div>` : "")
+    + (Object.keys(notes).length ? `<div class="livenote"><b>Off-chain hops, identified by hand on the public Solana RPC (13 Sep 2026):</b> ${Object.entries(notes).map(([a, n]) => `<span class="mono" title="${a}">${a.slice(0, 6)}…${a.slice(-4)}</span> ${n}`).join(" · ")}.</div>` : "");
 
   /* The flow diagram. */
   const wallets = W.map((w, i) => ({ id: `w${i}`, label: knownName(w.a) || short(w.a), v: w.agg.inUsd, color: "var(--series-3)", labelRight: false }));
