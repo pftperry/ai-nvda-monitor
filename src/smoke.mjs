@@ -13,6 +13,8 @@
  * and it would have caught that immediately.
  */
 import { analyseRouting, routingHoleDay } from "./tasks/routing.mjs";
+import { walkBook, aiRatio, poolImpact, mergedImpact, IMPACT_SIZES } from "./tasks/depth.mjs";
+import { isStockCode } from "./tasks/rwa.mjs";
 import { getLogsRange } from "./rpc.mjs";
 import { TimeMap } from "./timemap.mjs";
 
@@ -185,7 +187,72 @@ ok("a routing day far below flow is reported as a hole, a quiet day is not", () 
   assert(routingHoleDay(perPool, null, today) === null, "no prior series, nothing to repair");
 });
 
-console.log("Time map");
+console.log("Cost to trade");
+
+/* One full-range position of liquidity L at price 1 (sqrt 1) in a pool where AI is
+   token0. Selling x AI moves sqrt price to 1/(1 + x/L); the walk must land there. */
+{
+  const L = 1e24;
+  const net = { "-887272": String(L), "887272": String(-L) };
+  const pool = { lastSqrtPriceX96: (2n ** 96n).toString(), aiIsCurrency0: true, pairDecimals: 18 };
+  ok("selling AI into one position lands on the closed form", () => {
+    const r = walkBook(net, 1, true, "sell", { amountRaw: 0.1 * L });
+    assert(r && !r.exhausted, "the book should absorb it");
+    assert(Math.abs(r.sqrtEnd - 1 / 1.1) < 1e-9, `sqrt should be 1/1.1, got ${r.sqrtEnd}`);
+    assert(Math.abs(aiRatio(r.sqrtEnd, 1, true) - 1 / 1.21) < 1e-9, "AI's price falls to 1/1.21");
+    assert(Math.abs(r.used - 0.1 * L) < 1, "everything asked for was used");
+  });
+  ok("buying AI moves the price up and a target price stops the walk", () => {
+    const r = walkBook(net, 1, true, "buy", { amountRaw: 0.1 * L });
+    assert(r.sqrtEnd > 1 && Math.abs(r.sqrtEnd - 1 / 0.9) < 1e-9, `sqrt should be 1/0.9, got ${r.sqrtEnd}`);
+    const t = walkBook(net, 1, true, "sell", { targetSqrt: 0.5 });
+    assert(Math.abs(t.sqrtEnd - 0.5) < 1e-12 && Math.abs(t.used - L) < 1, `stops at the target having sold L, got ${t.used}`);
+  });
+  /* aiUsd = 1 makes $1M exactly L raw of AI: selling it halves the sqrt price, so
+     AI's price falls 75%; $100K is a tenth of L and costs 17.4%. Big enough to see,
+     small enough that no size runs the book dry. */
+  ok("impact grows with size and the merged walk agrees with a single venue", () => {
+    const one = poolImpact(pool, { net }, 1);
+    assert(Math.abs(one.sell[3].pct - 0.75) < 1e-4, `$1M should cost 75%, got ${one.sell[3].pct}`);
+    assert(Math.abs(one.sell[0].pct - (1 - 1 / 1.21)) < 1e-4, `$100K should cost 17.4%, got ${one.sell[0].pct}`);
+    assert(one.sell.every((x, i) => i === 0 || x.pct >= one.sell[i - 1].pct), "sell impact is monotonic in size");
+    assert(one.buy.every((x, i) => i === 0 || x.pct >= one.buy[i - 1].pct), "buy impact is monotonic in size");
+    const m = mergedImpact([{ pool, ladder: { net } }], 1);
+    for (let i = 0; i < IMPACT_SIZES.length; i++) assert(Math.abs(m.sell[i].pct - one.sell[i].pct) < 1e-3, `merged sell ${i}: ${m.sell[i].pct} vs ${one.sell[i].pct}`);
+    const two = mergedImpact([{ pool, ladder: { net } }, { pool, ladder: { net } }], 1);
+    assert(two.sell[3].pct < one.sell[3].pct, "two venues absorb a sale with less impact than one");
+    assert(Math.abs(two.sell[3].pct - (1 - 1 / 1.5 ** 2)) < 1e-3, `two venues splitting $1M each sell L/2: ${two.sell[3].pct}`);
+  });
+  ok("when AI is token1 the same sale moves its price the same way", () => {
+    const p1 = { ...pool, aiIsCurrency0: false };
+    const r = walkBook(net, 1, false, "sell", { amountRaw: 0.1 * L });
+    assert(r.sqrtEnd > 1, "selling token1 raises token1-per-token0");
+    assert(aiRatio(r.sqrtEnd, 1, false) < 1, "but AI's own price still falls");
+    const i = poolImpact(p1, { net }, 1);
+    assert(Math.abs(i.sell[0].pct - (1 - 1 / 1.21)) < 1e-4, `same 17.4% from the other side, got ${i.sell[0].pct}`);
+  });
+  ok("an empty or exhausted book is reported, not guessed", () => {
+    assert(walkBook({}, 1, true, "sell", { amountRaw: 1 }) === null, "no ticks, no answer");
+    /* A full-range position is never exhausted (price can go to zero), so a
+       bounded one: 1% either side of spot holds about L/200 of each token. */
+    const bounded = { "-100": String(L), "100": String(-L) };
+    const r = walkBook(bounded, 1, true, "sell", { amountRaw: L });
+    assert(r.exhausted, "more than the band holds runs it dry");
+    const i = poolImpact(pool, { net: bounded }, 1);
+    assert(i.sell[3].pct === 1, "and the impact reads as the whole book");
+  });
+}
+
+console.log("\nStock-token classifier");
+ok("Robinhood's proxy bytecode is recognised by length and prefix, nothing else", () => {
+  const good = "0x6080604052600a600c565b" + "00".repeat(283 - 11);
+  assert(isStockCode(good), "the template matches");
+  assert(!isStockCode(good + "00"), "one byte longer is a different contract");
+  assert(!isStockCode("0x6080604052366100135761" + "00".repeat(283 - 11)), "same length, different prefix");
+  assert(!isStockCode(null) && !isStockCode("0x"), "no code is not a stock");
+});
+
+console.log("\nTime map");
 
 ok("blockAt inverts at() on anchors and between them", () => {
   const map = new TimeMap([[1000, 1_780_000_000], [2000, 1_780_000_100], [4000, 1_780_000_300]]);

@@ -493,7 +493,7 @@ function table(host, cols, rows) {
 /* ── data ───────────────────────────────────────────────────────────────── */
 const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -514,14 +514,14 @@ async function refreshData() {
     const meta = await loadJSON("meta.json");
     if (!meta || meta.headBlock === S.meta?.headBlock) return;   // nothing newly indexed
     const [flow, burns] = await Promise.all(["flow.json", "burns.json"].map(loadJSON));
-    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury] = await Promise.all(
+    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa] = await Promise.all(
       OPTIONAL_ARTIFACTS.map((f) => loadJSON(f).catch(() => null))
     );
     Object.assign(S, {
       meta, flow, burns,
       routing: routing ?? S.routing, bridges: bridges ?? S.bridges,
       tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth, launchpad: launchpad ?? S.launchpad,
-      holders: holders ?? S.holders, prices: prices ?? S.prices, treasury: treasury ?? S.treasury,
+      holders: holders ?? S.holders, prices: prices ?? S.prices, treasury: treasury ?? S.treasury, rwa: rwa ?? S.rwa,
     });
     renderAll();
     refreshLiveTail();   // the live window starts at the new head, so re-scope it
@@ -1902,9 +1902,10 @@ function renderInvestor() {
       });
     } catch { /* a convenience must never blank the tab */ }
   }
-  /* The cockpit is rewritten on every live tick, so long intros in this panel are
+  /* The cockpit is rewritten on every live tick, so long intros in these panels are
      re-clamped here as well as in renderAll; already-clamped ones are left alone. */
   collapseIntros($("#p-investor"));
+  collapseIntros($("#p-valuation"));
 }
 
 /**
@@ -2607,9 +2608,24 @@ function renderCockpit(structure, demand) {
     </div>`;
   }).join("");
 
-  rerender($("#rating"), `
+  /* Two homes. The Investor tab (the platform view) carries the market tiles, the
+     Demand dial and the combined reading; the Valuation tab carries the Structure
+     dial with Coulou's inputs and credit. Same computation, split by audience. */
+  rerender($("#ratingDemand"), `
     <div class="rating">
       <div class="cockpit">${tiles.map((t) => `<div class="ctile"${t.id ? ` id="${t.id}"` : ""}>${t.spark || ""}<div class="lbl">${t.lbl}</div><div class="val ${t.cls || ""}">${t.val}</div><div class="note">${t.note}</div></div>`).join("")}</div>
+      <div class="dials one">
+        ${dial("Demand", Dx, { up: "buying", flat: "balanced", down: "selling", na: "unranked" })}
+      </div>
+      <div class="reading ${read.tone}"><b>${read.title}.</b> ${read.body} <span class="muted">Structure is scored on the Valuation tab.</span></div>
+      <details data-k="dinputs"><summary>The ${Dx.n} demand inputs</summary>
+        <div class="components">${rows(demand)}</div>
+        <div class="coverage">Each input is a trailing-7-day level ranked inside AI's own last ${RATING.windowDays} days: 0 is typical for this
+          asset lately, ±1 is the edge of that range. Equal weights (the live tail at half).</div>
+      </details>
+    </div>`);
+  rerender($("#rating"), `
+    <div class="rating">
       <div class="dials">
         ${dial("Structure", Sx, { up: "improving", flat: "steady", down: "deteriorating", na: "unranked" })}
         ${dial("Demand", Dx, { up: "buying", flat: "balanced", down: "selling", na: "unranked" })}
@@ -3006,7 +3022,7 @@ function renderTreasury() {
 
   host.innerHTML = `<div class="kpis">
     <div>${kpiEl(`$${compact(usdOf("AI", aiFees) + usdOf("NVDA", nvFees))}`, `${compact(aiFees)} AI + ${nf(nvFees, 0)} NVDA`, "", "fees from AI trading, today's prices")}</div>
-    <div>${kpiEl(`$${compact(usdOf("AI", aiHook) + usdOf("NVDA", nvHook))}`, `${compact(aiHook)} AI + ${nf(nvHook, 0)} NVDA`, "", "launch allocation from the hook, not fees")}</div>
+    <div>${kpiEl(`$${compact(usdOf("AI", aiHook) + usdOf("NVDA", nvHook))}`, `${compact(aiHook)} AI + ${nf(nvHook, 0)} NVDA`, "", "LP fees collected from the protocol's own positions, 15–27 Jul; auto-compounded since")}</div>
     <div>${kpiEl(recycleShare == null ? "—" : pctLevel(recycleShare, 1), recycleShare == null ? "" : "recycled", recycleShare == null ? "" : recycleShare >= 0.5 ? "up" : "down", "of what left the treasury went back into AI or its liquidity; the rest was sold or moved out")}</div>
   </div>
   <div class="livenote">The fee wallet forwards everything: ${(fw.AI?.transfersIn || 0).toLocaleString()} transfers in, ${(fw.AI?.transfersOut || 0).toLocaleString()} out, balance <b>${compact(fw.AI?.balance ?? 0)} AI</b>.
@@ -3113,7 +3129,7 @@ function renderTreasury() {
   const feeIn = usdOf("AI", aiFees) + usdOf("NVDA", nvFees), hookIn = usdOf("AI", aiHook) + usdOf("NVDA", nvHook);
   const sources = [
     { id: "fees", label: "AI trading fees", v: feeIn, color: "var(--buy)" },
-    { id: "hook", label: "Launch allocation", v: hookIn, color: "var(--series-3)" },
+    { id: "hook", label: "LP fees collected (Jul 15–27)", v: hookIn, color: "var(--series-3)" },
     { id: "other", label: "Other launches' fees", v: otherUsd, color: "var(--series-2)" },
   ].filter((n) => n.v > 0);
   const feeNode = { id: "fw", label: "Fee wallet", v: sources.reduce((s, n) => s + n.v, 0), color: "var(--text-secondary)", labelRight: true };
@@ -3191,9 +3207,179 @@ function renderTreasury() {
   ], (pf.tokens || []).slice(0, 15));
 
   $("#takeTreasury").innerHTML = takeEl("neu",
-    `Read left to right: what reached the fee wallet (fees from AI trading, the hook's launch allocation, and fees from other launches
+    `Read left to right: what reached the fee wallet (the split hook fee from AI trading; the LP fees the operator collected from the
+     protocol's own AI/NVDA positions in eighteen <code>collect()</code> calls between 15 and 27 Jul, after which the hook began folding
+     them back into liquidity instead; and fees from other launches
      where a price exists), where it was forwarded, and what became of it. <span class="muted">Values at today's prices, so a token that
      was sold at a different price is drawn at today's. Only the four tracked tokens (AI, NVDA, USDG, WETH) are followed past the fee wallet.</span>`);
+}
+
+/* ── The platform view ───────────────────────────────────────────────────
+   LONG's thesis is to be the liquidity layer for tokenized stocks on Robinhood
+   Chain. This measures that thesis directly: how much of the chain's stock-token
+   supply and stock-token trading the ecosystem has captured, how big the
+   liquidity is and how much of it the protocol owns and compounds, and what it
+   would cost to trade size against it. */
+const tile = (lbl, val, note, cls = "", extra = "") => `<div class="ctile ${extra}"><div class="lbl">${lbl}</div><div class="val ${cls}">${val}</div><div class="note">${note}</div></div>`;
+
+function renderRwa() {
+  const R = S.rwa, D = S.depth;
+  const px = marketState().price || 0;
+  const pending = `<p class="muted">Built on the slow path; this card fills after the next standard run.</p>`;
+
+  /* ── capture ─────────────────────────────────────────────────────────── */
+  if (!R?.tokens?.length) {
+    $("#rwaTiles").innerHTML = pending;
+    for (const id of ["#readRwa", "#tStocks", "#cStockDex", "#takeStockDex", "#rwaSwaps", "#tSwapShare", "#cSwapShare", "#readSwaps"]) $(id).innerHTML = "";
+  } else {
+    const T = R.totals;
+    const nv = R.tokens.find((t) => t.token === (S.meta.contracts.nvdaToken || "").toLowerCase()) || R.tokens[0];
+    const hist = R.history || [];
+    const wk = hist.find((h) => h.t >= (hist.at(-1)?.t || 0) - 7 * 86400);
+    const dShare = wk && wk !== hist.at(-1) && wk.share != null && T.share != null ? T.share - wk.share : null;
+    $("#rwaTiles").innerHTML = `<div class="tiles">
+      ${tile("Stock supply captured", T.share == null ? "—" : pctLevel(T.share, 1),
+        `$${compact(T.dexUsd + T.vaultUsd)} of $${compact(T.supplyUsd)} across ${T.priced} priced stock tokens${dShare != null ? ` · <span class="${dShare >= 0 ? "up" : "down"}">${pts(dShare)}</span> in 7d` : ""}`, "", "hero")}
+      ${tile(`${nv.symbol} captured`, pctLevel(nv.share, 1), `${nf(nv.inDex + nv.inVault, 0)} of ${nf(nv.supply, 0)} ${nv.symbol} on chain · ${pctLevel(nv.dexShare, 1)} in pools, ${pctLevel(nv.vaultShare, 1)} in the vault`)}
+      ${tile("In DEX liquidity", `$${compact(T.dexUsd)}`, `stock tokens held by the pool manager, all venues`)}
+      ${tile("Stock pools", `${T.poolsLong.toLocaleString()} / ${T.poolsAll.toLocaleString()}`, `pools quoting a stock token carry the LONG hook (${pctLevel(T.poolsAll ? T.poolsLong / T.poolsAll : null, 0)})`)}
+    </div>`;
+    $("#readRwa").innerHTML = takeEl(T.share >= 0.25 ? "pos" : "neu",
+      `<b>${pctLevel(T.share, 1)}</b> of the tokenized-stock value on Robinhood Chain sits inside DEX liquidity or the community vault,
+       and <b>${pctLevel(T.poolsAll ? T.poolsLong / T.poolsAll : null, 0)}</b> of the pools that quote a stock token are LONG launches.
+       ${nv.symbol} leads: <b>${pctLevel(nv.share, 1)}</b> of every ${nv.symbol} token on the chain is in a pool or the vault.
+       <span class="muted">Supply is the token's on-chain <code>totalSupply</code>; the pool-manager balance is DEX inventory on every venue,
+       LONG-hooked or not, so the share is an upper bound on LONG's own. Prices from each stock's busiest USDG pool.</span>`);
+    const sw = R.swapShare?.perToken || [];
+    table($("#tStocks"), [
+      { h: "Stock", f: (t) => `<b>${t.symbol}</b>` },
+      { h: "On chain", f: (t) => nf(t.supply, 0) },
+      { h: "In pools", f: (t) => nf(t.inDex, 0) },
+      { h: "In vault", f: (t) => (t.inVault ? nf(t.inVault, 0) : `<span class="muted">0</span>`) },
+      { h: "Captured", attrs: () => ({ class: "bar-cell" }), f: (t) => `<div class="fill" style="width:${Math.min(120, t.share * 120)}px"></div><span>${pctLevel(t.share, 1)}</span>` },
+      { h: "USD in pools", f: (t) => (t.dexUsd == null ? `<span class="muted">unpriced</span>` : `$${compact(t.dexUsd)}`) },
+      { h: "LONG pools / all", f: (t) => `${t.poolsLong.toLocaleString()} / ${t.poolsAll.toLocaleString()}${t.poolsPartial ? "*" : ""}` },
+      { h: "Swaps 24h via LONG", f: (t) => { const s = sw.find((x) => x.token === t.token); return s ? `${s.long.toLocaleString()} / ${s.all.toLocaleString()} <span class="muted">${pctLevel(s.share, 0)}</span>` : "—"; } },
+    ], R.tokens);
+    const nvAddr = Object.keys(R.daily || {})[0];
+    const daily = nvAddr ? (R.daily[nvAddr] || []) : [];
+    if (daily.length > 1) {
+      const sym = R.dailyTracked?.[nvAddr] || "NVDA";
+      lineChart($("#cStockDex"), daily.slice(-120), {
+        xKey: "t", yKey: "cum", zeroBase: true, area: true, color: "var(--series-3)", xFmt: dayFmt, fmt: (v) => nf(v, 0),
+        tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${nf(d.cum, 0)} ${sym} in DEX liquidity</div><div class="k">${d.net >= 0 ? "+" : ""}${nf(d.net, 1)} that day</div>`,
+      });
+      const d7 = daily.at(-1).cum - (daily.find((d) => d.t >= daily.at(-1).t - 7 * 86400)?.cum ?? daily[0].cum);
+      $("#takeStockDex").innerHTML = takeEl(d7 >= 0 ? "pos" : "warn",
+        `<b>${nf(daily.at(-1).cum, 0)} ${sym}</b> sits in DEX liquidity today, <b>${d7 >= 0 ? "+" : ""}${nf(d7, 0)}</b> over the last 7 days.
+         Stock tokens enter the pools when traders buy AI-side tokens with them and when liquidity is seeded; they leave when
+         traders sell tokens for stock or liquidity is pulled. A rising line is stock being absorbed into the ecosystem.${R.dailyPartial?.[nvAddr] ? " <span class=\"warnline\">Replay still catching up; the series ends early.</span>" : ""}`);
+    } else { $("#cStockDex").innerHTML = pending; $("#takeStockDex").innerHTML = ""; }
+
+    /* ── trading share ──────────────────────────────────────────────────── */
+    const ss = R.swapShare;
+    if (ss) {
+      $("#rwaSwaps").innerHTML = `<div class="tiles">
+        ${tile("Stock swaps via LONG", pctLevel(ss.share, 1), `${ss.longSwaps.toLocaleString()} of ${ss.stockSwaps.toLocaleString()} swaps touching a stock token, last 24h`, "", "hero")}
+        ${tile("Stock swaps, 24h", ss.stockSwaps.toLocaleString(), ss.chainSwaps ? `${pctLevel(ss.stockSwaps / ss.chainSwaps, 1)} of ${ss.chainSwaps.toLocaleString()} swaps on the chain` : "all venues")}
+        ${tile("Paired with AI", ss.longSwaps ? pctLevel(ss.aiPairedSwaps / ss.longSwaps, 0) : "—", `of LONG's stock swaps were in an AI pool (${ss.aiPairedSwaps.toLocaleString()})`)}
+        ${tile("Elsewhere", (ss.stockSwaps - ss.longSwaps).toLocaleString(), `stock swaps in hookless or other-hook pools${ss.truncated ? " · window cut short by budget" : ""}`)}
+      </div>`;
+      table($("#tSwapShare"), [
+        { h: "Stock", f: (r) => `<b>${r.symbol}</b>` },
+        { h: "Swaps 24h", f: (r) => r.all.toLocaleString() },
+        { h: "Via LONG", f: (r) => r.long.toLocaleString() },
+        { h: "Share", attrs: () => ({ class: "bar-cell" }), f: (r) => `<div class="fill" style="width:${Math.min(120, (r.share || 0) * 120)}px"></div><span>${pctLevel(r.share, 0)}</span>` },
+      ], ss.perToken.slice(0, 12));
+      const sh = hist.filter((h) => h.swapShare != null);
+      if (sh.length > 1) {
+        lineChart($("#cSwapShare"), sh.slice(-24 * 14), {
+          xKey: "t", yKey: "swapShare", zeroBase: true, area: true, color: "var(--series-3)", xFmt: dayFmt, fmt: (v) => pctLevel(v, 0),
+          tip: (h) => `<div class="k">${tsFmt(h.t)}</div><div>${pctLevel(h.swapShare, 1)} of stock swaps via LONG</div><div class="k">${(h.longSwaps || 0).toLocaleString()} of ${(h.stockSwaps || 0).toLocaleString()}, trailing 24h</div>`,
+        });
+      } else $("#cSwapShare").innerHTML = `<p class="muted" style="padding:12px 0">The share is sampled each slow-path run; a line appears once there are two.</p>`;
+      $("#readSwaps").innerHTML = takeEl(ss.share >= 0.5 ? "pos" : "neu",
+        `Over the last day, <b>${pctLevel(ss.share, 1)}</b> of every swap on Robinhood Chain that touched a tokenized stock went through a
+         LONG pool${ss.longSwaps ? `, and <b>${pctLevel(ss.aiPairedSwaps / ss.longSwaps, 0)}</b> of those were AI pairs` : ""}. The rest traded in
+         pools without the hook, which pay LONG nothing. <span class="muted">Counted from every Swap the pool manager emitted in the window,
+         matched against every pool that was ever initialised with a stock token on either side.</span>`);
+    } else { $("#rwaSwaps").innerHTML = pending; for (const id of ["#tSwapShare", "#cSwapShare", "#readSwaps"]) $(id).innerHTML = ""; }
+  }
+
+  /* ── liquidity: size, ownership, compounding ─────────────────────────── */
+  if (!D?.pools?.length) {
+    for (const id of ["#rwaLiq", "#rwaCompound"]) $(id).innerHTML = pending;
+    for (const id of ["#cTvl", "#readLiq", "#cCompound", "#readCompound", "#tImpact", "#readImpact"]) $(id).innerHTML = "";
+    return;
+  }
+  const tvl = D.tvlUsd || 0, own = D.hookTvlUsd ?? null;
+  const flagship = D.pools.find((p) => p.poolId === S.meta.contracts.aiNvdaPool) || D.pools[0];
+  const H = (D.history || []).map((h) => ({ ...h, tvl: h.tvl ?? (h.bid + h.ask) }));
+  const wkRow = H.find((h) => h.t >= (H.at(-1)?.t || 0) - 7 * 86400);
+  const tvlD = wkRow && wkRow !== H.at(-1) ? tvl / wkRow.tvl - 1 : null;
+  $("#rwaLiq").innerHTML = `<div class="tiles three">
+    ${tile("Total liquidity", `$${compact(tvl)}`, `${D.pools.length} indexed venues${tvlD != null ? ` · <span class="${tvlD >= 0 ? "up" : "down"}">${pct(tvlD, 1)}</span> in 7d` : ""}`, "", "hero")}
+    ${tile("Protocol-owned", own == null ? "—" : pctLevel(tvl ? own / tvl : null, 1), own == null ? "ladders predate the split" : `$${compact(own)} held by the LONG hook itself`)}
+    ${tile("Flagship pool", `$${compact(flagship.tvlUsd)}`, `AI/${flagship.pair}${flagship.hookShare != null ? ` · ${pctLevel(flagship.hookShare, 0)} protocol-owned` : ""}`)}
+  </div>`;
+  if (H.length > 1) {
+    multiLine($("#cTvl"), H.slice(-24 * 14), {
+      xKey: "t", series: [{ key: "tvl", color: "var(--series-3)" }, ...(H.some((h) => h.hookTvl != null) ? [{ key: "hookTvl", color: "var(--buy)" }] : [])],
+      zeroBase: true, area: true, xFmt: dayFmt, fmt: (v) => `$${compact(v)}`,
+      tip: (h) => `<div class="k">${tsFmt(h.t)}</div><div>$${compact(h.tvl)} total liquidity</div>${h.hookTvl != null ? `<div>$${compact(h.hookTvl)} protocol-owned</div>` : ""}<div class="k">${h.venues} venues</div>`,
+    });
+  } else $("#cTvl").innerHTML = `<p class="muted" style="padding:12px 0">Accrues hourly.</p>`;
+  $("#readLiq").innerHTML = takeEl("neu",
+    `<b>$${compact(tvl)}</b> of resting liquidity across AI's ${D.pools.length} indexed venues${own != null ? `, of which <b>${pctLevel(tvl ? own / tvl : null, 1)}</b> is the protocol's own position` : ""}.
+     Liquidity the protocol owns cannot be pulled by a market maker on a bad day, which is the "sell wall" the founder describes; the rest can leave in one block.
+     <span class="muted">Values every position at spot from the ModifyLiquidity tape; the hourly series is total value, not near-spot depth.</span>`);
+
+  const comp = D.compounding || [];
+  if (comp.length) {
+    const seedDay = comp[0];                                  // the launch seed dwarfs every later day
+    const since = comp.slice(1);
+    const total = sumOf(since, (r) => r.addUsd), removed = sumOf(since, (r) => r.remUsd);
+    const now = Math.floor(Date.now() / 1000), d7 = sumOf(since.filter((r) => r.t >= now - 8 * 86400 && r.t < Math.floor(now / 86400) * 86400), (r) => r.addUsd);
+    const days = since.filter((r) => r.addUsd > 0).length;
+    $("#rwaCompound").innerHTML = `<div class="tiles three">
+      ${tile("Compounded, 7d", `$${compact(d7)}`, "fees folded into the hook's positions, complete days", "", "hero")}
+      ${tile("Since launch", `$${compact(total)}`, `over ${days} days, after the $${compact(seedDay.addUsd)} seed on ${dayFmt(seedDay.t)}`)}
+      ${tile("Withdrawn", `$${compact(removed)}`, removed > 0 ? "liquidity the hook has removed" : "the hook has removed nothing", removed > 0 ? "warn" : "")}
+    </div>`;
+    barChart($("#cCompound"), since.slice(-30), {
+      xKey: "t", yKey: "addUsd", color: "var(--buy)", xFmt: dayFmt, fmt: (v) => `$${compact(v)}`,
+      tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>$${compact(r.addUsd)} added to the hook's positions</div><div class="k">${compact(r.addAi)} AI + $${compact(r.addQuoteUsd)} of quote${r.remUsd ? ` · $${compact(r.remUsd)} removed` : ""}</div>`,
+    });
+    $("#readCompound").innerHTML = takeEl(d7 > 0 ? "pos" : "warn",
+      `The hook has folded <b>$${compact(total)}</b> of fees back into its own liquidity since launch, <b>$${compact(d7)}</b> of it in the last week.
+       This is the mechanism the founder calls liquidity compounding: it does not bid the price up, it thickens the book under it.
+       <span class="muted">Each day's liquidity additions by the hook, converted to tokens at today's price; the operator's eighteen
+       <code>collect()</code> withdrawals of LP fees between 15 and 27 Jul are on the Treasury tab.</span>`);
+  } else { $("#rwaCompound").innerHTML = pending; $("#cCompound").innerHTML = ""; $("#readCompound").innerHTML = ""; }
+
+  /* ── cost to trade ──────────────────────────────────────────────────── */
+  const imp = D.impact;
+  if (imp) {
+    const rows = imp.sell.map((s, i) => ({
+      usd: s.usd, sell: s.pct, buy: imp.buy[i]?.pct,
+      fSell: flagship.impact?.sell[i]?.pct, fBuy: flagship.impact?.buy[i]?.pct,
+    }));
+    const cell = (v) => v == null ? "—" : v >= 0.999 ? `<span class="down">book exhausted</span>` : `<span class="${v > 0.2 ? "down" : v > 0.05 ? "" : "up"}">${pctLevel(v, 1)}</span>`;
+    table($("#tImpact"), [
+      { h: "Order", f: (r) => `<b>$${compact(r.usd, 1)}</b>` },
+      { h: `Sell, all ${imp.venues} venues`, f: (r) => cell(r.sell) },
+      { h: `Sell, AI/${flagship.pair} only`, f: (r) => cell(r.fSell) },
+      { h: `Buy, all venues`, f: (r) => cell(r.buy) },
+      { h: `Buy, AI/${flagship.pair} only`, f: (r) => cell(r.fBuy) },
+    ], rows);
+    const m1 = rows.find((r) => r.usd === 1e6);
+    $("#readImpact").innerHTML = takeEl(m1?.sell <= 0.1 ? "pos" : m1?.sell <= 0.25 ? "neu" : "warn",
+      `A <b>$1M sale</b> of AI, routed across every venue, would move the price <b>${m1 ? pctLevel(m1.sell, 1) : "—"}</b>;
+       in the flagship pool alone <b>${m1?.fSell != null ? pctLevel(m1.fSell, 1) : "—"}</b>. A $1M purchase: <b>${m1 ? pctLevel(m1.buy, 1) : "—"}</b>.
+       These are the numbers a desk asks before it asks anything else, and they come from the same ladder as the depth picture.
+       <span class="muted">Walked tick by tick from spot at today's price; routed figures assume a perfect split across venues, so they are a floor on real slippage.</span>`);
+  } else { $("#tImpact").innerHTML = ""; $("#readImpact").innerHTML = pending; }
+  collapseIntros($("#p-investor"));
 }
 
 /* ── AI against its platform ─────────────────────────────────────────────
@@ -3812,6 +3998,19 @@ function renderMethod() {
       taken over the pair rather than a threshold over a sum. The site does not use the report’s scenario values or
       weights, and the result is neither the report’s conclusion nor the site owner’s investment view.</p>
 
+      <p><b style="color:var(--text-primary)">The platform view.</b> The Investor tab measures LONG's own thesis: be the
+      liquidity layer for tokenized stocks on Robinhood Chain. <b>Stock tokens</b> are identified by bytecode, not name:
+      Robinhood's tokenized equities share one 283-byte proxy template, so every anchor token in the LONG census is
+      checked against it once. <b>Capture</b> is the share of each stock's on-chain supply held by the v4 pool manager
+      (DEX liquidity across all pools, LONG-hooked or not) plus the community vault; NVDA's daily series is rebuilt from
+      its transfers into and out of the manager. <b>Trading share</b> counts every Swap on the chain in the last day
+      whose pool holds a stock token and asks whether that pool carries the LONG hook. <b>LP size</b> values every
+      resting position in AI's indexed venues at spot; the <b>protocol-owned</b> share is the part held by the hook
+      itself, and <b>compounding</b> is the hook's own liquidity additions by day (its fee fold-ins since 27 Jul; the
+      launch seed on 14 Jul is shown separately), valued at today's prices. <b>Cost to trade</b> walks the tick ladder
+      from spot until a dollar amount is absorbed, per venue and across all venues at once (the single price at which
+      the pools together take the whole order, which is what a router achieves).</p>
+
       <p><b style="color:var(--text-primary)">Holders.</b> Every AI transfer since genesis is replayed into a balance per
       address and snapshotted every four hours; balances must sum to supply exactly before anything is published. On
       top of the counts: concentration (the share of wallet-held AI in the top 10, 50 and 100, with the pool manager,
@@ -3994,6 +4193,7 @@ function renderAges() {
 
 function renderAll() {
   renderInvestor(); renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
+  try { renderRwa(); } catch (e) { console.error("renderRwa", e); }
   try { renderHolders(); } catch (e) { console.error("renderHolders", e); /* optional; never blank the tab */ }
   renderAges();
   collapseIntros();
@@ -4030,10 +4230,10 @@ async function boot() {
     const [meta, flow, burns] = await Promise.all(
       ["meta.json", "flow.json", "burns.json"].map(loadJSON)
     );
-    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury] = await Promise.all(
+    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa] = await Promise.all(
       OPTIONAL_ARTIFACTS.map((f) => loadJSON(f).catch(() => null))
     );
-    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury });
+    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa });
   } catch (e) {
     $("#boot").remove();
     $("#bootErr").innerHTML = `<div class="err"><b>Could not load indexed data.</b><br>

@@ -15,6 +15,7 @@ import { censusLongPools, rankByActivity, classifyLaunches, anchorPrices, priceL
 import { indexBurns } from "./tasks/burns.mjs";
 import { indexPrices } from "./tasks/prices.mjs";
 import { indexTreasury } from "./tasks/treasury.mjs";
+import { indexRwa } from "./tasks/rwa.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
 
@@ -351,6 +352,7 @@ try {
     depth = await indexDepth(withState, latest, aiUsd, {
       store, windowPct: 0.5, bins: 120,
       io: { read: readData, write: writeData },
+      dayOf: (b) => tm.dayBucket(b),
       budgetSeconds: opt("depth-budget", fast ? 90 : 420),
     });
     writeData("depth.json", { updatedAt: now, ...depth });
@@ -461,6 +463,24 @@ if (!fast && !flag("no-launchpad")) {
       // third of them per run makes convergence needlessly slow.
       unlistedAnchors: unlisted.slice(0, 25),
     });
+
+    /* Tokenized-stock capture: share of every stock token's supply inside DEX
+       liquidity and the vault, and share of every stock-token swap that went
+       through a LONG pool. Needs the census, the anchor prices and a day of Swap
+       logs, so it lives here rather than in its own step. */
+    step("Measuring tokenized-stock capture");
+    try {
+      const rwaDeadline = Date.now() + opt("rwa-budget", 300) * 1000;
+      const day = await rankByActivity(latest, C.BLOCKS_PER_DAY, { deadline: rwaDeadline, chunk: 40_000 });
+      const rwa = await indexRwa(latest, tm, {
+        store, pools: census.pools, symbols, decimals, anchorUsd: anchors,
+        swaps: { counts: day.counts, blocks: C.BLOCKS_PER_DAY, total: day.swaps, truncated: day.truncated },
+        prior: readData("rwa.json"), deadline: rwaDeadline,
+      });
+      writeData("rwa.json", rwa);
+    } catch (e) {
+      softFail("stock capture", e, "the previous rwa.json stays in place");
+    }
   } catch (e) {
     softFail("launchpad census", e, "the previous launchpad.json stays in place");
   }

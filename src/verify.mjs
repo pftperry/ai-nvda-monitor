@@ -36,6 +36,7 @@ const poolsArtifact = readData("pools.json");
 const depth = readData("depth.json");
 const launchpad = readData("launchpad.json");
 const holders = readData("holders.json");
+const rwa = readData("rwa.json");
 
 if (!meta || !burns || !flow) {
   console.error("Missing data artifacts. Run `npm run index` first.");
@@ -362,6 +363,20 @@ if (depth && depth.pools?.length) {
   warn("every indexed venue has a replayed tick ladder", !depth.skipped,
     depth.skipped ? `${depth.skipped} venue(s) not yet replayed; depth understates until they are` : "");
 
+  /* Cost to trade: a bigger sale cannot move the price less, a router can never do
+     worse than the best single venue, and the protocol cannot own more than the book. */
+  if (depth.impact) {
+    const mono = (xs) => xs.every((x, i) => x.pct == null || i === 0 || xs[i - 1].pct == null || x.pct >= xs[i - 1].pct - 1e-9);
+    check("price impact is monotonic in trade size", mono(depth.impact.sell) && mono(depth.impact.buy));
+    const best1m = Math.min(...depth.pools.map((p) => p.impact?.sell.find((x) => x.usd === 1e6)?.pct ?? 1));
+    const merged1m = depth.impact.sell.find((x) => x.usd === 1e6)?.pct;
+    check("routing across venues is no worse than the best single venue", merged1m == null || merged1m <= best1m + 1e-3,
+      `merged ${merged1m} vs best venue ${best1m}`);
+    check("the protocol's own liquidity is a share of the book, not more",
+      depth.pools.every((p) => p.hookShare == null || (p.hookShare >= 0 && p.hookShare <= 1.0001)) && depth.hookTvlUsd <= depth.tvlUsd * 1.0001,
+      `$${depth.hookTvlUsd} of $${Math.round(depth.tvlUsd)}`);
+  } else warn("cost-to-trade ladder walk is present", false, "depth.json predates the impact walk");
+
   /* The near-spot bands are what the headline KPI reads, and they are summed on a
      second pass through the same ladder walk as the wide book. Two independent
      sums of one quantity is exactly the setup where a units or sign slip hides, so
@@ -391,6 +406,47 @@ if (depth && depth.pools?.length) {
       `${(share * 100).toFixed(1)}% bids within ${(tight.pct * 100).toFixed(0)}% of spot`);
   } else console.log("  --  near-spot bands absent (older artifact)");
 } else console.log("  --  depth.json absent (optional)");
+
+console.log("\nTokenized-stock capture");
+if (rwa && rwa.tokens?.length) {
+  /* Shares are ratios of balances to a supply, so they are bounded by construction;
+     a value outside [0, 1] means a decimals or address slip, and the headline would
+     be wrong by orders of magnitude rather than a little. */
+  check("no stock token has more in the pools and vault than exists",
+    rwa.tokens.every((t) => t.inDex >= 0 && t.inVault >= 0 && t.inDex + t.inVault <= t.supply * 1.000001),
+    rwa.tokens.filter((t) => t.inDex + t.inVault > t.supply * 1.000001).map((t) => t.symbol).join(", "));
+  check("capture shares are consistent with their parts",
+    rwa.tokens.every((t) => Math.abs(t.share - (t.dexShare + t.vaultShare)) < 1e-9 && t.share >= 0 && t.share <= 1.000001));
+  check("the aggregate share is dollars in over dollars outstanding",
+    rwa.totals.share == null || Math.abs(rwa.totals.share - (rwa.totals.dexUsd + rwa.totals.vaultUsd) / rwa.totals.supplyUsd) < 1e-9,
+    `${rwa.totals.share}`);
+  check("NVDA is among the stock tokens found", rwa.tokens.some((t) => t.token === C.NVDA.toLowerCase()),
+    "the classifier must at least recognise the token this whole site is built on");
+  check("every LONG pool quoting a stock is among that stock's pools",
+    rwa.tokens.every((t) => t.poolsPartial || t.poolsLong <= t.poolsAll),
+    rwa.tokens.filter((t) => !t.poolsPartial && t.poolsLong > t.poolsAll).map((t) => t.symbol).join(", "));
+  if (rwa.swapShare) {
+    check("LONG's stock swaps are a subset of all stock swaps",
+      rwa.swapShare.longSwaps <= rwa.swapShare.stockSwaps && rwa.swapShare.aiPairedSwaps <= rwa.swapShare.longSwaps &&
+      (rwa.swapShare.chainSwaps == null || rwa.swapShare.stockSwaps <= rwa.swapShare.chainSwaps),
+      `${rwa.swapShare.longSwaps} LONG of ${rwa.swapShare.stockSwaps} stock swaps of ${rwa.swapShare.chainSwaps} on chain`);
+    warn("the swap window was scanned to completion", !rwa.swapShare.truncated, "budget cut the day short; the share is of what was read");
+  }
+  check("capture history is ordered", rwa.history.every((h, i, a) => i === 0 || h.t > a[i - 1].t));
+  for (const [tok, rows] of Object.entries(rwa.daily || {})) {
+    check(`${rwa.dailyTracked?.[tok] || tok.slice(0, 8)} daily DEX inventory is a running sum that never goes negative`,
+      rows.every((r, i) => (i === 0 ? Math.abs(r.cum - r.net) < 1e-3 : Math.abs(r.cum - rows[i - 1].cum - r.net) < 1e-3) && r.cum >= -1e-3),
+      `${rows.length} day(s), latest ${rows.at(-1)?.cum}`);
+    const t = rwa.tokens.find((x) => x.token === tok);
+    if (t && rows.length && !rwa.dailyPartial?.[tok]) {
+      /* The transfer replay and the live balance read measure the same thing two
+         ways; they can differ by the hours since the last block the replay reached. */
+      warn(`${t.symbol} inventory from transfers agrees with its live balance`,
+        Math.abs(rows.at(-1).cum - t.inDex) / Math.max(1, t.inDex) < 0.05,
+        `${rows.at(-1).cum.toFixed(2)} replayed vs ${t.inDex.toFixed(2)} read`);
+    }
+  }
+} else console.log("  --  rwa.json absent (built on the slow path)");
 
 console.log("\nLaunchpad census");
 if (launchpad && launchpad.buckets?.length) {

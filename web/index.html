@@ -33,6 +33,7 @@
 <nav class="tabs">
   <div class="inner" role="tablist">
     <button class="tab" role="tab" id="tab-investor"  aria-controls="p-investor"  aria-selected="true">Investor</button>
+    <button class="tab" role="tab" id="tab-valuation" aria-controls="p-valuation" aria-selected="false">Valuation</button>
     <button class="tab" role="tab" id="tab-flow"      aria-controls="p-flow"      aria-selected="false">Tape</button>
     <button class="tab" role="tab" id="tab-float"     aria-controls="p-float"     aria-selected="false">Supply &amp; Holders</button>
     <button class="tab" role="tab" id="tab-bridges"   aria-controls="p-bridges"   aria-selected="false">Hub</button>
@@ -48,37 +49,61 @@
   <div id="boot" class="loading">Loading on-chain data…</div>
   <div id="bootErr"></div>
 
-  <!-- ───────────────────────── Investor ───────────────────────── -->
+  <!-- ───────────────────────── Investor: the RWA liquidity platform ───────────────────────── -->
   <section class="panel" id="p-investor" role="tabpanel" aria-labelledby="tab-investor" hidden>
     <div id="sinceLast" hidden></div>
-    <div id="rating"></div>
+    <div id="ratingDemand"></div>
     <div id="liveStrip"></div>
-    <div id="verdict"></div>
 
-    <h2 class="section-title">Money</h2>
+    <h2 class="section-title">Capture</h2>
     <div class="card">
-      <h3>Price and dollars</h3>
-      <p class="sub">On-chain price from the AI/USDG pool; volume, fees and the vault priced at each hour's own close.</p>
-      <div id="kpiPrice"></div>
-      <div class="chart" id="cInvPrice"></div>
-      <div id="takePrice"></div>
-      <div id="kpiDollars"></div>
-      <div class="chart" id="cDollars"></div>
-      <div id="takeDollars"></div>
+      <h3>Tokenized stock captured by the LONG ecosystem</h3>
+      <div class="agenote" data-age="rwa" hidden></div>
+      <p class="sub">Of every Robinhood stock token that exists on this chain, the share sitting inside DEX liquidity or the community vault. Stock tokens are identified by their shared bytecode, not by name.</p>
+      <div id="rwaTiles"></div>
+      <div id="readRwa"></div>
+      <h4 class="subhead">By stock</h4>
+      <div class="scroll"><table id="tStocks"></table></div>
+      <h4 class="subhead">NVDA held in DEX liquidity, daily since genesis</h4>
+      <div class="chart" id="cStockDex"></div>
+      <div id="takeStockDex"></div>
     </div>
 
     <div class="card">
-      <h3>Liquidity</h3>
-      <p class="sub">Resting bids below spot against resting asks above it, rebuilt from every liquidity event. A position can be pulled in one block.</p>
-      <div id="kpiNear"></div>
-      <div class="legend">
-        <span><i style="background:var(--buy)"></i>Bids, dollars below spot</span>
-        <span><i style="background:var(--sell)"></i>Asks, AI above spot</span>
+      <h3>Tokenized stock trading that touches LONG liquidity</h3>
+      <div class="agenote" data-age="rwa" hidden></div>
+      <p class="sub">Every swap on the chain in the last 24 hours whose pool holds a stock token, split by whether that pool carries the LONG hook. Counts, so one whale cannot move it.</p>
+      <div id="rwaSwaps"></div>
+      <div class="scroll"><table id="tSwapShare"></table></div>
+      <div class="chart small" id="cSwapShare"></div>
+      <div id="readSwaps"></div>
+    </div>
+
+    <h2 class="section-title">Liquidity</h2>
+    <div class="grid g2">
+      <div class="card">
+        <h3>LP size, and how much of it the protocol owns</h3>
+        <p class="sub">Dollar value of every position in AI's indexed venues, rebuilt from the liquidity tape, and the share held by the LONG hook itself.</p>
+        <div id="rwaLiq"></div>
+        <h4 class="subhead">Total liquidity, hourly</h4>
+        <div class="chart small" id="cTvl"></div>
+        <div id="readLiq"></div>
       </div>
-      <div class="chart" id="cDepth"></div>
-      <div class="chart small" id="cNear"></div>
-      <div id="takeNear"></div>
-      <div class="scroll"><table id="tDepth"></table></div>
+      <div class="card">
+        <h3>Fees compounded into liquidity by the hook</h3>
+        <p class="sub">Since its second week the hook folds pool fees back into its own positions on each swap. Each day's additions, valued at today's prices.</p>
+        <div id="rwaCompound"></div>
+        <h4 class="subhead">Daily, in dollars</h4>
+        <div class="chart small" id="cCompound"></div>
+        <div id="readCompound"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Cost to trade</h3>
+      <p class="sub">What a sale or purchase of a given size would do to AI's price, walked through every resting position. Routed across all venues, and in the flagship pool alone.</p>
+      <div class="scroll"><table id="tImpact"></table></div>
+      <div id="readImpact"></div>
     </div>
 
     <h2 class="section-title">Demand</h2>
@@ -111,6 +136,40 @@
         <div class="scroll"><table id="tWhales"></table></div>
       </div>
     </div>
+  </section>
+
+  <!-- ───────────────────────── Valuation: Coulou's frame ───────────────────────── -->
+  <section class="panel" id="p-valuation" role="tabpanel" aria-labelledby="tab-valuation" hidden>
+    <div id="rating"></div>
+    <div id="verdict"></div>
+
+    <h2 class="section-title">Money</h2>
+    <div class="card">
+      <h3>Price and dollars</h3>
+      <p class="sub">On-chain price from the AI/USDG pool; volume, fees and the vault priced at each hour's own close.</p>
+      <div id="kpiPrice"></div>
+      <div class="chart" id="cInvPrice"></div>
+      <div id="takePrice"></div>
+      <div id="kpiDollars"></div>
+      <div class="chart" id="cDollars"></div>
+      <div id="takeDollars"></div>
+    </div>
+
+    <div class="card">
+      <h3>Liquidity</h3>
+      <p class="sub">Resting bids below spot against resting asks above it, rebuilt from every liquidity event. A position can be pulled in one block.</p>
+      <div id="kpiNear"></div>
+      <div class="legend">
+        <span><i style="background:var(--buy)"></i>Bids, dollars below spot</span>
+        <span><i style="background:var(--sell)"></i>Asks, AI above spot</span>
+      </div>
+      <div class="chart" id="cDepth"></div>
+      <div class="chart small" id="cNear"></div>
+      <div id="takeNear"></div>
+      <div class="scroll"><table id="tDepth"></table></div>
+    </div>
+
+    <h2 class="section-title">Platform</h2>
     <div class="card">
       <h3>AI against its platform</h3>
       <div class="agenote" data-age="launchpad" hidden></div>
