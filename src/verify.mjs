@@ -572,9 +572,15 @@ if (holders && holders.snapshots?.length) {
     }
     const withActors = snaps.filter((s) => s.buyers != null);
     if (withActors.length) {
-      check("period buyers and sellers are non-negative integers no larger than the wallets that exist",
-        withActors.every((s) => Number.isInteger(s.buyers) && s.buyers >= 0 && Number.isInteger(s.sellers) && s.sellers >= 0 && s.buyers + s.sellers <= 2 * Math.max(1, s.holders)),
+      /* A wallet can buy and sell inside one period and end at zero, so in launch
+         week actors legitimately outnumber holders at the boundary. Integers and
+         non-negative is the invariant; more actors than holders is only worth a look. */
+      check("period buyers and sellers are non-negative integers",
+        withActors.every((s) => Number.isInteger(s.buyers) && s.buyers >= 0 && Number.isInteger(s.sellers) && s.sellers >= 0),
         `latest period: ${withActors.at(-1).buyers} bought, ${withActors.at(-1).sellers} sold, of ${withActors.at(-1).holders} holders`);
+      const recent = withActors.slice(-42);
+      warn("recent periods do not show more actors than holders", recent.every((s) => s.buyers + s.sellers <= 2 * Math.max(1, s.holders)),
+        `largest recent period: ${Math.max(...recent.map((s) => s.buyers + s.sellers))} actors`);
     }
     check("the whale tape is newest first",
       holders.whales.every((w, i, a) => i === 0 || w.t <= a[i - 1].t));
