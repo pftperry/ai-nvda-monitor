@@ -1250,8 +1250,8 @@ function renderStaleBanner() {
   host.className = lagMin >= 180 ? "bad" : "";
   host.innerHTML = `The indexed history behind every level on this page is <b>${fmtAge(lagMin)} old</b>.
     Price, market cap and the live flow strip are read from the chain directly and are current; the fee
-    run-rate, leakage, cross-routing and the rating built on them are not. The refresh is scheduled for
-    every five minutes but GitHub throttles it, so in practice it lands every few hours.`;
+    run-rate, leakage, cross-routing and the rating built on them are not. Refreshes normally land every few
+    minutes, so a gap this long means the refresh chain has stalled; it restarts itself within a few hours.`;
 }
 
 function renderLiveStrip() {
@@ -3017,6 +3017,37 @@ function renderMethod() {
  * artifact. Eight hours is past the six-hour refresh plus a run’s length; anything
  * older than that is a stall, not a schedule.
  */
+/**
+ * Long card intros collapse to two lines, with the rest one tap away.
+ *
+ * Most cards opened with a paragraph of methodology before the number, and on a
+ * phone that put the chart below the fold on nearly every card. The explanations
+ * are still the reason anyone should trust a figure here, so nothing is removed:
+ * each long intro is clamped, and "How it’s measured" expands it in place.
+ * Clamping in CSS rather than splitting sentences keeps every link, bold and code
+ * span intact whatever the markup. The methodology credit under the rating is
+ * deliberately never collapsed.
+ */
+const COLLAPSE_OVER = 180;
+function collapseIntros(root = document) {
+  for (const p of root.querySelectorAll(".card p.sub, .rating .scope")) {
+    if (p.dataset.collapsible || p.textContent.replace(/\s+/g, " ").trim().length <= COLLAPSE_OVER) continue;
+    p.dataset.collapsible = "1";
+    p.classList.add("clamped");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "howbtn";
+    b.setAttribute("aria-expanded", "false");
+    b.textContent = "How it’s measured ▾";
+    b.addEventListener("click", () => {
+      const open = p.classList.toggle("clamped") === false;
+      b.setAttribute("aria-expanded", String(open));
+      b.textContent = open ? "Show less ▴" : "How it’s measured ▾";
+    });
+    p.after(b);
+  }
+}
+
 function renderAges() {
   const now = Date.now() / 1000;
   for (const el of document.querySelectorAll("[data-age]")) {
@@ -3032,6 +3063,7 @@ function renderAll() {
   renderInvestor(); renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
   try { renderHolders(); } catch { /* the holder replay is optional; never blank the tab */ }
   renderAges();
+  collapseIntros();
   /* Also on first paint, from the artifact timestamp -- waiting for the live poll
      would leave the staleness unreported for thirty seconds, or forever if the RPC
      is blocked, which is exactly when it matters most. */

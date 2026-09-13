@@ -132,7 +132,10 @@ export async function rpc(method, params, tries) {
     }
     if (j.error) {
       const msg = j.error.message || "";
-      if (/exceeds limit/i.test(msg)) throw new TooManyLogs(msg);
+      /* Every provider words the log cap differently. The public node says "exceeds
+         limit"; Alchemy says "Log response size exceeded". Missing a phrasing means a
+         range that should be split is retried whole until the attempts run out. */
+      if (/exceeds limit|response size exceeded|exceeds max results|more than \d+ results|too many logs/i.test(msg)) throw new TooManyLogs(msg);
       if (/timed out|too many|rate|capacity|busy/i.test(msg) || String(j.error.code) === "429") {
         last = new Error(msg);
         await noteRateLimited(method);
@@ -248,7 +251,12 @@ export async function getLogsRange(filter, from, to, opts = {}) {
       if (!(e instanceof TooManyLogs) && !/timed out/i.test(e.message)) throw e;
       if (end === cursor) throw new Error(`single block ${cursor} exceeds the log cap`);
       minBad = Math.min(minBad, size);
-      size = Math.max(1, Math.floor(size / 2));
+      /* Alchemy's cap error names a range that will fit, starting at our fromBlock:
+         "...this block range should work: [0x..., 0x...]". Taking it replaces a
+         run of blind halvings -- each a full wasted scan -- with one exact jump. */
+      const hint = /\[\s*(0x[0-9a-f]+)\s*,\s*(0x[0-9a-f]+)\s*\]/i.exec(e.message);
+      const hinted = hint ? parseInt(hint[2], 16) - parseInt(hint[1], 16) + 1 : 0;
+      size = hinted > 0 && hinted < size ? hinted : Math.max(1, Math.floor(size / 2));
       wins = 0;
       /* A server-side timeout is different from a log-cap breach: the node did real
          work and gave up, and it answers the next few requests with 429 regardless

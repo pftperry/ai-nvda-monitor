@@ -3,9 +3,15 @@
 
 export const CHAIN_ID = 4663;
 
-export const RPCS = [
-  "https://rpc.mainnet.chain.robinhood.com",
-];
+/* A dedicated endpoint, when one is configured, comes from the environment and
+   never from this file: the URL carries the API key, and this repository and the
+   site it builds are public. The chain's own endpoint stays as the fallback, so
+   a provider outage degrades the refresh to slow rather than failing it. */
+const PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com";
+export const DEDICATED_RPC = !!process.env.RPC_URL;
+export const RPCS = DEDICATED_RPC ? [process.env.RPC_URL, PUBLIC_RPC] : [PUBLIC_RPC];
+/** Safe to publish: the host only, never the path, which is where a key lives. */
+export const RPC_LABEL = new URL(RPCS[0]).host + (DEDICATED_RPC ? " (dedicated)" : " (public)");
 
 /** Uniswap v4 singleton. All pool activity on the chain flows through this one address. */
 export const POOL_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951";
@@ -85,9 +91,9 @@ export const LIMITS = {
   maxLogsPerQuery: 10_000,   // hard server cap; scanner subdivides the block range on breach
   maxTopicsPerQuery: 1_000,  // hard server cap; measured: 993 passes, 1002 is rejected
   defaultChunk: 1_000_000,
-  politeDelayMs: 120,
-  // eth_getLogs is the scarce resource here; it gets its own, much slower floor.
-  logsDelayMs: 1_200,
+  // The public endpoint throttles hard, eth_getLogs hardest; a paid one does not.
+  politeDelayMs: DEDICATED_RPC ? 5 : 120,
+  logsDelayMs: DEDICATED_RPC ? 40 : 1_200,
   // Wide log scans are legitimately slow, but nothing may hang forever.
   requestTimeoutMs: 90_000,
 };

@@ -260,7 +260,8 @@ writeData("meta.json", {
   headBlock: latest,
   headTime: now,
   chainId: C.CHAIN_ID,
-  rpc: C.RPCS[0],
+  // Host only. The full endpoint URL carries the API key and this file is public.
+  rpc: C.RPC_LABEL,
   genesisBlock: C.GENESIS_BLOCK,
   contracts: {
     poolManager: C.POOL_MANAGER, aiToken: C.AI, nvdaToken: C.NVDA, usdg: C.USDG,

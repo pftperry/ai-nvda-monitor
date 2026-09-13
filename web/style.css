@@ -366,3 +366,9 @@ footer h4 { color: var(--text-secondary); font-size: 12px; margin: 16px 0 7px; t
 .attribution { margin: 12px 0 14px; padding: 10px 14px; border: 1px solid var(--border-strong, var(--border)); border-left: 4px solid var(--series-1); border-radius: 8px; font-size: 13px; line-height: 1.5; color: var(--text-secondary, var(--text-primary)); }
 .attribution b { color: var(--text-primary); }
 .attribution a { color: var(--series-1); }
+
+/* Long intros: two lines by default, full text on request. */
+.clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.howbtn { display: inline-block; margin: 2px 0 10px; padding: 4px 0; background: none; border: 0;
+  color: var(--series-1); font: inherit; font-size: 12.5px; cursor: pointer; }
+.howbtn:hover { text-decoration: underline; }

@@ -106,13 +106,16 @@ export async function assertTokenMetadata(log = console.log) {
   log(`  token metadata verified against chain (${Object.keys(TOKENS).length} entries)`);
 }
 
-export async function erc20(address, what) {
-  const [r] = await rpcBatch([{ method: "eth_call", params: [{ to: address, data: SEL[what] }, "latest"] }]);
+/* blockTag defaults to the head. Pass a block number to read state as of that block,
+   which needs an archive-capable endpoint; the public node answers "metadata is not
+   found" for anything but the head. */
+export async function erc20(address, what, blockTag = "latest") {
+  const [r] = await rpcBatch([{ method: "eth_call", params: [{ to: address, data: SEL[what] }, blockTag] }]);
   return r && r !== "0x" ? BigInt(r) : 0n;
 }
 
-export async function balanceOf(token, holder) {
+export async function balanceOf(token, holder, blockTag = "latest") {
   const data = "0x70a08231" + holder.slice(2).toLowerCase().padStart(64, "0");
-  const [r] = await rpcBatch([{ method: "eth_call", params: [{ to: token, data }, "latest"] }]);
+  const [r] = await rpcBatch([{ method: "eth_call", params: [{ to: token, data }, blockTag] }]);
   return r && r !== "0x" ? BigInt(r) : 0n;
 }

@@ -1,8 +1,8 @@
 import {
   AI, NVDA, USDG, COMMUNITY_VAULT, BURN_ADDRESS, FEE_SPLITTER,
-  PLATFORM_FEE_RECIPIENT, POOL_MANAGER, GENESIS_BLOCK, TOKENS, LONG_HOOK,
+  PLATFORM_FEE_RECIPIENT, POOL_MANAGER, GENESIS_BLOCK, TOKENS, LONG_HOOK, DEDICATED_RPC,
 } from "../config.mjs";
-import { getLogsRange, padAddr, blockNumber } from "../rpc.mjs";
+import { getLogsRange, padAddr, blockNumber, hexBlock } from "../rpc.mjs";
 import { TOPICS, decodeTransfer, fmtUnits } from "../decode.mjs";
 import { erc20, balanceOf } from "../tokens.mjs";
 
@@ -161,14 +161,20 @@ export async function indexBurns(latest, tm, opts = {}) {
   const feePlatform = (carried.feeLegs?.platform || 0) + sum(legPlatform);
 
 
-  // Live state, straight from the chain.
+  /* State read AT the block the ledger was scanned to, when the endpoint can answer
+     that. The public node serves no archive state, so the reads used to land on
+     whatever block was current by the time they arrived, and everything below about
+     skew allowances existed to excuse the gap. An archive endpoint closes it: the
+     ledger and the balances describe the same block, and the reconciliation can
+     demand exactness again. Without one, the old head-read and its allowance stand. */
+  const tag = DEDICATED_RPC ? hexBlock(latest) : "latest";
   const [supply, vaultAI, vaultNVDA, pmAI, hookAI, nvdaSupply] = await Promise.all([
-    erc20(AI, "totalSupply"),
-    balanceOf(AI, COMMUNITY_VAULT),
-    balanceOf(NVDA, COMMUNITY_VAULT),
-    balanceOf(AI, POOL_MANAGER),
-    balanceOf(AI, LONG_HOOK),
-    erc20(NVDA, "totalSupply"),
+    erc20(AI, "totalSupply", tag),
+    balanceOf(AI, COMMUNITY_VAULT, tag),
+    balanceOf(NVDA, COMMUNITY_VAULT, tag),
+    balanceOf(AI, POOL_MANAGER, tag),
+    balanceOf(AI, LONG_HOOK, tag),
+    erc20(NVDA, "totalSupply", tag),
   ]);
 
   /* How wide the remaining window is, and what a block of it is worth.
@@ -184,7 +190,7 @@ export async function indexBurns(latest, tm, opts = {}) {
      So the skew is measured instead of wished away, and recorded alongside the
      residual. A residual that the known skew can explain is arithmetic; one that
      it cannot is a bug, and only the second kind should fail a build. */
-  const afterBlock = await blockNumber();
+  const afterBlock = DEDICATED_RPC ? latest : await blockNumber();
   const stateSkewBlocks = Math.max(0, afterBlock - latest);
 
   const genesis = TOKENS.AI.genesisSupply;
@@ -198,7 +204,8 @@ export async function indexBurns(latest, tm, opts = {}) {
   const burnPerBlock = recentDays.length
     ? recentDays.reduce((x, d) => x + (d.burnAI || 0), 0) / recentDays.length / BLOCKS_PER_DAY
     : 0;
-  const skewAllowance = Math.max(1, burnPerBlock * stateSkewBlocks * 3);
+  // Pinned reads leave only floating-point summation error, a small fraction of one AI.
+  const skewAllowance = DEDICATED_RPC ? 0.01 : Math.max(1, burnPerBlock * stateSkewBlocks * 3);
   const residual = genesis - totalBurn - totalSupply;
   const reconciles = Math.abs(residual) <= skewAllowance;
   if (!reconciles) log(`  supply residual ${residual.toFixed(2)} AI exceeds what ${stateSkewBlocks} blocks of skew can explain (${skewAllowance.toFixed(2)} AI)`);

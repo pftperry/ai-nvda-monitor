@@ -11,9 +11,11 @@ on:
       mode:
         description: "Indexing depth"
         required: false
-        default: "standard"
+        # "auto" picks fast or standard by artifact age, exactly as a scheduled run
+        # does. It is the default because the refresh relay below dispatches with it.
+        default: "auto"
         type: choice
-        options: [standard, quick, deep, rebuild, repair-usdg, repair-usdg-main, repair-pool]
+        options: [auto, standard, quick, deep, rebuild, repair-usdg, repair-usdg-main, repair-pool]
       pool:
         description: "For repair-pool: pool id prefix or pair symbol to re-derive"
         required: false
@@ -25,6 +27,7 @@ permissions:
   contents: write
   pages: write
   id-token: write
+  actions: write     # the refresh relay dispatches the next run
 
 # One indexing run at a time, always. Two concurrent runs would write web/data
 # and publish Pages from underneath each other, so the serialisation is not
@@ -98,8 +101,17 @@ jobs:
         id: index
         continue-on-error: true
         timeout-minutes: 75
+        # The dedicated endpoint's URL carries its API key, so it lives only in a
+        # repository secret. Without the secret the indexer uses the chain's public
+        # endpoint, exactly as before. RPC_LABEL in config.mjs keeps the path, and
+        # with it the key, out of the published meta.json.
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
         run: |
           MODE="${{ github.event.inputs.mode }}"
+          # A relayed or manual "auto" run chooses its depth the way a scheduled one does.
+          AUTO=""
+          if [ "$MODE" = "auto" ]; then MODE=""; AUTO="1"; fi
           # Scheduled runs pick their own depth. Ranking pool activity and building
           # the routing index both re-read a trailing window and cannot be made
           # incremental, so they dominate a refresh — but they measure things that
@@ -140,7 +152,7 @@ jobs:
           # a separate attempt stamp in the resume cache stops a standard run that
           # times out before writing from being retried on every tick and starving
           # the fast path of the lock.
-          if [ -z "$MODE" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ -z "$MODE" ] && { [ "${{ github.event_name }}" = "schedule" ] || [ -n "$AUTO" ]; }; then
             NOW=$(date -u +%s)
             OLDEST=$(node -e '
               const fs = require("fs");
@@ -268,3 +280,42 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # The refresh relay: every run ends by starting the next one.
+  #
+  # GitHub throttles a */5 cron to one run every two to five hours, which is why
+  # "every five minutes" never happened. Runs dispatched with workflow_dispatch are
+  # not throttled, and GITHUB_TOKEN is explicitly allowed to trigger that one event,
+  # so each run waits out the rest of its interval and dispatches its successor.
+  #
+  # It cannot multiply: the concurrency group keeps one pending run and a newer
+  # request replaces an older one, so a push, a cron tick and a relay arriving
+  # together collapse into a single next run. If a link ever breaks, the throttled
+  # cron above is still there to restart the chain within a few hours.
+  #
+  # It only runs with a dedicated endpoint configured -- polling the public node
+  # every five minutes is how the rate limits started -- and a repository variable
+  # REFRESH_CHAIN=off stops it without a code change.
+  relay:
+    needs: [index, deploy]
+    if: always() && vars.REFRESH_CHAIN != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Wait out the interval, then dispatch the next run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HAS_RPC: ${{ secrets.RPC_URL != '' }}
+          REFRESH_MINUTES: ${{ vars.REFRESH_MINUTES || '5' }}
+        run: |
+          if [ "$HAS_RPC" != "true" ]; then
+            echo "No dedicated RPC_URL secret; not chaining runs against the public endpoint."
+            exit 0
+          fi
+          STARTED=$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --json createdAt -q .createdAt)
+          ELAPSED=$(( $(date -u +%s) - $(date -u -d "$STARTED" +%s) ))
+          WAIT=$(( REFRESH_MINUTES * 60 - ELAPSED ))
+          echo "run took ${ELAPSED}s; interval ${REFRESH_MINUTES}m"
+          if [ "$WAIT" -gt 0 ]; then echo "waiting ${WAIT}s"; sleep "$WAIT"; fi
+          gh workflow run index-and-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main -f mode=auto
+          echo "next run dispatched"
