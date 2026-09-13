@@ -281,41 +281,36 @@ jobs:
       - id: deployment
         uses: actions/deploy-pages@v4
 
-  # The refresh relay: every run ends by starting the next one.
+  # The refresh relay: every run hands the timer to refresh-relay.yml.
   #
   # GitHub throttles a */5 cron to one run every two to five hours, which is why
-  # "every five minutes" never happened. Runs dispatched with workflow_dispatch are
-  # not throttled, and GITHUB_TOKEN is explicitly allowed to trigger that one event,
-  # so each run waits out the rest of its interval and dispatches its successor.
+  # "every five minutes" never happened. Runs started with workflow_dispatch are
+  # not throttled, and GITHUB_TOKEN is explicitly allowed to trigger that event.
   #
-  # It cannot multiply: the concurrency group keeps one pending run and a newer
-  # request replaces an older one, so a push, a cron tick and a relay arriving
-  # together collapse into a single next run. If a link ever breaks, the throttled
-  # cron above is still there to restart the chain within a few hours.
+  # The wait itself happens in the other workflow, not here. It first slept inside
+  # this run, which holds the index-and-deploy lock, so a push made mid-interval sat
+  # queued for up to the whole interval. This job only records when the run started
+  # and dispatches the relay, which sleeps under its own lock and then starts the
+  # next refresh. A push therefore waits for at most the refresh in progress.
   #
-  # It only runs with a dedicated endpoint configured -- polling the public node
-  # every five minutes is how the rate limits started -- and a repository variable
+  # It only runs with a dedicated endpoint configured -- polling the public node on
+  # a short interval is how the rate limits started -- and a repository variable
   # REFRESH_CHAIN=off stops it without a code change.
   relay:
     needs: [index, deploy]
     if: always() && vars.REFRESH_CHAIN != 'off'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
-      - name: Wait out the interval, then dispatch the next run
+      - name: Hand the interval to the relay workflow
         env:
           GH_TOKEN: ${{ github.token }}
           HAS_RPC: ${{ secrets.RPC_URL != '' }}
-          REFRESH_MINUTES: ${{ vars.REFRESH_MINUTES || '5' }}
         run: |
           if [ "$HAS_RPC" != "true" ]; then
             echo "No dedicated RPC_URL secret; not chaining runs against the public endpoint."
             exit 0
           fi
           STARTED=$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --json createdAt -q .createdAt)
-          ELAPSED=$(( $(date -u +%s) - $(date -u -d "$STARTED" +%s) ))
-          WAIT=$(( REFRESH_MINUTES * 60 - ELAPSED ))
-          echo "run took ${ELAPSED}s; interval ${REFRESH_MINUTES}m"
-          if [ "$WAIT" -gt 0 ]; then echo "waiting ${WAIT}s"; sleep "$WAIT"; fi
-          gh workflow run index-and-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main -f mode=auto
-          echo "next run dispatched"
+          gh workflow run refresh-relay.yml --repo "$GITHUB_REPOSITORY" --ref main -f started="$(date -u -d "$STARTED" +%s)"
+          echo "relay dispatched for a run created at $STARTED"

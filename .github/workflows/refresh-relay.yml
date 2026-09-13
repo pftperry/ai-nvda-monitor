@@ -1,0 +1,50 @@
+name: Refresh relay
+
+# Waits out the refresh interval, then starts the next index run.
+#
+# Dispatched by the last job of every index-and-deploy run. It sleeps here, under
+# its own concurrency group, so the indexing lock is free during the wait and a
+# push made mid-interval starts straight away instead of queueing behind a timer.
+#
+# One sleeper at a time: a newer relay cancels an older one. So when a push or a
+# cron tick produces an extra index run, its relay replaces the pending one and
+# the clock restarts from that run -- the chain cannot fork into two. If a link
+# ever breaks, index-and-deploy's throttled cron restarts it within a few hours.
+#
+# REFRESH_MINUTES (repository variable, default 5) sets the interval, measured from
+# when the previous index run was created. REFRESH_CHAIN=off stops the chain.
+
+on:
+  workflow_dispatch:
+    inputs:
+      started:
+        description: "Unix time the index run that dispatched this relay was created"
+        required: true
+        type: string
+
+permissions:
+  actions: write
+
+concurrency:
+  group: refresh-relay
+  cancel-in-progress: true
+
+jobs:
+  wait-then-dispatch:
+    if: vars.REFRESH_CHAIN != 'off'
+    runs-on: ubuntu-latest
+    # Longer than any sane interval; a REFRESH_MINUTES above this would never fire.
+    timeout-minutes: 70
+    steps:
+      - name: Wait out the interval, then start the next refresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STARTED: ${{ github.event.inputs.started }}
+          REFRESH_MINUTES: ${{ vars.REFRESH_MINUTES || '5' }}
+        run: |
+          case "$STARTED" in ''|*[!0-9]*) echo "::error::started must be a unix timestamp"; exit 1 ;; esac
+          WAIT=$(( STARTED + REFRESH_MINUTES * 60 - $(date -u +%s) ))
+          echo "interval ${REFRESH_MINUTES}m from $(date -u -d "@$STARTED" +%H:%M:%S) UTC"
+          if [ "$WAIT" -gt 0 ]; then echo "waiting ${WAIT}s"; sleep "$WAIT"; fi
+          gh workflow run index-and-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main -f mode=auto
+          echo "next refresh dispatched"
