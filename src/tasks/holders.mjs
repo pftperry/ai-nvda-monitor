@@ -120,7 +120,7 @@ export async function indexHolders(latest, tm, opts = {}) {
   /* A state written before the set was kept resumes with the wallets funded at the
      cursor standing in for the last boundary's set. One row of churn is then
      approximate rather than every current holder reading as new. */
-  if (!prev.prevHolders && prev.snaps?.length) {
+  if (!prevHolders.size && prev.snaps?.length) {
     for (const [a, b] of balances) if (b > 0n && !MACHINERY.has(a)) prevHolders.add(a);
   }
 
