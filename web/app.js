@@ -517,7 +517,16 @@ async function refreshData() {
   } catch { /* a failed refresh leaves the last good render in place */ }
 }
 
-async function rpcCall(method, params, tries = 2) {
+/* The chain's public endpoint throttles, and its throttle responses are malformed
+   for browsers: a 429 arrives with "Access-Control-Allow-Origin: *,*", which the
+   browser rejects as a CORS failure. So from here a rate limit is indistinguishable
+   from a dropped connection -- fetch just throws a TypeError. Measured: 5 of 15
+   back-to-back log queries came back that way. Retrying 400ms later lands inside
+   the same throttle window, so a transport failure now backs off, and after a call
+   exhausts its retries every live call pauses briefly instead of feeding the limiter. */
+let rpcCooldownUntil = 0;
+async function rpcCall(method, params, tries = 3) {
+  if (Date.now() < rpcCooldownUntil) throw new Error("live RPC cooling down after throttling");
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
@@ -531,10 +540,11 @@ async function rpcCall(method, params, tries = 2) {
     } catch (e) {
       lastErr = e;
       // Only a transport failure is worth retrying; a node that answered and said
-      // no will say no again.
+      // no will say no again. In a browser, a throttled request lands here too.
       const transport = e instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(e.message || "");
-      if (!transport || i === tries - 1) throw e;
-      await new Promise((res) => setTimeout(res, 400));
+      if (!transport) throw e;
+      if (i === tries - 1) { rpcCooldownUntil = Date.now() + 20_000; throw e; }
+      await new Promise((res) => setTimeout(res, 1500 * 2 ** i));
     }
   }
   throw lastErr;
@@ -832,6 +842,12 @@ function renderHolders() {
      <b>${aiWk?.toLocaleString() ?? "—"}</b> a week ago${aWk == null ? "" : ` (<b>${pct(aWk, 1)}</b>)`},
      while the price moved <b>${pWk == null ? "—" : pct(pWk, 1)}</b>. That reads as <b>${read[1]}</b>:
      ${read[2]}.
+     ${(h.aiThresholds || []).length > 1 && last.aboveAi && wk.aboveAi ? `<br>Across every tier this week:
+       ${h.aiThresholds.map((t, i) => {
+         const d = wk.aboveAi[i] ? last.aboveAi[i] / wk.aboveAi[i] - 1 : null;
+         return `${compact(t, 0)}+ AI <b>${last.aboveAi[i].toLocaleString()}</b>${d == null ? "" : ` (${pct(d, 1)})`}`;
+       }).join(" · ")}. Tiers moving in opposite directions mean tokens are changing hands between sizes of
+       holder rather than entering or leaving the market as a whole.` : ""}
      <span class="muted">The threshold is in AI, not dollars, on purpose. Dollar buckets climb whenever the price
      does, so a rally manufactures "new $1k holders" without anyone buying; a fixed token balance cannot be crossed
      that way. Protocol contracts (pool manager, vault, hook, fee splitter) are excluded from every count and kept
@@ -3061,7 +3077,7 @@ function renderAges() {
 
 function renderAll() {
   renderInvestor(); renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
-  try { renderHolders(); } catch { /* the holder replay is optional; never blank the tab */ }
+  try { renderHolders(); } catch (e) { console.error("renderHolders", e); /* optional; never blank the tab */ }
   renderAges();
   collapseIntros();
   /* Also on first paint, from the artifact timestamp -- waiting for the live poll
