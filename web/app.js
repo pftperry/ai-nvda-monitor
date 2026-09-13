@@ -3021,11 +3021,16 @@ function renderTreasury() {
      the AI sat when each transaction ENDED, not which address it was first handed
      to. By counterparty, a hand-off to a router that sold into a pool in the same
      transaction read as "moved to an address this page cannot name"; it is a sale. */
-  const paidOutN = new Set(W.flatMap((w) => Object.keys(w.aiU.sentOnTo || {}).filter((l) => l.startsWith("0x")))).size;
+  /* Same recipient set as the end-state table below (wentTo), so the count and the
+     dollars in the paragraph match the "Paid to N external wallets" row. */
+  const wentTo = {};
+  for (const w of W) for (const [label, v] of Object.entries(w.aiU.wentTo || {})) wentTo[label] = (wentTo[label] || 0) + v;
+  const paidOutRows = Object.entries(wentTo).filter(([l]) => l.startsWith("0x"));
+  const paidOutN = paidOutRows.length, paidOutUsd = paidOutRows.reduce((s, [, v]) => s + v, 0) * px;
   const heldOnFomo = W.filter((w) => /FOMO/.test(T.identities?.[w.a]?.short || "")).reduce((s, w) => s + w.agg.held, 0);
   $("#readTreasury").innerHTML = takeEl(recentTone,
     `Over the treasury's life, about <b>$${compact(soldAll)}</b> was sold${viaRows.length ? ` ($${compact(sold)} in swaps the wallets signed themselves: ${viaRows.map(([n, v]) => `$${compact(v)} via ${n}`).join(", ")}; $${compact(handoffSold)} more handed to a router or pool that sold it in the same transaction)` : ""},
-     <b>$${compact(paidOut)}</b> was paid to <b>${paidOutN}</b> wallets outside the operator's set, <b>$${compact(bridged)}</b> was bridged off the chain${movedOther > 0 ? `, <b>$${compact(movedOther)}</b> moved to unresolved addresses` : ""},
+     <b>$${compact(paidOutUsd)}</b> was paid to <b>${paidOutN}</b> wallets outside the operator's set, <b>$${compact(bridged)}</b> was bridged off the chain${movedOther > 0 ? `, <b>$${compact(movedOther)}</b> moved to unresolved addresses` : ""},
      <b>$${compact(lp)}</b> was seeded as liquidity and <b>$${compact(bought)}</b> spent buying; <b>$${compact(held)}</b> is still held${heldOnFomo ? `, <b>$${compact(heldOnFomo)}</b> of it in a personal FOMO trading wallet` : " in the operator's accounts"}, at today's prices.
      Over the last four weeks in AI: sold <b>${compact(rSold)}</b>, bought <b>${compact(rBought)}</b>, seeded <b>${compact(rLp)}</b>, bridged <b>${compact(rBridged)}</b>${rPaid ? `, paid to outside wallets <b>${compact(rPaid)}</b>` : ""}${rMoved ? `, moved unresolved <b>${compact(rMoved)}</b>` : ""}.
      ${recentTone === "pos" ? "Recently the treasury has put more back into AI and its pools than it has taken out: a flywheel, while it lasts."
@@ -3038,8 +3043,6 @@ function renderTreasury() {
 
   /* Where it went: bridge destinations by chain and recipient, and who ended up
      holding the AI on the far side of every sale or hand-off. */
-  const wentTo = {};
-  for (const w of W) for (const [label, v] of Object.entries(w.aiU.wentTo || {})) wentTo[label] = (wentTo[label] || 0) + v;
   const wentRows = Object.entries(wentTo).sort((a, b) => b[1] - a[1]).slice(0, 8);
   const bridgesRows = (T.bridges || []).filter((b) => b.deposits > 0);
   const destLabel = (label) => label.startsWith("0x") ? addrCell(label) : label.startsWith("treasury wallet ") ? `<b>treasury</b> ${addrCell(label.slice(16))}` : `<b>${label}</b>`;
@@ -3066,7 +3069,7 @@ function renderTreasury() {
   for (const b of bridgesRows) { const key = b.chain; bridgedByChain[key] = (bridgedByChain[key] || 0) + (b.byToken.USDG || 0); }
   /* Who holds the parked AI, by name where the chain or a public record says. */
   const ids = T.identities || {};
-  const parkedBy = W.filter((w) => (w.ai.balance || 0) > 0).sort((a, b) => (b.ai.balance || 0) - (a.ai.balance || 0));
+  const parkedBy = W.filter((w) => (w.ai.balance || 0) >= 1).sort((a, b) => (b.ai.balance || 0) - (a.ai.balance || 0));
   const parkedNote = parkedBy.length
     ? parkedBy.map((w) => `${compact(w.ai.balance)} in ${ids[w.a] ? `<b>${ids[w.a].short}</b> ${short(w.a)}` : short(w.a)}`).join("; ") + (ids[parkedBy[0].a]?.who ? `. ${ids[parkedBy[0].a].who}: ${ids[parkedBy[0].a].evidence}` : "")
     : "nothing held";
