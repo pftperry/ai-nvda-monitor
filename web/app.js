@@ -971,13 +971,15 @@ function renderHolders() {
 function knownName(a) {
   const c = S.meta?.contracts || {};
   const k = {
+    ...(S.treasury?.names || {}),   // routers and bridges the treasury task identified
     [c.platformFeeRecipient || ""]: "LONG platform fee wallet",
     [c.communityVault || ""]: "community vault",
     [c.longHook || ""]: "LONG hook",
     [c.poolManager || ""]: "v4 pool manager",
     [c.feeSplitter || ""]: "fee splitter",
   };
-  return k[(a || "").toLowerCase()] || null;
+  const treasury = (S.treasury?.treasuryWallets || []).some((w) => w.address === (a || "").toLowerCase());
+  return k[(a || "").toLowerCase()] || (treasury ? "LONG treasury wallet" : null);
 }
 const addrCell = (a) => {
   const name = knownName(a);
@@ -2951,19 +2953,24 @@ function renderTreasury() {
   /* Uses per wallet, in dollars at today's prices, from the classified transactions. */
   const W = (T.treasuryWallets || []).map((w) => {
     const L = w.ledgers || {};
-    const agg = { held: 0, sold: 0, lpAdded: 0, bought: 0, sentOn: 0, internal: 0, lpRemoved: 0, inUsd: 0 };
+    const agg = { held: 0, sold: 0, lpAdded: 0, bought: 0, sentOn: 0, internal: 0, lpRemoved: 0, bridged: 0, inUsd: 0 };
+    const via = {};
     for (const [sym, l] of Object.entries(L)) {
       const u = l.uses || {};
       agg.held += usdOf(sym, l.balance); agg.inUsd += usdOf(sym, l.in);
-      for (const k of ["sold", "lpAdded", "bought", "sentOn", "internal", "lpRemoved"]) agg[k] += usdOf(sym, u[k]);
+      for (const k of ["sold", "lpAdded", "bought", "sentOn", "internal", "lpRemoved", "bridged"]) agg[k] += usdOf(sym, u[k]);
+      for (const [name, v] of Object.entries(u.via || {})) via[name] = (via[name] || 0) + usdOf(sym, v);
     }
     const aiU = L.AI?.uses || {};
-    return { a: w.address, L, agg, aiU, ai: L.AI || {}, nv: L.NVDA || {}, ug: L.USDG || {} };
+    return { a: w.address, L, agg, via, aiU, ai: L.AI || {}, nv: L.NVDA || {}, ug: L.USDG || {} };
   });
   const sum = (k) => W.reduce((s, w) => s + w.agg[k], 0);
-  const held = sum("held"), sold = sum("sold"), lp = sum("lpAdded"), bought = sum("bought"), sentOn = sum("sentOn");
-  const recycled = lp + bought, out = sold + sentOn;
+  const held = sum("held"), sold = sum("sold"), lp = sum("lpAdded"), bought = sum("bought"), sentOn = sum("sentOn"), bridged = sum("bridged");
+  const recycled = lp + bought, out = sold + sentOn + bridged;
   const recycleShare = recycled + out > 0 ? recycled / (recycled + out) : null;
+  const viaAll = {};
+  for (const w of W) for (const [n, v] of Object.entries(w.via)) viaAll[n] = (viaAll[n] || 0) + v;
+  const viaRows = Object.entries(viaAll).sort((a, b) => b[1] - a[1]);
 
   host.innerHTML = `<div class="kpis">
     <div>${kpiEl(`$${compact(usdOf("AI", aiFees) + usdOf("NVDA", nvFees))}`, `${compact(aiFees)} AI + ${nf(nvFees, 0)} NVDA`, "", "fees from AI trading, today's prices")}</div>
@@ -2975,24 +2982,30 @@ function renderTreasury() {
 
   /* The reading: what a holder should take from the treasury's behaviour. */
   const wk = (T.weeklyAi || []).slice(-4);
-  const rSold = sumOf(wk, (r) => r.sold), rBought = sumOf(wk, (r) => r.bought), rLp = sumOf(wk, (r) => r.lpAdded), rMoved = sumOf(wk, (r) => r.sentOn);
-  const recentTone = rSold + rMoved > (rBought + rLp) * 2 ? "warn" : rBought + rLp > rSold + rMoved ? "pos" : "neu";
+  const rSold = sumOf(wk, (r) => r.sold), rBought = sumOf(wk, (r) => r.bought), rLp = sumOf(wk, (r) => r.lpAdded), rMoved = sumOf(wk, (r) => r.sentOn), rBridged = sumOf(wk, (r) => r.bridged || 0);
+  const rOut = rSold + rMoved + rBridged, rIn = rBought + rLp;
+  const recentTone = rOut > rIn * 2 ? "warn" : rIn > rOut ? "pos" : "neu";
   $("#readTreasury").innerHTML = takeEl(recentTone,
-    `Over the treasury's life, <b>$${compact(sold)}</b> was sold into pools and <b>$${compact(sentOn)}</b> moved to addresses this page cannot name,
-     against <b>$${compact(lp)}</b> seeded as liquidity and <b>$${compact(bought)}</b> spent buying back; <b>$${compact(held)}</b> is still held, at today's prices.
-     Over the last four weeks in AI: sold <b>${compact(rSold)}</b>, bought <b>${compact(rBought)}</b>, seeded <b>${compact(rLp)}</b>, moved <b>${compact(rMoved)}</b>.
+    `Over the treasury's life, <b>$${compact(sold)}</b> was sold${viaRows.length ? ` (${viaRows.map(([n, v]) => `$${compact(v)} via ${n}`).join(", ")})` : ""},
+     <b>$${compact(bridged)}</b> was bridged off the chain and <b>$${compact(sentOn)}</b> moved to addresses this page cannot name,
+     against <b>$${compact(lp)}</b> seeded as liquidity and <b>$${compact(bought)}</b> spent buying; <b>$${compact(held)}</b> is still held, at today's prices.
+     Over the last four weeks in AI: sold <b>${compact(rSold)}</b>, bought <b>${compact(rBought)}</b>, seeded <b>${compact(rLp)}</b>, bridged <b>${compact(rBridged)}</b>, moved <b>${compact(rMoved)}</b>.
      ${recentTone === "pos" ? "Recently the treasury has put more back into AI and its pools than it has taken out: a flywheel, while it lasts."
-       : recentTone === "warn" ? "Recently the treasury has been a net source of supply: selling or moving fee income out faster than it recycles it. That is the overhang to price in."
+       : recentTone === "warn" ? "Recently the treasury has been a net source of supply: selling, bridging or moving fee income out faster than it recycles it. That is the overhang to price in."
        : "Recently the two roughly balance."}
-     <span class="muted">A sale is AI to the pool manager in a transaction with a Swap; liquidity seeded is the same transfer in a transaction with a positive ModifyLiquidity. Prices are today's throughout.</span>`);
+     ${T.unclassified ? `<span class="warnline">${T.unclassified} transactions are still waiting to be classified; the figures grow as they are.</span>` : ""}
+     <span class="muted">Every transaction is netted for the wallet across all tokens: sent one token and received another is a sale of what was sent,
+     whichever router carried it (Robinhood Wallet's 0x Settler, Rainbow, Relay or the v4 pools directly); sent alongside a positive
+     ModifyLiquidity is liquidity seeded; sent to Relay's depository is bridged off the chain. Prices are today's throughout.</span>`);
 
   /* The flow diagram. */
   const wallets = W.map((w, i) => ({ id: `w${i}`, label: knownName(w.a) || short(w.a), v: w.agg.inUsd, color: "var(--series-3)", labelRight: false }));
   const usesCol = [
     { id: "held", label: "Still held", v: held, color: "var(--buy)" },
     { id: "lp", label: "Seeded as liquidity", v: lp, color: "var(--series-2)" },
-    { id: "bought", label: "Bought AI", v: bought, color: "var(--buy)" },
-    { id: "sold", label: "Sold into pools", v: sold, color: "var(--sell)" },
+    { id: "bought", label: "Bought", v: bought, color: "var(--buy)" },
+    { id: "sold", label: "Sold", v: sold, color: "var(--sell)" },
+    { id: "bridged", label: "Bridged off chain", v: bridged, color: "var(--sell)" },
     { id: "moved", label: "Moved elsewhere", v: sentOn, color: "var(--text-muted)" },
   ].filter((n) => n.v > 0);
   const feeIn = usdOf("AI", aiFees) + usdOf("NVDA", nvFees), hookIn = usdOf("AI", aiHook) + usdOf("NVDA", nvHook);
@@ -3008,7 +3021,7 @@ function renderTreasury() {
   ];
   W.forEach((w, i) => {
     const a = w.agg;
-    for (const [k, id, color] of [["held", "held", "var(--buy)"], ["lpAdded", "lp", "var(--series-2)"], ["bought", "bought", "var(--buy)"], ["sold", "sold", "var(--sell)"], ["sentOn", "moved", "var(--text-muted)"]]) {
+    for (const [k, id, color] of [["held", "held", "var(--buy)"], ["lpAdded", "lp", "var(--series-2)"], ["bought", "bought", "var(--buy)"], ["sold", "sold", "var(--sell)"], ["bridged", "bridged", "var(--sell)"], ["sentOn", "moved", "var(--text-muted)"]]) {
       if (a[k] > 0 && usesCol.some((n) => n.id === id)) links.push({ s: `w${i}`, t: id, v: a[k], color, label: `${wallets[i].label} → ${id}` });
     }
   });
@@ -3018,11 +3031,11 @@ function renderTreasury() {
   /* Weekly uses of AI. */
   const weekly = (T.weeklyAi || []).slice(-16);
   if (weekly.length > 1) {
-    groupedBars($("#cTreasuryWeekly"), weekly, {
-      xKey: "t", keys: ["sold", "bought", "lpAdded", "sentOn"], colors: ["var(--sell)", "var(--buy)", "var(--series-2)", "var(--text-muted)"], xFmt: dayFmt,
+    groupedBars($("#cTreasuryWeekly"), weekly.map((d) => ({ ...d, out: (d.sentOn || 0) + (d.bridged || 0) })), {
+      xKey: "t", keys: ["sold", "bought", "lpAdded", "out"], colors: ["var(--sell)", "var(--buy)", "var(--series-2)", "var(--text-muted)"], xFmt: dayFmt,
       tip: (d) => `<div class="k">week of ${dayFmt(d.t)}</div><div><span style="color:var(--sell)">●</span> sold ${compact(d.sold)} AI</div>
         <div><span style="color:var(--buy)">●</span> bought ${compact(d.bought)} AI</div><div><span style="color:var(--series-2)">●</span> seeded ${compact(d.lpAdded)} AI</div>
-        <div><span style="color:var(--text-muted)">●</span> moved ${compact(d.sentOn)} AI</div>`,
+        <div><span style="color:var(--text-muted)">●</span> moved or bridged ${compact(d.out)} AI</div>`,
     });
   } else $("#cTreasuryWeekly").innerHTML = `<p class="muted" style="padding:16px 0">Weekly uses accrue as transactions are classified.</p>`;
 
@@ -3033,6 +3046,7 @@ function renderTreasury() {
     { h: "Sold", f: (r) => `<span class="down">${compact(r.aiU.sold || 0)}</span>` },
     { h: "Bought", f: (r) => `<span class="up">${compact(r.aiU.bought || 0)}</span>` },
     { h: "Seeded as LP", f: (r) => compact(r.aiU.lpAdded || 0) },
+    { h: "Bridged out", f: (r) => compact(r.aiU.bridged || 0) },
     { h: "To another treasury wallet", f: (r) => compact(r.aiU.internal || 0) },
     { h: "Moved elsewhere", f: (r) => compact(r.aiU.sentOn || 0) },
     { h: "NVDA held", f: (r) => nf(r.nv.balance ?? 0, 0) },

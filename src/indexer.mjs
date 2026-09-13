@@ -370,7 +370,7 @@ if (!fast && !flag("no-treasury")) {
     if (prices?.aiUsd) px.set(C.AI, prices.aiUsd);
     for (const t of readData("launchpad.json")?.top || []) if (t.priceUsd > 0) px.set(t.token, t.priceUsd);
     const treasury = await indexTreasury(latest, tm, {
-      store, budgetSeconds: opt("treasury-budget", 300), priceOf: (a) => px.get(a) ?? null,
+      store, budgetSeconds: opt("treasury-budget", 420), priceOf: (a) => px.get(a) ?? null,
     });
     writeData("treasury.json", treasury);
   } catch (e) {
