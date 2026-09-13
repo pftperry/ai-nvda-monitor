@@ -493,7 +493,7 @@ function table(host, cols, rows) {
 /* ── data ───────────────────────────────────────────────────────────────── */
 const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -514,14 +514,14 @@ async function refreshData() {
     const meta = await loadJSON("meta.json");
     if (!meta || meta.headBlock === S.meta?.headBlock) return;   // nothing newly indexed
     const [flow, burns] = await Promise.all(["flow.json", "burns.json"].map(loadJSON));
-    const [routing, bridges, tape, pools, depth, launchpad, holders, prices] = await Promise.all(
+    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury] = await Promise.all(
       OPTIONAL_ARTIFACTS.map((f) => loadJSON(f).catch(() => null))
     );
     Object.assign(S, {
       meta, flow, burns,
       routing: routing ?? S.routing, bridges: bridges ?? S.bridges,
       tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth, launchpad: launchpad ?? S.launchpad,
-      holders: holders ?? S.holders, prices: prices ?? S.prices,
+      holders: holders ?? S.holders, prices: prices ?? S.prices, treasury: treasury ?? S.treasury,
     });
     renderAll();
     refreshLiveTail();   // the live window starts at the new head, so re-scope it
@@ -1798,6 +1798,7 @@ function renderInvestor() {
   try { renderDollars(feeSeries); } catch (e) { console.error("renderDollars", e); }
   try { renderBreadth(); } catch (e) { console.error("renderBreadth", e); }
   try { renderPlatform(); } catch (e) { console.error("renderPlatform", e); }
+  try { renderTreasury(); } catch (e) { console.error("renderTreasury", e); }
 
   /* ── the two dials ────────────────────────────────────────────────────
      Every input is a trailing-7-day level (or a week-over-week change) ranked
@@ -2865,6 +2866,197 @@ function renderBreadth() {
      <span class="muted">Counts are at a fixed AI balance so a price move cannot manufacture them. Every move is netted per transaction, so the wallet shown is the one whose balance changed, not the router it went through; "received" and "sent" are moves that touched no pool. One entity can be many wallets.</span>`);
 }
 
+/* ── where the fees go ───────────────────────────────────────────────────
+   The platform fee wallet is a pipe: everything it receives is forwarded. The
+   card states what reached it (fees from the splitter against the hook's launch
+   allocation), where it went, and what those wallets hold or have sold now. */
+/**
+ * A flow diagram, hand-rolled: columns of nodes, ribbons between them whose
+ * width is value. Every column sums to about the same total (value is conserved
+ * from sources to uses), so one scale serves all columns and widths are
+ * comparable across the picture.
+ */
+function _sankey(host, { cols, links, fmt = (v) => `$${compact(v)}` }) {
+  host.innerHTML = "";
+  const phone = isPhone();
+  const width = Math.max(240, host.clientWidth || 600);
+  const height = phone ? 340 : 380;
+  const svg = mk("svg", { viewBox: `0 0 ${width} ${height}`, width: "100%", height, role: "img" });
+  host.appendChild(svg);
+  const nodeW = 10, padY = 14, gap = phone ? 8 : 12, labelW = phone ? 74 : 130;
+  const x0 = labelW, x1 = width - labelW;
+  const totals = cols.map((c) => c.reduce((s, n) => s + n.v, 0));
+  const maxTot = maxOf(totals) || 1;
+  const maxN = maxOf(cols.map((c) => c.length));
+  const scale = (height - 2 * padY - gap * (maxN - 1)) / maxTot;
+  const pos = new Map();
+  cols.forEach((col, ci) => {
+    const x = cols.length === 1 ? x0 : x0 + (ci / (cols.length - 1)) * (x1 - x0);
+    const h = totals[ci] * scale + gap * (col.length - 1);
+    let y = (height - h) / 2;
+    for (const n of col) {
+      const nh = Math.max(1, n.v * scale);
+      pos.set(n.id, { x, y, h: nh, outY: y, inY: y, ci });
+      svg.appendChild(mk("rect", { x: x - nodeW / 2, y, width: nodeW, height: nh, rx: 2, fill: n.color || "var(--text-secondary)" }));
+      const right = ci === cols.length - 1 || (ci > 0 && ci < cols.length - 1 && n.labelRight);
+      const t = mk("text", { x: right ? x + nodeW : x - nodeW, y: y + Math.min(nh / 2 + 4, Math.max(11, nh / 2 + 4)), "text-anchor": right ? "start" : "end", style: `font:10.5px var(--mono)`, fill: "var(--text-primary)" });
+      t.textContent = phone && n.label.length > 14 ? n.label.slice(0, 13) + "…" : n.label;
+      svg.appendChild(t);
+      const t2 = mk("text", { x: right ? x + nodeW : x - nodeW, y: y + Math.min(nh / 2 + 4, Math.max(11, nh / 2 + 4)) + 12, "text-anchor": right ? "start" : "end", style: `font:10px var(--mono)`, fill: "var(--text-muted)" });
+      t2.textContent = fmt(n.v);
+      if (nh >= 18 || n.v / totals[ci] > 0.15) svg.appendChild(t2);
+      y += nh + gap;
+    }
+  });
+  for (const l of links) {
+    const s = pos.get(l.s), t = pos.get(l.t);
+    if (!s || !t || l.v <= 0) continue;
+    const w = Math.max(0.75, l.v * scale);
+    const ya = s.outY, yb = t.inY;
+    s.outY += w; t.inY += w;
+    const xa = s.x + nodeW / 2, xb = t.x - nodeW / 2, xm = (xa + xb) / 2;
+    const d = `M${xa},${ya} C${xm},${ya} ${xm},${yb} ${xb},${yb} L${xb},${yb + w} C${xm},${yb + w} ${xm},${ya + w} ${xa},${ya + w} Z`;
+    const p = mk("path", { d, fill: l.color || "var(--text-muted)", opacity: .38 });
+    p.appendChild(mk("title")).textContent = `${l.label || ""} ${fmt(l.v)}`.trim();
+    svg.appendChild(p);
+  }
+}
+const sankey = wrapChart(_sankey);
+
+/* ── where the fees go ───────────────────────────────────────────────────
+   The platform fee wallet is a pipe: everything it receives is forwarded. The
+   tab states what reached it, where it went, and what those wallets did with it
+   -- held, sold, seeded as liquidity, bought back, or moved on -- because the
+   difference between a treasury that recycles into the ecosystem and one that
+   sells into it is the difference between a flywheel and an overhang. */
+function renderTreasury() {
+  const host = $("#kpiTreasury");
+  const T = S.treasury;
+  if (!T?.feeWallet) {
+    host.innerHTML = `<p class="muted">The fee ledger is built on the slow path; it appears after the next standard run.</p>`;
+    for (const id of ["#tTreasury", "#tPlatformFees", "#takeTreasury", "#readTreasury", "#cSankey", "#cTreasuryWeekly", "#tTreasuryPools"]) $(id).innerHTML = "";
+    return;
+  }
+  const px = marketState().price || 0;
+  const nvdaUsd = dollarState().nvdaUsd || 0;
+  const rate = { AI: px, NVDA: nvdaUsd, USDG: 1, WETH: 0 };
+  const usdOf = (sym, v) => (v || 0) * (rate[sym] || 0);
+  const fw = T.feeWallet.ledgers;
+  const srcOf = (L, name) => (L?.topSources || []).filter((s) => s.name === name).reduce((s, x) => s + x.v, 0);
+  const aiFees = srcOf(fw.AI, "fee splitter"), aiHook = srcOf(fw.AI, "LONG hook");
+  const nvFees = srcOf(fw.NVDA, "fee splitter"), nvHook = srcOf(fw.NVDA, "LONG hook");
+  const pf = T.platformFees || {};
+  const otherUsd = (pf.tokens || []).filter((t) => t.usd != null && ![AI_TOKEN, S.meta.contracts.nvdaToken].includes(t.token)).reduce((s, t) => s + t.usd, 0);
+
+  /* Uses per wallet, in dollars at today's prices, from the classified transactions. */
+  const W = (T.treasuryWallets || []).map((w) => {
+    const L = w.ledgers || {};
+    const agg = { held: 0, sold: 0, lpAdded: 0, bought: 0, sentOn: 0, internal: 0, lpRemoved: 0, inUsd: 0 };
+    for (const [sym, l] of Object.entries(L)) {
+      const u = l.uses || {};
+      agg.held += usdOf(sym, l.balance); agg.inUsd += usdOf(sym, l.in);
+      for (const k of ["sold", "lpAdded", "bought", "sentOn", "internal", "lpRemoved"]) agg[k] += usdOf(sym, u[k]);
+    }
+    const aiU = L.AI?.uses || {};
+    return { a: w.address, L, agg, aiU, ai: L.AI || {}, nv: L.NVDA || {}, ug: L.USDG || {} };
+  });
+  const sum = (k) => W.reduce((s, w) => s + w.agg[k], 0);
+  const held = sum("held"), sold = sum("sold"), lp = sum("lpAdded"), bought = sum("bought"), sentOn = sum("sentOn");
+  const recycled = lp + bought, out = sold + sentOn;
+  const recycleShare = recycled + out > 0 ? recycled / (recycled + out) : null;
+
+  host.innerHTML = `<div class="kpis">
+    <div>${kpiEl(`$${compact(usdOf("AI", aiFees) + usdOf("NVDA", nvFees))}`, `${compact(aiFees)} AI + ${nf(nvFees, 0)} NVDA`, "", "fees from AI trading, today's prices")}</div>
+    <div>${kpiEl(`$${compact(usdOf("AI", aiHook) + usdOf("NVDA", nvHook))}`, `${compact(aiHook)} AI + ${nf(nvHook, 0)} NVDA`, "", "launch allocation from the hook, not fees")}</div>
+    <div>${kpiEl(recycleShare == null ? "—" : pctLevel(recycleShare, 0), recycleShare == null ? "" : recycleShare >= 0.5 ? "recycled" : "sold or moved", recycleShare == null ? "" : recycleShare >= 0.5 ? "up" : "down", "of what left the treasury went back into AI or liquidity")}</div>
+  </div>
+  <div class="livenote">The fee wallet forwards everything: ${(fw.AI?.transfersIn || 0).toLocaleString()} transfers in, ${(fw.AI?.transfersOut || 0).toLocaleString()} out, balance <b>${compact(fw.AI?.balance ?? 0)} AI</b>.
+    Across the whole launchpad <b>${(pf.tokenCount || 0).toLocaleString()}</b> tokens have paid it; the ${(pf.tokens || []).length} most active are worth <b>$${compact(pf.pricedUsd || 0)}</b> today${pf.unpriced ? ` (${pf.unpriced} unpriced)` : ""}.</div>`;
+
+  /* The reading: what a holder should take from the treasury's behaviour. */
+  const wk = (T.weeklyAi || []).slice(-4);
+  const rSold = sumOf(wk, (r) => r.sold), rBought = sumOf(wk, (r) => r.bought), rLp = sumOf(wk, (r) => r.lpAdded), rMoved = sumOf(wk, (r) => r.sentOn);
+  const recentTone = rSold + rMoved > (rBought + rLp) * 2 ? "warn" : rBought + rLp > rSold + rMoved ? "pos" : "neu";
+  $("#readTreasury").innerHTML = takeEl(recentTone,
+    `Over the treasury's life, <b>$${compact(sold)}</b> was sold into pools and <b>$${compact(sentOn)}</b> moved to addresses this page cannot name,
+     against <b>$${compact(lp)}</b> seeded as liquidity and <b>$${compact(bought)}</b> spent buying back; <b>$${compact(held)}</b> is still held, at today's prices.
+     Over the last four weeks in AI: sold <b>${compact(rSold)}</b>, bought <b>${compact(rBought)}</b>, seeded <b>${compact(rLp)}</b>, moved <b>${compact(rMoved)}</b>.
+     ${recentTone === "pos" ? "Recently the treasury has put more back into AI and its pools than it has taken out: a flywheel, while it lasts."
+       : recentTone === "warn" ? "Recently the treasury has been a net source of supply: selling or moving fee income out faster than it recycles it. That is the overhang to price in."
+       : "Recently the two roughly balance."}
+     <span class="muted">A sale is AI to the pool manager in a transaction with a Swap; liquidity seeded is the same transfer in a transaction with a positive ModifyLiquidity. Prices are today's throughout.</span>`);
+
+  /* The flow diagram. */
+  const wallets = W.map((w, i) => ({ id: `w${i}`, label: knownName(w.a) || short(w.a), v: w.agg.inUsd, color: "var(--series-3)", labelRight: false }));
+  const usesCol = [
+    { id: "held", label: "Still held", v: held, color: "var(--buy)" },
+    { id: "lp", label: "Seeded as liquidity", v: lp, color: "var(--series-2)" },
+    { id: "bought", label: "Bought AI", v: bought, color: "var(--buy)" },
+    { id: "sold", label: "Sold into pools", v: sold, color: "var(--sell)" },
+    { id: "moved", label: "Moved elsewhere", v: sentOn, color: "var(--text-muted)" },
+  ].filter((n) => n.v > 0);
+  const feeIn = usdOf("AI", aiFees) + usdOf("NVDA", nvFees), hookIn = usdOf("AI", aiHook) + usdOf("NVDA", nvHook);
+  const sources = [
+    { id: "fees", label: "AI trading fees", v: feeIn, color: "var(--buy)" },
+    { id: "hook", label: "Launch allocation", v: hookIn, color: "var(--series-3)" },
+    { id: "other", label: "Other launches' fees", v: otherUsd, color: "var(--series-2)" },
+  ].filter((n) => n.v > 0);
+  const feeNode = { id: "fw", label: "Fee wallet", v: sources.reduce((s, n) => s + n.v, 0), color: "var(--text-secondary)", labelRight: true };
+  const links = [
+    ...sources.map((n) => ({ s: n.id, t: "fw", v: n.v, color: n.color, label: n.label })),
+    ...wallets.map((w) => ({ s: "fw", t: w.id, v: w.v, color: "var(--series-3)", label: w.label })),
+  ];
+  W.forEach((w, i) => {
+    const a = w.agg;
+    for (const [k, id, color] of [["held", "held", "var(--buy)"], ["lpAdded", "lp", "var(--series-2)"], ["bought", "bought", "var(--buy)"], ["sold", "sold", "var(--sell)"], ["sentOn", "moved", "var(--text-muted)"]]) {
+      if (a[k] > 0 && usesCol.some((n) => n.id === id)) links.push({ s: `w${i}`, t: id, v: a[k], color, label: `${wallets[i].label} → ${id}` });
+    }
+  });
+  if (sources.length && wallets.length && usesCol.length) sankey($("#cSankey"), { cols: [sources, [feeNode], wallets, usesCol], links });
+  else $("#cSankey").innerHTML = `<p class="muted" style="padding:16px 0">Not enough classified flow to draw yet.</p>`;
+
+  /* Weekly uses of AI. */
+  const weekly = (T.weeklyAi || []).slice(-16);
+  if (weekly.length > 1) {
+    groupedBars($("#cTreasuryWeekly"), weekly, {
+      xKey: "t", keys: ["sold", "bought", "lpAdded", "sentOn"], colors: ["var(--sell)", "var(--buy)", "var(--series-2)", "var(--text-muted)"], xFmt: dayFmt,
+      tip: (d) => `<div class="k">week of ${dayFmt(d.t)}</div><div><span style="color:var(--sell)">●</span> sold ${compact(d.sold)} AI</div>
+        <div><span style="color:var(--buy)">●</span> bought ${compact(d.bought)} AI</div><div><span style="color:var(--series-2)">●</span> seeded ${compact(d.lpAdded)} AI</div>
+        <div><span style="color:var(--text-muted)">●</span> moved ${compact(d.sentOn)} AI</div>`,
+    });
+  } else $("#cTreasuryWeekly").innerHTML = `<p class="muted" style="padding:16px 0">Weekly uses accrue as transactions are classified.</p>`;
+
+  table($("#tTreasury"), [
+    { h: "Wallet", f: (r) => addrCell(r.a) },
+    { h: "AI received", f: (r) => compact(r.ai.in || 0) },
+    { h: "Held now", f: (r) => compact(r.ai.balance ?? 0) },
+    { h: "Sold", f: (r) => `<span class="down">${compact(r.aiU.sold || 0)}</span>` },
+    { h: "Bought", f: (r) => `<span class="up">${compact(r.aiU.bought || 0)}</span>` },
+    { h: "Seeded as LP", f: (r) => compact(r.aiU.lpAdded || 0) },
+    { h: "Moved elsewhere", f: (r) => compact(r.aiU.sentOn || 0) },
+    { h: "NVDA held", f: (r) => nf(r.nv.balance ?? 0, 0) },
+    { h: "USDG held", f: (r) => `$${compact(r.ug.balance ?? 0)}` },
+  ], W);
+  const pools = {};
+  for (const w of W) for (const [k, v] of Object.entries(w.aiU.pools || {})) pools[k] = (pools[k] || 0) + v;
+  const poolRows = Object.entries(pools).sort((a, b) => b[1] - a[1]);
+  $("#tTreasuryPools").innerHTML = poolRows.length
+    ? `<div class="livenote">Liquidity seeded, by pool: ${poolRows.map(([k, v]) => `<b>${k}</b> ${compact(v)} AI`).join(" · ")}</div>`
+    : `<div class="livenote">No liquidity seeded by the treasury wallets has been observed.</div>`;
+
+  table($("#tPlatformFees"), [
+    { h: "Token", f: (t) => t.symbol },
+    { h: "Transfers", f: (t) => t.transfers.toLocaleString() },
+    { h: "Amount", f: (t) => compact(t.amount) },
+    { h: "USD today", f: (t) => (t.usd == null ? `<span class="muted">unpriced</span>` : `$${compact(t.usd)}`) },
+  ], (pf.tokens || []).slice(0, 15));
+
+  $("#takeTreasury").innerHTML = takeEl("neu",
+    `Read left to right: what reached the fee wallet (fees from AI trading, the hook's launch allocation, and fees from other launches
+     where a price exists), where it was forwarded, and what became of it. <span class="muted">Values at today's prices, so a token that
+     was sold at a different price is drawn at today's. Only the four tracked tokens (AI, NVDA, USDG, WETH) are followed past the fee wallet.</span>`);
+}
+
 /* ── AI against its platform ─────────────────────────────────────────────
    The launchpad census prices the platform's biggest tokens every slow-path run,
    and now keeps those prices as a series. Whether AI is leading or lagging its own
@@ -3489,6 +3681,17 @@ function renderMethod() {
       first-seen date per wallet from which weekly cohorts and their retention are built. One entity can be many
       wallets, so concentration is a floor and holder counts are a ceiling.</p>
 
+      <p><b style="color:var(--text-primary)">Actors.</b> A Uniswap v4 <code>Swap</code> names the router as its sender, not the
+      person, so nothing on this site counts swap senders as people. Wallet-level activity comes from the transfer replay:
+      every transfer in a transaction is netted per address, routers cancel to zero, and the wallet whose balance changed
+      is the trader. Buyers and sellers per period, and every whale move, are attributed that way.</p>
+
+      <p><b style="color:var(--text-primary)">Where the fees go.</b> The platform fee wallet's ledgers in AI, NVDA, USDG and
+      WETH are kept from its transfers, and the wallets it forwards to are found from those transfers and given ledgers of
+      their own: received, held now, sold into pools (sent to the pool manager), dollars back from pools, moved onward.
+      Every token that has ever paid the fee wallet is summed platform-wide and valued at today's prices where one exists.
+      Which wallets belong to the protocol is inferred from the forwards, not declared anywhere.</p>
+
       <p><b style="color:var(--text-primary)">Dollars.</b> Volume and fees are multiplied by the AI/USDG close of the hour
       they happened in. NVDA’s dollar price is read from the stock token’s own busiest USDG pool each run (two or
       three requests, no history scanned) and cross-checked against the price implied by AI in USDG over AI in NVDA;
@@ -3688,10 +3891,10 @@ async function boot() {
     const [meta, flow, burns] = await Promise.all(
       ["meta.json", "flow.json", "burns.json"].map(loadJSON)
     );
-    const [routing, bridges, tape, pools, depth, launchpad, holders, prices] = await Promise.all(
+    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury] = await Promise.all(
       OPTIONAL_ARTIFACTS.map((f) => loadJSON(f).catch(() => null))
     );
-    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad, holders, prices });
+    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury });
   } catch (e) {
     $("#boot").remove();
     $("#bootErr").innerHTML = `<div class="err"><b>Could not load indexed data.</b><br>

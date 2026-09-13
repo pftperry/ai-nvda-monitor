@@ -14,6 +14,7 @@ import { snapshotKpis } from "./tasks/kpis.mjs";
 import { censusLongPools, rankByActivity, classifyLaunches, anchorPrices, priceLaunchpadTokens, summariseLaunchpad } from "./tasks/launchpad.mjs";
 import { indexBurns } from "./tasks/burns.mjs";
 import { indexPrices } from "./tasks/prices.mjs";
+import { indexTreasury } from "./tasks/treasury.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
 
@@ -356,6 +357,25 @@ try {
   }
 } catch (e) {
   softFail("depth", e, "the previous depth.json stays in place");
+}
+
+/* Where the fees go: the platform fee wallet and the wallets it forwards to, in
+   AI, NVDA, USDG and WETH, plus the platform-wide take across every token. Slow
+   path only; the ledgers resume from a cursor so a refresh reads new blocks. */
+if (!fast && !flag("no-treasury")) {
+  step("Following the fees");
+  try {
+    const px = new Map([[C.USDG, 1]]);
+    if (prices?.nvdaUsd) px.set(C.NVDA, prices.nvdaUsd);
+    if (prices?.aiUsd) px.set(C.AI, prices.aiUsd);
+    for (const t of readData("launchpad.json")?.top || []) if (t.priceUsd > 0) px.set(t.token, t.priceUsd);
+    const treasury = await indexTreasury(latest, tm, {
+      store, budgetSeconds: opt("treasury-budget", 300), priceOf: (a) => px.get(a) ?? null,
+    });
+    writeData("treasury.json", treasury);
+  } catch (e) {
+    softFail("treasury", e, "the previous treasury.json stays in place");
+  }
 }
 
 /* The LONG platform census. Its own cursor, its own artifact, and last in the run

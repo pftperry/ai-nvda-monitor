@@ -152,6 +152,7 @@ src/
     launchpad.mjs   LONG-hook census, launch cadence, token prices as a series
     holders.mjs     balance replay: counts, concentration, churn, cohorts, whale tape
     prices.mjs      NVDA in dollars from its own USDG pool (2-3 calls a run)
+    treasury.mjs    the platform fee wallet and the wallets it forwards to; platform-wide fee take
     kpis.mjs        hourly panel of every dial input beside price, for the weighting study
   verify.mjs        ~110 invariants; gates the deploy
   audit.mjs         cross-derivations; reports only

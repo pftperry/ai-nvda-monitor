@@ -36,6 +36,7 @@
     <button class="tab" role="tab" id="tab-flow"      aria-controls="p-flow"      aria-selected="false">Tape</button>
     <button class="tab" role="tab" id="tab-float"     aria-controls="p-float"     aria-selected="false">Supply &amp; Holders</button>
     <button class="tab" role="tab" id="tab-bridges"   aria-controls="p-bridges"   aria-selected="false">Hub</button>
+    <button class="tab" role="tab" id="tab-treasury"  aria-controls="p-treasury"  aria-selected="false">Treasury</button>
     <button class="tab" role="tab" id="tab-launchpad" aria-controls="p-launchpad" aria-selected="false">Launchpad</button>
     <button class="tab" role="tab" id="tab-method"    aria-controls="p-method"    aria-selected="false">Method</button>
   </div>
@@ -365,6 +366,49 @@
         <p class="sub">Direct (non-routed) AI volume by paired token.</p>
         <div class="scroll"><table id="tCounter"></table></div>
       </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── Treasury ───────────────────────── -->
+  <section class="panel" id="p-treasury" role="tabpanel" aria-labelledby="tab-treasury" hidden>
+    <div class="card">
+      <h3>Where the fees go</h3>
+      <div class="agenote" data-age="treasury" hidden></div>
+      <p class="sub">The platform's take, followed from the fee wallet to the wallets it forwards to, and what those wallets did with it. Every pool-touching transaction is classified from the pool manager's own logs: a sale, a buy, liquidity seeded, or liquidity withdrawn.</p>
+      <div id="kpiTreasury"></div>
+      <div id="readTreasury"></div>
+    </div>
+
+    <div class="card">
+      <h3>Flow of value</h3>
+      <p class="sub">Sources on the left, uses on the right, at today's prices. Width is dollars. Green is value that stays in or returns to the ecosystem; red is value sold; grey is value moved to addresses this page cannot name.</p>
+      <div class="chart" id="cSankey"></div>
+      <div id="takeTreasury"></div>
+    </div>
+
+    <div class="card">
+      <h3>What the treasury did with AI, by week</h3>
+      <p class="sub">AI leaving the treasury wallets into pools as sales, coming back from pools as buys, seeded as liquidity, or moved to other addresses.</p>
+      <div class="legend">
+        <span><i style="background:var(--sell)"></i>Sold into pools</span>
+        <span><i style="background:var(--buy)"></i>Bought from pools</span>
+        <span><i style="background:var(--series-2)"></i>Seeded as liquidity</span>
+        <span><i style="background:var(--text-muted)"></i>Moved elsewhere</span>
+      </div>
+      <div class="chart" id="cTreasuryWeekly"></div>
+    </div>
+
+    <div class="card">
+      <h3>The wallets</h3>
+      <p class="sub">Found from the fee wallet's forwards, not declared anywhere. Held, sold, seeded and moved are from the classified transactions; balances are read live.</p>
+      <div class="scroll"><table id="tTreasury"></table></div>
+      <div id="tTreasuryPools"></div>
+    </div>
+
+    <div class="card">
+      <h3>Every token that has paid the platform</h3>
+      <p class="sub">The 20% platform leg of every LONG launch pays in that launch's own token or its anchor. Summed across the whole launchpad, priced today where a price exists.</p>
+      <div class="scroll"><table id="tPlatformFees"></table></div>
     </div>
   </section>
 
