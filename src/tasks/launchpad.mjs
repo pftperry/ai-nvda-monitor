@@ -363,15 +363,38 @@ export function anchorFlowByDay(pools, dayOf) {
     .map((r) => ({ ...r, share: r.all ? +(r.ai / r.all).toFixed(6) : 0 }));
 }
 /** Launch cadence and the size distribution, assembled for the Launchpad tab. */
-export function summariseLaunchpad(pools, priced, dayOf, prior, allPools = null) {
+export function summariseLaunchpad(pools, priced, dayOf, prior, allPools = null, swapsByPool = null) {
+  /* Cadence, and how much of it survived.
+
+     A launch count on its own is a statement about the mint, not the ecosystem:
+     a platform can print three thousand tokens a day and produce nothing that
+     trades. The obvious companion is the cohort’s average market cap, and that
+     is not honestly available -- pricing a token costs two calls so only the 300
+     most active are priced, which leaves most days with one or two of them and
+     one $295M outlier able to make a single July day outrank every other. What IS
+     available for every launch is whether its pool traded in the ranking window,
+     because that scan is unfiltered. So the second dimension is liveness measured
+     over the whole population rather than value estimated from a biased sample.
+
+     The window is two hours, which is a strict test and deliberately so: it asks
+     whether the token is trading now, not whether it ever did. */
   const byDay = new Map();
   for (const p of pools) {
     const d = dayOf(p.block);
-    if (d) byDay.set(d, (byDay.get(d) || 0) + 1);
+    if (!d) continue;
+    let r = byDay.get(d);
+    if (!r) byDay.set(d, (r = { launched: 0, active: 0 }));
+    r.launched++;
+    if (swapsByPool && (swapsByPool.get(p.id) || 0) > 0) r.active++;
   }
   let cum = 0;
   const launchesByDay = [...byDay.entries()].sort((a, b) => a[0] - b[0])
-    .map(([t, launched]) => ({ t, launched, cumulative: (cum += launched) }));
+    .map(([t, r]) => ({
+      t, launched: r.launched,
+      active: swapsByPool ? r.active : null,
+      dormant: swapsByPool ? r.launched - r.active : null,
+      cumulative: (cum += r.launched),
+    }));
 
   const buckets = BUCKETS.map((b) => ({
     key: b.key, label: b.label, lo: b.lo, hi: b.hi === Infinity ? null : b.hi,
@@ -401,6 +424,8 @@ export function summariseLaunchpad(pools, priced, dayOf, prior, allPools = null)
     thinRunners: stats.thin,
     ratioMeasured: stats.n,
     anchorFlow: allPools ? anchorFlowByDay(allPools, dayOf) : (prior?.anchorFlow || []),
+    activeMeasured: !!swapsByPool,
+    activeWindowHours: 2,
     buckets, launchesByDay, history,
     top: priced.slice(0, 30),
   };

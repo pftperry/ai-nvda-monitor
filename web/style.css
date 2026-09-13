@@ -8,6 +8,7 @@
   --surface-1:    #fcfcfb;
   --surface-2:    #f3f3f0;
   --border:       #e2e1dc;
+  --muted-fill:   #d3d2cc;
   --border-strong:#cbcac3;
   --text-primary: #0b0b0b;
   --text-secondary:#52514e;
@@ -40,6 +41,7 @@
     --surface-1:    #1a1a19;
     --surface-2:    #222221;
     --border:       #2e2e2c;
+    --muted-fill:   #45453f;
     --border-strong:#42423f;
     --text-primary: #ffffff;
     --text-secondary:#c3c2b7;
@@ -56,7 +58,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --plane:#0d0d0d; --surface-1:#1a1a19; --surface-2:#222221;
-  --border:#2e2e2c; --border-strong:#42423f;
+  --border:#2e2e2c; --border-strong:#42423f; --muted-fill:#45453f;
   --text-primary:#fff; --text-secondary:#c3c2b7; --text-muted:#8f8e85;
   --buy:#3987e5; --sell:#e66767; --mid:#383835;
   --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --grid:#2a2a28;
@@ -260,6 +262,7 @@ footer h4 { color: var(--text-secondary); font-size: 12px; margin: 16px 0 7px; t
 .takeaway.neg { border-left-color: var(--sell); }
 .takeaway.warn { border-left-color: var(--warning); }
 .takeaway.neu { border-left-color: var(--border); }
+.subhead { margin: 18px 0 2px; font-size: 13px; letter-spacing: .02em; color: var(--text-primary); }
 
 .kpi { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
 .kpi .big { font: 650 27px/1.05 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }

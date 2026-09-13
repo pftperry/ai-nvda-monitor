@@ -1519,6 +1519,7 @@ function renderInvestor() {
      outside totalSupply, vault AI still exists inside it. They are near-identical in size only because the fee splits 1:1.</span>`);
 
   renderPrice(feeSeries);
+  try { renderLaunchRate(); } catch { /* the census is optional; never blank the tab */ }
   try { renderAdoption(); } catch { /* the census is optional; never blank the tab */ }
   try { renderNearDepth(); } catch { /* near-spot depth is optional */ }
   try { renderDepth(); } catch { /* depth is optional; never blank the tab */ }
@@ -2282,6 +2283,92 @@ function renderSinceLast(now) {
  * version of this (card 6b) can only rise, so it cannot tell anyone that adoption
  * halved; the flow can, and did.
  */
+/**
+ * 1. Launch cadence, and how much of it is still alive.
+ *
+ * The bar is tokens created that day; the lit segment is the ones whose pool traded
+ * in the ranking window. Both segments are counts of tokens, which is what makes a
+ * stack legitimate here -- a second axis carrying market cap would not be, and the
+ * cap figures live beside the chart as platform-wide totals instead, because a
+ * per-day cap can only be built from the 300 priced tokens and most days hold one
+ * or two of those.
+ */
+function renderLaunchRate() {
+  const r = S.launchpad;
+  const rows = completeDays(r?.launchesByDay || []);
+  if (!rows.length) {
+    $("#kpiLaunchRate").innerHTML = `<p class="muted">Launch history not measured yet.</p>`;
+    for (const id of ["#cLaunchRate", "#takeLaunchRate"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    return;
+  }
+  const last7 = trailing(rows, 7, (d) => d.launched);
+  const prior7 = trailing(rows, 7, (d) => d.launched, 7);
+  const trend = prior7 > 0 ? last7 / prior7 - 1 : null;
+  const total = rows.at(-1).cumulative;
+  const live = !!r.activeMeasured;
+  const act7 = live ? trailing(rows, 7, (d) => d.active) : null;
+  const actShare = live && last7 ? act7 / last7 : null;
+  const capNow = r.history?.at(-1)?.totalMcapUsd ?? null;
+
+  $("#kpiLaunchRate").innerHTML = kpiEl(last7.toLocaleString(),
+    trend == null ? "" : `${pct(trend, 0)} wk/wk`, (trend ?? 0) >= 0 ? "up" : "down",
+    "tokens launched in the last 7 complete days")
+    + (r.censusPartial
+      ? `<div class="warnline">The census has not finished walking back to genesis, so every count here is a <b>floor</b>.</div>`
+      : "")
+    + `<div class="livenote"><b>${total.toLocaleString()}</b> launched across <b>${rows.length}</b> days
+       ${actShare == null ? "" : `\u00b7 <b>${pctLevel(actShare, 1)}</b> of the last 7 days\u2019 launches traded in the last 2 hours`}
+       \u00b7 combined nominal cap of the <b>${r.priced ?? 0}</b> priced <b>$${compact(capNow ?? 0)}</b>,
+       <b>${r.runners ?? 0}</b> of them above $${compact(r.runnerFloor || 1e6, 0)}</div>`;
+
+  const win = rows.slice(-45);
+  barChart($("#cLaunchRate"), win, {
+    xKey: "t", yKey: "launched", color: "var(--series-3)", xFmt: dayFmt, fmt: (v) => v.toFixed(0),
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.launched.toLocaleString()} launched</div>
+      ${d.active == null ? "" : `<div class="k">${d.active.toLocaleString()} still trading
+        (${pctLevel(d.launched ? d.active / d.launched : 0, 1)})</div>`}
+      <div class="k">${d.cumulative.toLocaleString()} cumulative</div>`,
+  });
+
+  /* Its own chart, not a segment of the one above.
+
+     The first draft stacked these: bar height the cadence, a lit portion for the
+     survivors. Measured, about one percent of a cohort trades in any two-hour
+     window, so that portion is two pixels on a bar of three thousand -- the same
+     way the size buckets rendered four tokens as nothing next to 246. A quantity
+     two orders of magnitude below its companion needs its own axis, which means
+     its own chart. Same x, same days, read the shapes against each other. */
+  if (live) {
+    barChart($("#cLaunchLive"), win, {
+      xKey: "t", yKey: "active", color: "var(--buy)", xFmt: dayFmt, fmt: (v) => v.toFixed(0),
+      tip: (d) => `<div class="k">${dayFmt(d.t)}</div>
+        <div>${(d.active ?? 0).toLocaleString()} of ${d.launched.toLocaleString()} still trading</div>
+        <div class="k">${pctLevel(d.launched ? (d.active ?? 0) / d.launched : 0, 1)} of the cohort</div>`,
+    });
+  } else {
+    $("#cLaunchLive").innerHTML = `<p class="muted" style="padding:20px 0">Liveness not measured in this run.</p>`;
+  }
+  const newest = rows.at(-1);
+  const older = rows.slice(-30, -7);
+  const oldAct = older.reduce((n, d) => n + (d.active || 0), 0);
+  const oldAll = older.reduce((n, d) => n + d.launched, 0);
+
+  $("#takeLaunchRate").innerHTML = takeEl(
+    (trend ?? 0) >= 0 ? "pos" : "warn",
+    `<b>${last7.toLocaleString()}</b> tokens launched in the last 7 complete days${trend == null ? "" :
+      `, ${trend >= 0 ? "up" : "down"} <b>${pctLevel(Math.abs(trend), 0)}</b> on the week before`},
+     bringing the total to <b>${total.toLocaleString()}</b>.
+     ${!live ? "" : `Of those, <b>${(act7 ?? 0).toLocaleString()}</b> traded in the last two hours
+       (<b>${pctLevel(actShare, 1)}</b>)${oldAll ? `, against <b>${pctLevel(oldAct / oldAll, 1)}</b> of the
+       cohorts launched one to four weeks ago` : ""}. On ${dayFmt(newest.t)} alone,
+       <b>${newest.launched.toLocaleString()}</b> were created and
+       <b>${(newest.active ?? 0).toLocaleString()}</b> are trading.`}
+     <span class="muted">Cadence is a statement about the mint; the second chart is the one about the
+     ecosystem, and the distance between the two scales is what separates a launchpad from a treadmill. Two hours is a
+     strict test, so read older cohorts as survival and the newest bar as launch-day interest. The cap
+     figures beside the count cover only the ${r.priced ?? 0} priced tokens, which are the most actively traded, so they
+     are a ceiling on value and a floor on how many launches exist.</span>`);
+}
 function renderAdoption() {
   const rows = completeDays(S.launchpad?.anchorFlow || []);
   if (rows.length < 3) {

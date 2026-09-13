@@ -382,6 +382,20 @@ if (launchpad && launchpad.buckets?.length) {
      tightest reading. Its whole value is that both terms come from the census by
      address and neither depends on the real-world-asset list: assert that, by
      checking the totals against the census the same file reports. */
+  /* Liveness is a second count over the same cohorts, so it can only be wrong by
+     exceeding them or by disagreeing with the split the page draws. */
+  const days = lp.launchesByDay || [];
+  if (lp.activeMeasured) {
+    check("every day’s live count fits inside that day’s launches",
+      days.every((d) => d.active >= 0 && d.active <= d.launched),
+      days.length + " day(s)");
+    check("active and dormant partition the cohort",
+      days.every((d) => d.active + d.dormant === d.launched));
+    const liveTotal = days.reduce((n, d) => n + d.active, 0);
+    warn("the platform has more live tokens than it prices", liveTotal >= (lp.priced ?? 0),
+      liveTotal + " traded in the window vs " + (lp.priced ?? 0) + " priced");
+  } else console.log("  --  liveness not measured in the run that wrote this artifact");
+
   const flow = lp.anchorFlow || [];
   if (flow.length) {
     check("every day’s AI-anchored count fits inside that day’s pool count",

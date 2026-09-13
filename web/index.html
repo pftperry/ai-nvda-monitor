@@ -109,26 +109,30 @@
 
     <div class="grid g2">
       <div class="card">
-        <h3>1. Platform adoption of AI</h3>
+        <h3>1. Launch cadence and what survives it</h3>
         <p class="sub">
-          <b>AI’s share of the pools the LONG launchpad creates each day.</b> Card 6b counts the pools that
-          quote themselves in AI and finds 5,552 of them, third behind WETH and NVDA. That is a stock, and a
-          stock accumulated since July cannot fall: it will read “third” for months after adoption stops.
-          This is the flow underneath it, which is the part that can turn.
-          It leads price for a mechanical reason rather than a sentimental one. A new pool anchored in AI has
-          to be seeded with AI on one side, so the launcher must source it before the pool can trade. That is
-          demand which does not require anyone to hold an opinion on AI, and it shows up in pool creations
-          before it shows up in fees, because pools already trading keep paying fees long after new ones stop
-          being built.
-          <b>Both terms are counted from the census by address</b>, so unlike the rest of the Launchpad tab
-          this ratio does not inherit the real-world-asset list’s undercount.
-          What it is not: proof of open-market buying. A launcher may seed from AI already held, and a
-          one-sided range needs very little of it. Read it as the adoption rate, and read fees and depth for
-          the money.
+          <b>Tokens the LONG launchpad creates each day, and how many of them are still trading.</b>
+          The first chart is the cadence. The second counts, for each of the same days, the tokens born
+          that day whose pool traded in the last two hours. It matters to AI because AI is the platform’s third most-used base pair, so the
+          launchpad is the demand engine underneath the asset: mint volume feeds pool creation, pool creation
+          feeds routing, and routing is what the fee is taken on.
+          <b>Why liveness and not average market cap.</b> A cohort’s average cap is the obvious companion and
+          it is not honestly available here. Pricing a token costs two calls, so only the 300 most actively
+          traded are priced; that leaves most days with one or two priced tokens, and a single $295M outlier
+          would make one July day outrank every other. Whether a pool traded is known for <i>every</i> launch,
+          because that scan is unfiltered. So the second dimension is measured over the whole population
+          rather than estimated from a biased sample of it. Platform-wide value is reported beside the count,
+          where the sample it comes from can be stated.
+          Two hours is a strict test on purpose: it asks whether a token trades <i>now</i>, not whether it ever
+          did, so older cohorts read as survival and the newest as launch-day activity.
         </p>
-        <div id="kpiAdopt"></div>
-        <div class="chart" id="cAdopt"></div>
-        <div id="takeAdopt"></div>
+        <div id="kpiLaunchRate"></div>
+        <div class="chart" id="cLaunchRate"></div>
+        <h4 class="subhead">Of those, the ones still trading</h4>
+        <p class="sub">Same days, its own scale. Stacking the two would have hidden the second: about one
+          percent of a cohort is live at any moment, which is a two-pixel sliver on a bar of three thousand.</p>
+        <div class="chart" id="cLaunchLive"></div>
+        <div id="takeLaunchRate"></div>
       </div>
       <div class="card">
         <h3>2. Near-spot depth imbalance</h3>
@@ -192,7 +196,7 @@
         <div id="takeKappa"></div>
       </div>
       <div class="card">
-        <h3>6b. AI as a base pair — the standing stock</h3>
+        <h3>6b. AI as a base pair — stock and flow</h3>
         <p class="sub">
           The hub thesis says other tokens will come to quote themselves in AI the way they quote themselves in
           ETH. That is a counting question and this counts it: across every pool the LONG launchpad has created,
@@ -203,6 +207,20 @@
         <div id="kpiAnchor"></div>
         <div class="chart" id="cAnchor"></div>
         <div id="takeAnchor"></div>
+        <h4 class="subhead">The flow underneath it</h4>
+        <p class="sub">
+          The ranking above is a stock, and a stock accumulated since July cannot fall: it will read
+          “third” for months after adoption stops. This is AI’s share of the pools created each day, which
+          is the part that can turn, and it has — twice. A new pool anchored in AI must be seeded with AI
+          before it can trade, so this is demand that does not require anyone to hold an opinion on AI, and
+          it appears at pool creation while fees keep arriving from pools built weeks ago.
+          <b>Both terms are counted from the census by address</b>, so unlike the rest of the Launchpad tab
+          this ratio does not inherit the real-world-asset list’s undercount. What it is not: proof of
+          open-market buying. A launcher may seed from AI already held, and a one-sided range needs little.
+        </p>
+        <div id="kpiAdopt"></div>
+        <div class="chart" id="cAdopt"></div>
+        <div id="takeAdopt"></div>
       </div>
     </div>
 

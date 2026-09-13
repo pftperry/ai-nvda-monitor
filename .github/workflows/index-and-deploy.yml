@@ -71,8 +71,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: web/data
-          key: indexer-data-v5-${{ github.run_id }}
-          restore-keys: indexer-data-v5-
+          key: indexer-data-v6-${{ github.run_id }}
+          restore-keys: indexer-data-v6-
 
       # Runs BEFORE indexing, and unlike indexing it is a hard gate.
       #
