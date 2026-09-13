@@ -523,7 +523,7 @@ if (!flag("no-holders") && (store.get("holders") || fs.existsSync("seed/holders-
 try {
   const kpis = snapshotKpis({
     flow: { pools: flowOut }, burns, routing, bridges: readData("bridges.json"), depth,
-    holders: readData("holders.json"), prices: prices ?? readData("prices.json"),
+    holders: readData("holders.json"), prices: prices ?? readData("prices.json"), rwa: readData("rwa.json"),
     now: Math.floor(Date.now() / 1000), prior: readData("kpis.json"),
   });
   writeData("kpis.json", kpis);

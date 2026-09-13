@@ -660,8 +660,12 @@ console.log("\nTreasury");
       warn(`fee wallet ${sym} in − out equals its balance`, Math.abs((l.in - l.out) - l.balance) <= Math.max(1e-6, l.in * 0.001),
         `in − out ${(l.in - l.out).toFixed(4)} vs balance ${l.balance}`);
     }
-    check("treasury ledgers reached the head or say they did not", T.cursor > 0 && (T.partial === true || T.cursor >= (meta.headBlock || 0) - 50_000),
-      `cursor ${T.cursor}${T.partial ? " (partial)" : ""}`);
+    /* The treasury is built on the slow path and a fast refresh leaves it in place,
+       so its cursor legitimately trails the head by however long since the last
+       standard run. Eight hours of blocks is the same staleness the KPI panel and the
+       page's age notes tolerate; beyond that the artifact is stale, not merely older. */
+    check("treasury ledgers reached the head or say they did not", T.cursor > 0 && (T.partial === true || T.cursor >= (meta.headBlock || 0) - Math.round(C.BLOCKS_PER_DAY / 3)),
+      `cursor ${T.cursor}${T.partial ? " (partial)" : ""}, head ${meta.headBlock}`);
     check("platform-wide fee tokens carry non-negative amounts and finite values",
       (T.platformFees?.tokens || []).every((t) => t.amount >= 0 && (t.usd == null || isFinite(t.usd))), `${T.platformFees?.tokenCount ?? 0} tokens`);
   } else console.log("  --  treasury.json absent (built on the slow path)");

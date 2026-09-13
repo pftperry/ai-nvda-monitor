@@ -33,7 +33,7 @@ const completeDays = (rows, now) => {
   return (rows || []).filter((r) => r.t < today);
 };
 
-export function snapshotKpis({ flow, burns, routing, bridges, depth, holders, prices, now, prior }) {
+export function snapshotKpis({ flow, burns, routing, bridges, depth, holders, prices, rwa, now, prior }) {
   const hour = Math.floor(now / 3600) * 3600;
 
   // Price: the busiest AI/USDG venue, the same anchor the page treats as canonical.
@@ -155,6 +155,15 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, holders, pr
     buyers7d: bd.length ? Math.round(buyers7) : null,
     volumeUsd24h: volUsd ? Math.round(volUsd) : null,
     nvdaUsd: fresh(prices) ? (prices.nvdaUsd ?? null) : null,
+    /* The platform view: stock supply and stock trading captured, liquidity size
+       and the protocol's share of it, and what a $1M sale would move the price. */
+    stockShare: fresh(rwa) ? (rwa.totals?.share ?? null) : null,
+    stockSwapShare: fresh(rwa) ? (rwa.swapShare?.share ?? null) : null,
+    stockDexUsd: fresh(rwa) ? (rwa.totals?.dexUsd ?? null) : null,
+    tvlUsd: depth?.tvlUsd != null ? Math.round(depth.tvlUsd) : null,
+    hookTvlUsd: depth?.hookTvlUsd ?? null,
+    sell1m: depth?.impact?.sell?.find((x) => x.usd === 1e6)?.pct ?? null,
+    buy1m: depth?.impact?.buy?.find((x) => x.usd === 1e6)?.pct ?? null,
   };
 
   /* Every field's window, written beside the data.
@@ -186,6 +195,13 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, holders, pr
     buyers7d: "wallets that net-bought AI through a pool per day (netted per transaction, summed over six 4h periods), trailing 7 complete days average",
     volumeUsd24h: "AI volume on indexed venues over the last complete day, priced hour by hour in USDG",
     nvdaUsd: "NVDA in dollars from its busiest USDG venue; null when prices.json is over 8h old",
+    stockShare: "(DEX inventory + vault) / on-chain supply of Robinhood stock tokens, dollar-weighted over priced tokens; null when rwa.json is over 8h old",
+    stockSwapShare: "share of the last day's swaps touching a stock token that went through a LONG-hook pool",
+    stockDexUsd: "USD of stock tokens held by the v4 pool manager, all venues",
+    tvlUsd: "USD value of every resting position in AI's indexed venues at spot",
+    hookTvlUsd: "the part of tvlUsd held by the LONG hook's own positions",
+    sell1m: "AI price move from a $1M sale routed across all indexed venues, as a fraction (1 = book exhausted)",
+    buy1m: "same, for a $1M purchase",
   };
 
   /* One-time repair of rows already written during the stall: bridges.json was
