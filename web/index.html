@@ -4,42 +4,40 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>AI / NVDA Monitor — Robinhood Chain</title>
-<meta name="description" content="Live buy/sell flow, burn and cross-routing monitor for the Artificial Inu (AI) / NVDA Uniswap v4 pair on Robinhood Chain.">
+<meta name="description" content="Live buy/sell flow, holders, fees, liquidity and hub-conversion monitor for the Artificial Inu (AI) / NVDA Uniswap v4 pair on Robinhood Chain.">
 <!-- iOS: allow Add to Home Screen to run chrome-less, and match the status bar to the page -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI/NVDA">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#fcfcfb" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#1a1a19" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#07090b">
 <link rel="stylesheet" href="style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='25' font-size='26'>🔥</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2307090b'/><text x='4' y='24' font-size='18' font-family='monospace' font-weight='700' fill='%2322d37a'>AI</text></svg>">
 </head>
 <body>
 
-<!-- header + tabs stick as ONE unit, so the tab row needs no hardcoded offset and
-     cannot detach when the header wraps to two lines on a narrow screen -->
+<!-- header + tabs stick as ONE unit, so the tab row needs no hardcoded offset -->
 <div class="topbar">
 <header>
   <div class="hdr-in">
-    <div class="brand"><span class="dot" id="liveDot" title="live"></span> AI / NVDA Monitor<span class="livelbl" id="liveLbl" hidden></span></div>
+    <div class="brand"><span class="dot" id="liveDot" title="live"></span>AI<span class="slash">/</span>NVDA<span class="livelbl" id="liveLbl" hidden></span></div>
     <div class="hdr-stats" id="hdrStats">
-      <div class="hs"><b id="hUsd">—</b><span>AI USD</span></div>
-      <div class="hs"><b id="hMcap">—</b><span>Market cap</span></div>
+      <div class="hs"><b id="hUsd">—</b><span>AI · USD</span></div>
+      <div class="hs"><b id="hMcap">—</b><span id="hMcapLbl">Market cap</span></div>
       <div class="hs"><b id="hPrice">—</b><span>AI / NVDA</span></div>
-      <div class="hs"><b id="hBlock">—</b><span>Head block</span></div>
+      <div class="hs"><b id="hBlock">—</b><span>Block</span></div>
     </div>
   </div>
 </header>
 
 <nav class="tabs">
   <div class="inner" role="tablist">
-    <button class="tab" role="tab" id="tab-investor" aria-controls="p-investor" aria-selected="true">Investor View</button>
-    <button class="tab" role="tab" id="tab-flow"     aria-controls="p-flow"     aria-selected="false">Flow &amp; Burn</button>
-    <button class="tab" role="tab" id="tab-float"    aria-controls="p-float"    aria-selected="false">Float &amp; Lockup</button>
-    <button class="tab" role="tab" id="tab-bridges"  aria-controls="p-bridges"  aria-selected="false">Bridges &amp; Routing</button>
+    <button class="tab" role="tab" id="tab-investor"  aria-controls="p-investor"  aria-selected="true">Investor</button>
+    <button class="tab" role="tab" id="tab-flow"      aria-controls="p-flow"      aria-selected="false">Tape</button>
+    <button class="tab" role="tab" id="tab-float"     aria-controls="p-float"     aria-selected="false">Supply &amp; Holders</button>
+    <button class="tab" role="tab" id="tab-bridges"   aria-controls="p-bridges"   aria-selected="false">Hub</button>
     <button class="tab" role="tab" id="tab-launchpad" aria-controls="p-launchpad" aria-selected="false">Launchpad</button>
-    <button class="tab" role="tab" id="tab-method"   aria-controls="p-method"   aria-selected="false">Method</button>
+    <button class="tab" role="tab" id="tab-method"    aria-controls="p-method"    aria-selected="false">Method</button>
   </div>
 </nav>
 </div>
@@ -49,151 +47,54 @@
   <div id="boot" class="loading">Loading on-chain data…</div>
   <div id="bootErr"></div>
 
-  <!-- ───────────────────────── Investor View ───────────────────────── -->
+  <!-- ───────────────────────── Investor ───────────────────────── -->
   <section class="panel" id="p-investor" role="tabpanel" aria-labelledby="tab-investor" hidden>
     <div id="sinceLast" hidden></div>
     <div id="rating"></div>
     <div id="liveStrip"></div>
     <div id="verdict"></div>
 
-    <h2 class="section-title">Where the measured inputs actually sit</h2>
+    <h2 class="section-title">Money</h2>
     <div class="card">
-      <h3>Where the inputs actually sit</h3>
-      <p class="sub">
-        The structural inputs, measured on chain, each placed in <b>its own</b> measured range rather than
-        against anyone's assumed scenarios. A row says whether this figure is high or low <i>for this asset,
-        lately</i> — not what it will do next. The notes record how one circulating valuation writeup labelled
-        the same inputs; that writeup prompted these questions but its cases are assumptions, and nothing on
-        this page is scored against them.
-      </p>
-      <div class="scroll"><table id="tRegime" class="regime"></table></div>
-      <div id="regimeTake"></div>
-    </div>
-
-    <div class="card" style="margin-bottom:14px">
-      <h3>AI in USD</h3>
-      <p class="sub">
-        Priced on chain against USDG, a USD stablecoin, so this is the pool's own execution price rather than an
-        aggregator's opinion. Market cap is that price times live supply.
-      </p>
+      <h3>Price and dollars</h3>
+      <p class="sub">On-chain price from the AI/USDG pool; volume, fees and the vault priced at each hour's own close.</p>
       <div id="kpiPrice"></div>
       <div class="chart" id="cInvPrice"></div>
       <div id="takePrice"></div>
-    </div>
-
-    <div class="card" style="margin-bottom:14px">
-      <h3>In dollars</h3>
-      <p class="sub">
-        Volume, fees and the vault in money rather than AI, each hour priced at that hour's on-chain AI/USDG close.
-        NVDA's dollar price comes from the stock token's own USDG pool, cross-checked against the price AI's two pools
-        imply for it. Turnover is volume over market cap; fee yield is what the toll pays holders, annualised, as a share
-        of the cap. These are the figures a holder actually reasons in, and the ones the AI-denominated cards cannot show.
-      </p>
       <div id="kpiDollars"></div>
       <div class="chart" id="cDollars"></div>
       <div id="takeDollars"></div>
     </div>
 
-    <h2 class="section-title">Liquidity depth</h2>
     <div class="card">
-      <h3>What it costs to move the price</h3>
-      <p class="sub">
-        Every other measure on this page is backward-looking: volume that happened, fees that were taken, flow
-        that already crossed. This one faces forward. Concentrated liquidity sitting <b>below</b> spot is money
-        already committed to buying AI; AI sitting <b>above</b> spot is supply already committed to selling. The
-        gap between them says which direction is cheaper to push, before anyone trades.
-        Rebuilt from every <code>ModifyLiquidity</code> event the pools have ever emitted, so it is measured
-        rather than quoted — two checks confirm the replay: net liquidity across all ticks must come to exactly
-        zero, and the liquidity active at the current tick must equal what the pool reports in its own last swap.
-        <b>Liquidity is not a promise.</b> A position can be withdrawn in one block, so read this as the shape of
-        the book right now, not as support that will be there later.
-      </p>
-      <div id="kpiDepth"></div>
+      <h3>Liquidity</h3>
+      <p class="sub">Resting bids below spot against resting asks above it, rebuilt from every liquidity event. A position can be pulled in one block.</p>
+      <div id="kpiNear"></div>
       <div class="legend">
-        <span><i style="background:var(--buy)"></i>Bids — dollars below spot</span>
-        <span><i style="background:var(--sell)"></i>Asks — AI above spot</span>
+        <span><i style="background:var(--buy)"></i>Bids, dollars below spot</span>
+        <span><i style="background:var(--sell)"></i>Asks, AI above spot</span>
       </div>
       <div class="chart" id="cDepth"></div>
-      <div id="takeDepth"></div>
+      <div class="chart small" id="cNear"></div>
+      <div id="takeNear"></div>
       <div class="scroll"><table id="tDepth"></table></div>
     </div>
 
-    <h2 class="section-title">Leading indicators</h2>
-
+    <h2 class="section-title">Demand</h2>
     <div class="grid g2">
       <div class="card">
-        <h3>1. Tokens launched per day</h3>
-        <div class="agenote" data-age="launchpad" hidden></div>
-        <p class="sub">
-          <b>Tokens the LONG launchpad creates each day.</b> Every pool carrying the LONG hook is a launchpad
-          token and the hook address sits in the pool’s own <code>Initialize</code> log, so this is a census
-          rather than a selection: it cannot be curated and it cannot be cherry-picked.
-          It matters to AI because AI is the platform’s third most-used base pair, so the launchpad is the
-          demand engine underneath the asset: mint volume feeds pool creation, pool creation feeds routing,
-          and routing is what the fee is taken on.
-          <b>No average market cap per day, deliberately.</b> Pricing a token costs two calls, so only the 300
-          most actively traded are priced. That leaves most days holding one or two priced tokens, and a
-          single $295M outlier would make one July day outrank every other — a line about which token
-          happened to survive into the sample, not about what launched. Platform-wide value is reported
-          beside the count instead, where the sample it comes from can be named.
-        </p>
-        <div id="kpiLaunchRate"></div>
-        <div class="chart" id="cLaunchRate"></div>
-        <div id="takeLaunchRate"></div>
-      </div>
-      <div class="card">
-        <h3>2. Near-spot depth imbalance</h3>
-        <p class="sub">
-          <b>Which way is cheaper to push, measured where a trade can actually reach.</b> Buying consumes the
-          asks above spot; selling consumes the bids below it. More bids than asks means it costs less to move
-          AI up than down.
-          The full book above is drawn across ±50% because that is the shape worth seeing, but it is the
-          wrong window for this question: depth half the price away cannot be touched by any trade that
-          matters this week. These bands are summed straight from the tick ladders, not from the chart’s
-          0.83%-wide bins, which cannot resolve two percent.
-          The gap between the two readings is itself the finding. Across ±50% this book is decisively
-          bid-heavy; within ±2% it is level. The apparent support is parked out of range rather than
-          standing under the price.
-          <b>Liquidity is not a promise.</b> A position can be withdrawn in one block, so this is the shape of
-          the book now, not a floor under it later.
-        </p>
-        <div id="kpiNear"></div>
-        <div class="chart" id="cNear"></div>
-        <div id="takeNear"></div>
-      </div>
-    </div>
-    <div class="grid g2">
-      <div class="card">
-        <h3>3. Net flow momentum</h3>
-        <p class="sub">Who is absorbing whom. Buy/sell imbalance moves price mechanically; measured, it does not lead it, so read it as the present rather than the future.</p>
+        <h3>Net flow and buyers</h3>
+        <p class="sub">Who is absorbing whom, and how many wallets are doing the buying. Flow moves price mechanically; measured, it does not lead it.</p>
         <div id="kpiFlow"></div>
         <div class="chart" id="cInvFlow"></div>
         <div id="takeFlow"></div>
         <h4 class="subhead">Distinct buying addresses per day</h4>
-        <p class="sub">Breadth of demand: how many addresses bought, summed per pool-hour, so it is an upper bound on people. Volume can be one wallet; this cannot.</p>
-        <div class="chart" id="cBuyers"></div>
+        <div class="chart small" id="cBuyers"></div>
       </div>
       <div class="card">
-        <h3>4. Fee run-rate</h3>
-        <p class="sub">All three fee legs, annualised. This is the protocol's revenue, and it is paid in AI, so it is also the burn engine.</p>
-        <div id="kpiFee"></div>
-        <div class="chart" id="cInvFee"></div>
-        <div id="takeFee"></div>
-      </div>
-    </div>
-
-    <div class="grid g2" style="margin-top:14px">
-      <div class="card">
-        <h3>3b. Holder breadth and whales</h3>
+        <h3>Holders and whales</h3>
         <div class="agenote" data-age="holders" hidden></div>
-        <p class="sub">
-          <b>Who is arriving, who is leaving, and what the large wallets are doing.</b> Wallets above a fixed AI
-          balance are the price-neutral count (a rally cannot manufacture one). Beneath it, the gross behind the net:
-          wallets funded from zero and emptied to zero each day, replayed from every transfer. Concentration says
-          whether size is spreading out or gathering in. The tape lists every move of 250,000 AI or more, classified
-          by which side of it was the pool, so a reader can watch a wallet rather than a statistic. The Float &amp; Lockup
-          tab has the full tape, the largest wallets and the weekly cohorts.
-        </p>
+        <p class="sub">Wallets above a fixed AI balance (a rally cannot manufacture one), wallets funded and emptied each day, and every move of 250,000 AI or more.</p>
         <div id="kpiBreadth"></div>
         <div class="legend">
           <span><i style="background:var(--buy)"></i>Wallets funded from zero</span>
@@ -201,152 +102,97 @@
         </div>
         <div class="chart" id="cBreadth"></div>
         <div id="takeBreadth"></div>
-        <div class="scroll" style="margin-top:10px"><table id="tWhales"></table></div>
-      </div>
-      <div class="card">
-        <h3>3c. AI against its platform</h3>
-        <div class="agenote" data-age="launchpad" hidden></div>
-        <p class="sub">
-          Is AI leading or lagging the tokens launched around it? The census prices the platform's largest tokens on
-          every slow-path run and keeps those prices as a series, so AI's move can be read against its own cohort's
-          median rather than in isolation. A hub should lead when the ecosystem is bid; when the launches run ahead of
-          the base pair they settle against, the money is going to them, not to AI.
-        </p>
-        <div id="kpiPlatform"></div>
-        <div class="scroll"><table id="tPlatform"></table></div>
-        <div id="takePlatform"></div>
+        <div class="scroll"><table id="tWhales"></table></div>
       </div>
     </div>
+    <div class="card">
+      <h3>AI against its platform</h3>
+      <div class="agenote" data-age="launchpad" hidden></div>
+      <p class="sub">Is AI leading or lagging the tokens launched around it? Prices of the platform's largest tokens, sampled by the census.</p>
+      <div id="kpiPlatform"></div>
+      <div class="scroll"><table id="tPlatform"></table></div>
+      <div id="takePlatform"></div>
+    </div>
 
-    <div class="grid g2" style="margin-top:14px">
+    <h2 class="section-title">Protocol</h2>
+    <div class="card">
+      <h3>Fees, and where they leak</h3>
+      <p class="sub">Revenue is paid in AI on sells and split burn : lock : platform. Anyone can open a hookless AI pool, and routers prefer the cheaper venue.</p>
+      <div class="kpis">
+        <div id="kpiFee"></div>
+        <div id="kpiCapture"></div>
+        <div id="kpiLeak"></div>
+      </div>
+      <h4 class="subhead">Daily fees, in AI</h4>
+      <div class="chart small" id="cInvFee"></div>
+      <h4 class="subhead">Fee-bearing volume against hookless</h4>
+      <div class="legend">
+        <span><i style="background:var(--series-1)"></i>Fee-bearing (funds the vault)</span>
+        <span><i style="background:var(--series-2)"></i>Hookless (pays nothing)</span>
+      </div>
+      <div class="chart" id="cInvLeak"></div>
+      <div id="takeLeak"></div>
+      <h4 class="subhead">Venues</h4>
+      <div class="scroll"><table id="tVenues"></table></div>
+    </div>
+
+    <div class="card">
+      <h3>Hub</h3>
+      <div class="agenote" data-age="launchpad" hidden></div>
+      <p class="sub">Other tokens passing through AI (κ, measured per transaction) and choosing AI as their base pair (counted from the census).</p>
+      <div class="kpis">
+        <div id="kpiKappa"></div>
+        <div id="kpiAnchor"></div>
+        <div id="kpiAdopt"></div>
+      </div>
+      <h4 class="subhead">Cross-routed share of direct volume, daily</h4>
+      <div class="chart small" id="cInvKappa"></div>
+      <h4 class="subhead">AI's share of new LONG pools, daily</h4>
+      <div class="chart small" id="cAdopt"></div>
+      <div id="takeKappa"></div>
+      <div id="takeAdopt"></div>
+    </div>
+
+    <h2 class="section-title">Backing and valuation</h2>
+    <div class="grid g2">
       <div class="card">
-        <h3>5. Hard backing</h3>
-        <p class="sub">NVDA accumulating in the vault. Unlike the burn, this is an asset that cannot be inflated away.</p>
-        <div id="kpiVault"></div>
-        <div class="chart" id="cInvVault"></div>
+        <h3>Supply sink</h3>
+        <p class="sub">NVDA accreting to the vault and AI destroyed or locked. Real, one-way, and slow.</p>
+        <div class="kpis two">
+          <div id="kpiVault"></div>
+          <div id="kpiFloat"></div>
+        </div>
+        <h4 class="subhead">NVDA in the vault</h4>
+        <div class="chart small" id="cInvVault"></div>
+        <h4 class="subhead">AI burned and locked, cumulative</h4>
+        <div class="legend">
+          <span><i style="background:var(--series-1)"></i>Burned</span>
+          <span><i style="background:var(--series-2)"></i>Vault-locked</span>
+        </div>
+        <div class="chart small" id="cInvFloat"></div>
         <div id="takeVault"></div>
       </div>
       <div class="card">
-        <h3>6. Hub conversion (κ)</h3>
-        <p class="sub">
-          <b>Cross-routed AI volume ÷ direct AI volume.</b> Swaps are grouped by transaction: one AI swap in a
-          transaction is <i>direct</i> — someone wanted AI. Two or more, where the trader receives AI in one leg
-          and spends it in another, means AI was a pass-through hop (<code>BONER → AI → MEME</code>); the routed
-          amount is <code>min(received, spent)</code> and any residual counts as direct.
-          It separates “people want to own AI” from “AI is the plumbing everything else moves through”. Only the
-          second is the liquidity-hub thesis, and it is the more durable, because it does not need anyone to hold
-          an opinion on AI at all.
-        </p>
-        <div id="kpiKappa"></div>
-        <div class="chart" id="cInvKappa"></div>
-        <div id="takeKappa"></div>
-      </div>
-      <div class="card">
-        <h3>6b. AI as a base pair — stock and flow</h3>
-        <div class="agenote" data-age="launchpad" hidden></div>
-        <p class="sub">
-          The hub thesis says other tokens will come to quote themselves in AI the way they quote themselves in
-          ETH. That is a counting question and this counts it: across every pool the LONG launchpad has created,
-          how often is each token chosen as the anchor. Cross-routing (above) measures volume passing
-          <i>through</i> AI; this measures whether the platform is <i>adopting</i> AI as infrastructure, which is
-          the slower and more durable version of the same claim.
-        </p>
-        <div id="kpiAnchor"></div>
-        <div class="chart" id="cAnchor"></div>
-        <div id="takeAnchor"></div>
-        <h4 class="subhead">The flow underneath it</h4>
-        <p class="sub">
-          The ranking above is a stock, and a stock accumulated since July cannot fall: it will read
-          “third” for months after adoption stops. This is AI’s share of the pools created each day, which
-          is the part that can turn, and it has — twice. A new pool anchored in AI must be seeded with AI
-          before it can trade, so this is demand that does not require anyone to hold an opinion on AI, and
-          it appears at pool creation while fees keep arriving from pools built weeks ago.
-          <b>Both terms are counted from the census by address</b>, so unlike the rest of the Launchpad tab
-          this ratio does not inherit the real-world-asset list’s undercount. What it is not: proof of
-          open-market buying. A launcher may seed from AI already held, and a one-sided range needs little.
-        </p>
-        <div id="kpiAdopt"></div>
-        <div class="chart" id="cAdopt"></div>
-        <div id="takeAdopt"></div>
-      </div>
-    </div>
-
-    <div class="grid g2" style="margin-top:14px">
-      <div class="card">
-        <h3>7. Fee capture</h3>
-        <p class="sub">Share of indexed AI volume crossing the tolled AI/NVDA pool. Revenue scales with this, so the hub's own success can cannibalise it.</p>
-        <div id="kpiCapture"></div>
-        <div class="chart" id="cInvCapture"></div>
-        <div id="takeCapture"></div>
-      </div>
-      <div class="card">
-        <h3>8. Float removal</h3>
-        <p class="sub">AI destroyed or immobilised, cumulatively. A slow, one-way squeeze on what can actually trade.</p>
-        <div id="kpiFloat"></div>
-        <div class="chart" id="cInvFloat"></div>
-        <div id="takeFloat"></div>
-      </div>
-    </div>
-
-    <div class="grid g2" style="margin-top:14px">
-      <div class="card">
-        <h3>9. Cash-flow multiple, over time</h3>
-        <p class="sub">
-          Market cap divided by the annualised fee run-rate. Both scale with the AI price, so it cancels:
-          this multiple is <b>price-invariant</b> and needs no oracle. Lower is cheaper.
-        </p>
+        <h3>Valuation</h3>
+        <p class="sub">Market cap over annualised fees is price-invariant (both are in AI). The capitalised rows are one measured stream under assumed rates.</p>
         <div id="kpiMultiple"></div>
-        <div class="chart" id="cInvMultiple"></div>
-        <div id="takeMultiple"></div>
-      </div>
-      <div class="card">
-        <h3>10. Where the fees leak</h3>
-        <p class="sub">
-          Share of AI volume on fee-bearing (hooked) pools versus hookless ones. Anyone can open a v4 pool
-          for AI with no hook and a lower fee; routers will prefer it, and the vault gets nothing.
-          Measured across the venues indexed in depth rather than all ~5,600 pools that hold AI: only the deep
-          set has hourly volume, and it is chosen as the busiest, so it carries most of the flow but is not a census.
-        </p>
-        <div class="legend">
-          <span><i style="background:var(--series-1)"></i>Fee-bearing (funds vault)</span>
-          <span><i style="background:var(--series-2)"></i>Hookless (pays nothing)</span>
-        </div>
-        <div id="kpiLeak"></div>
-        <div class="chart" id="cInvLeak"></div>
-        <div id="takeLeak"></div>
+        <div class="chart small" id="cInvMultiple"></div>
+        <div class="scroll"><table id="tValuation"></table></div>
+        <div id="takeValuation"></div>
       </div>
     </div>
 
-    <div class="card" style="margin-top:14px">
-      <h3>Venue competition</h3>
-      <p class="sub">Every indexed venue for AI, its fee, and whether it pays the vault. Sorted by recent volume.</p>
-      <div class="scroll"><table id="tVenues"></table></div>
-      <div id="takeVenues"></div>
-    </div>
-
-    <h2 class="section-title">Valuation frame</h2>
     <div class="card">
-      <h3>What the measured revenue supports</h3>
-      <p class="sub">
-        Fee run-rate capitalised across a band of discount rates. Only the run-rate is measured; every rate is
-        an assumption, and the spread between them is wider than most of the figures on this page — read the range.
-        USD figures use a public aggregator's price and are a convenience, not an on-chain measurement.
-      </p>
-      <div class="scroll"><table id="tValuation"></table></div>
-      <div id="takeValuation"></div>
-    </div>
-
-    <div class="card" style="margin-top:14px">
       <h3>What would change the call</h3>
-      <p class="sub">The thresholds worth watching, stated in advance so they are not rationalised after the fact.</p>
+      <p class="sub">Thresholds stated in advance, so they cannot be rationalised after the fact.</p>
       <div id="triggers"></div>
     </div>
   </section>
 
-  <!-- ───────────────────────── Flow & Burn ───────────────────────── -->
+  <!-- ───────────────────────── Tape ───────────────────────── -->
   <section class="panel" id="p-flow" role="tabpanel" aria-labelledby="tab-flow" hidden>
     <div class="controls">
-      <label class="muted" for="poolSel" style="font-size:12.5px">Pool</label>
+      <label class="muted" for="poolSel">Pool</label>
       <select id="poolSel"></select>
       <div class="seg" id="rangeSeg" role="group" aria-label="Time range">
         <button data-h="24"  aria-pressed="true">24h</button>
@@ -359,112 +205,93 @@
 
     <div class="grid g4" id="flowTiles"></div>
 
-    <h2 class="section-title">Order flow</h2>
     <div class="card">
       <h3>Hourly buy / sell volume, in AI</h3>
-      <p class="sub">Bars above the axis are AI bought (leaving the pool); below are AI sold. Derived from Uniswap v4 <code>Swap</code> logs — every trade, not a sample.</p>
+      <p class="sub">Above the axis is AI bought (leaving the pool), below is AI sold. Every swap, from the v4 logs.</p>
       <div class="legend">
-        <span><i style="background:var(--buy)"></i>Bought AI</span>
-        <span><i style="background:var(--sell)"></i>Sold AI</span>
+        <span><i style="background:var(--buy)"></i>Bought</span>
+        <span><i style="background:var(--sell)"></i>Sold</span>
       </div>
       <div class="chart" id="cFlow"></div>
     </div>
 
-    <div class="grid g2" style="margin-top:14px">
+    <div class="grid g2">
       <div class="card">
         <h3>Cumulative net flow</h3>
-        <p class="sub">Running sum of AI bought minus AI sold. A rising line means traders are net absorbing AI.</p>
+        <p class="sub">Running sum of bought minus sold; rising means traders are net absorbing AI.</p>
         <div class="chart" id="cNet"></div>
       </div>
       <div class="card">
-        <h3>Price</h3>
-        <p class="sub">Pool price from <code>sqrtPriceX96</code>, in quote units per AI. Shown on its own axis — never overlaid on flow.</p>
+        <h3>Price in the quote token</h3>
+        <p class="sub">The pool's own price from <code>sqrtPriceX96</code>, never overlaid on flow.</p>
         <div class="chart" id="cPrice"></div>
       </div>
     </div>
 
-    <h2 class="section-title">Burn engine</h2>
-    <div class="grid g4" id="burnTiles"></div>
-    <div class="grid g2" style="margin-top:14px">
-      <div class="card">
-        <h3>Daily AI burned</h3>
-        <p class="sub">AI sent irreversibly to <code>0x0</code> by the fee splitter. Burn rate is a direct read on fee-paying volume.</p>
-        <div class="chart" id="cBurn"></div>
-      </div>
-      <div class="card">
-        <h3>NVDA reserve accretion</h3>
-        <p class="sub">Cumulative NVDA stock-token balance accumulated by the community vault.</p>
-        <div class="chart" id="cReserve"></div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:14px">
-      <h3>Daily burn and reserve, by day</h3>
-      <p class="sub">The table equivalent of the two charts above, most recent first.</p>
-      <div class="scroll"><table id="tBurn"></table></div>
-    </div>
-
-    <div class="card" style="margin-top:14px">
+    <div class="card">
       <h3>Rolling flow imbalance</h3>
-      <p class="sub">Imbalance is (bought − sold) ÷ (bought + sold) in AI terms. The table is the accessible view of the charts above.</p>
+      <p class="sub">(bought − sold) ÷ (bought + sold) over trailing windows.</p>
       <div class="scroll"><table id="tRollup"></table></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
+    <div class="card">
       <h3>Recent tape</h3>
       <p class="sub">Most recent swaps across the indexed AI pools.</p>
       <div class="scroll"><table id="tTape"></table></div>
     </div>
   </section>
 
-  <!-- ───────────────────────── Float & Lockup ───────────────────────── -->
+  <!-- ───────────────────────── Supply & Holders ───────────────────────── -->
   <section class="panel" id="p-float" role="tabpanel" aria-labelledby="tab-float" hidden>
     <div class="grid g4" id="floatTiles"></div>
 
-    <div class="card" style="margin-top:14px">
-      <h3>Where the supply actually is</h3>
-      <p class="sub">Genesis supply decomposed into what is gone for good, what is immobilised, and what can actually
-        trade. Every share here is <b>of the genesis mint</b>, so the segments add to 100%; the tiles above measure
-        holdings against <b>current</b> supply instead, which is why the float reads slightly higher there.</p>
+    <div class="card">
+      <h3>Where the supply is</h3>
+      <p class="sub">Genesis mint decomposed into gone for good, immobilised, and free to trade. Shares here are of genesis; the tiles above are of current supply.</p>
       <div class="chart" id="cWaterfall"></div>
-      <div class="scroll" style="margin-top:12px"><table id="tSupply"></table></div>
+      <div class="scroll"><table id="tSupply"></table></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
+    <div class="card">
       <h3>Who holds AI</h3>
-        <div class="agenote" data-age="holders" hidden></div>
-      <p class="sub">
-        Every AI transfer since genesis replayed into a balance per address, snapshotted every four hours. Nothing
-        is sampled, and the balances must sum to supply exactly before any count is published.
-        <b>Two readings, and only one of them leads.</b> The dollar tiles are the familiar view and match what holder
-        dashboards show. But a dollar bucket rises whenever the price does, so a rally manufactures new “$1k holders”
-        without anyone buying. The line underneath counts addresses above a fixed balance <i>in AI</i>, which price
-        cannot move: when it rises, tokens have genuinely spread into more meaningful hands.
-      </p>
+      <div class="agenote" data-age="holders" hidden></div>
+      <p class="sub">Every transfer since genesis replayed into balances, snapshotted every four hours; balances must sum to supply exactly.</p>
       <div id="kpiHolders"></div>
       <div id="cHolderBuckets"></div>
-      <h4 class="subhead">Addresses holding a meaningful balance, in AI</h4>
+      <h4 class="subhead">Wallets holding a meaningful balance, in AI</h4>
       <div class="chart" id="cHoldersAi"></div>
       <div id="takeHolders"></div>
       <h4 class="subhead">Concentration</h4>
-      <p class="sub">Share of wallet-held AI in the largest 10, 50 and 100 wallets, with the pool manager, vault, hook and splitter excluded from both sides. Falling concentration with a rising count is tokens spreading out; rising concentration is the large wallets absorbing what smaller ones sell.</p>
       <div id="cConcentration"></div>
       <div id="takeConcentration"></div>
       <h4 class="subhead">The largest wallets</h4>
-      <p class="sub">Addresses are public by construction; the page adds the balance, its share, its dollar value at the current price and when the wallet first held AI. An exchange or a bridge is one address holding for many.</p>
       <div class="scroll"><table id="tTopHolders"></table></div>
       <h4 class="subhead">Cohorts by first week held</h4>
-      <p class="sub">Of the wallets that first held AI in a given week, how many still do and how much they hold now. Retention is the honest version of "holders are up": a count can rise while every early buyer leaves.</p>
+      <p class="sub">Of the wallets that first held AI in a week, how many still do and how much they hold now.</p>
       <div class="scroll"><table id="tCohorts"></table></div>
       <h4 class="subhead">Whale tape</h4>
-      <p class="sub">Every transfer of 250,000 AI or more, newest first. Bought and sold are moves against a pool; wallet-to-wallet moves are named as such because they are neither.</p>
+      <p class="sub">Every transfer of 250,000 AI or more, newest first. Bought and sold are moves against a pool.</p>
       <div class="scroll"><table id="tWhalesFull"></table></div>
     </div>
 
-    <div class="grid g2" style="margin-top:14px">
+    <h2 class="section-title">Burn engine</h2>
+    <div class="grid g4" id="burnTiles"></div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>Daily AI burned</h3>
+        <p class="sub">AI sent to <code>0x0</code> by the fee splitter; a direct read on fee-paying volume.</p>
+        <div class="chart" id="cBurn"></div>
+      </div>
+      <div class="card">
+        <h3>NVDA reserve accretion</h3>
+        <p class="sub">Cumulative NVDA held by the community vault.</p>
+        <div class="chart" id="cReserve"></div>
+      </div>
+    </div>
+    <div class="grid g2">
       <div class="card">
         <h3>Permanent removal over time</h3>
-        <p class="sub">Cumulative AI burned and AI locked in the vault. Both legs are irreversible.</p>
+        <p class="sub">Cumulative AI burned and vault-locked; both legs are irreversible.</p>
         <div class="legend">
           <span><i style="background:var(--series-1)"></i>Burned</span>
           <span><i style="background:var(--series-2)"></i>Vault-locked</span>
@@ -473,31 +300,32 @@
       </div>
       <div class="card">
         <h3>Observed fee split</h3>
-        <p class="sub">Measured from transfers, not assumed. Each leg is a share of total AI fees taken by the hook.</p>
+        <p class="sub">Measured from the splitter's own transfers, not assumed.</p>
         <div class="chart" id="cSplit"></div>
         <div class="hint" id="splitNote"></div>
       </div>
     </div>
+    <div class="card">
+      <h3>Daily burn and reserve</h3>
+      <p class="sub">The table behind the charts above, most recent first.</p>
+      <div class="scroll"><table id="tBurn"></table></div>
+    </div>
   </section>
 
-  <!-- ───────────────────────── Bridges & Routing ───────────────────────── -->
+  <!-- ───────────────────────── Hub ───────────────────────── -->
   <section class="panel" id="p-bridges" role="tabpanel" aria-labelledby="tab-bridges" hidden>
     <div class="grid g4" id="routeTiles"></div>
 
-    <div class="card" style="margin-top:14px">
-      <h3>Measured cross-routing intensity</h3>
-      <p class="sub">
-        Cross-routed AI as a share of direct volume, counted from transactions where AI is a genuine
-        pass-through hop rather than assumed. Markers are this series' <b>own</b> 10th, 50th and 90th
-        percentiles, so the scale comes from what the token has actually done.
-      </p>
+    <div class="card">
+      <h3>Cross-routing intensity</h3>
+      <p class="sub">Cross-routed AI as a share of direct volume, from transactions where AI is a pass-through hop. Markers are the series' own 10th, 50th and 90th percentiles.</p>
       <div class="chart" id="cGauge"></div>
     </div>
 
-    <div class="grid g2" style="margin-top:14px">
+    <div class="grid g2">
       <div class="card">
         <h3>Direct vs cross-routed volume</h3>
-        <p class="sub">Daily AI volume split by whether AI was the destination or merely the bridge.</p>
+        <p class="sub">Daily AI volume split by whether AI was the destination or the bridge.</p>
         <div class="legend">
           <span><i style="background:var(--series-1)"></i>Direct</span>
           <span><i style="background:var(--series-2)"></i>Cross-routed</span>
@@ -507,36 +335,24 @@
       <div class="card">
         <h3>New AI bridges per day</h3>
         <div class="agenote" data-age="bridges" hidden></div>
-        <p class="sub">Pools opened against AI each day that are <b>still trading</b> now; hover for how many
-          opened in total. Formation rate is the clearest read on whether AI is being adopted as a venue — but the surviving count is
-          survivorship-filtered, so older days under-report by however many bridges have since gone quiet.</p>
+        <p class="sub">Pools opened against AI each day that are still trading; hover for how many opened in total.</p>
         <div class="chart" id="cFormation"></div>
       </div>
     </div>
 
-    <div class="card" style="margin-top:14px">
+    <div class="card">
       <h3>AI-pair share by token</h3>
-        <div class="agenote" data-age="bridges" hidden></div>
-      <p class="sub">
-        For each token, the share of its total measured on-chain volume that settles on its AI
-        bridge rather than its other venues. Tokens the launchpad created against AI are marked
-        <span class="muted">native</span> and sit near 100% by construction — that is a fact about
-        how they were minted, not evidence of AI winning flow. The <b>organic</b> rows, where a
-        token had its own venues first and grew an AI pool later, are the ones that carry any hub claim.
-        Each row’s two volume columns are in <b>that token’s own units</b>, so they are comparable
-        down a row but never across rows — summing them produces a number with no meaning. The
-        population figure is therefore each token’s own share weighted by the <b>AI</b> moving through
-        its bridge, with the median shown beside it.
-      </p>
-      <div class="grid g2" id="bridgeKinds" style="margin-bottom:14px"></div>
+      <div class="agenote" data-age="bridges" hidden></div>
+      <p class="sub">Of each token's trading anywhere on the chain, the share that settles on its AI bridge. Native launches sit near 100% by construction; the organic rows carry the hub claim.</p>
+      <div class="grid g2" id="bridgeKinds"></div>
       <div id="takeBoner"></div>
       <div class="scroll"><table id="tBridges"></table></div>
     </div>
 
-    <div class="grid g2" style="margin-top:14px">
+    <div class="grid g2">
       <div class="card">
         <h3>Top routes through AI</h3>
-        <p class="sub">Observed pass-through paths, by routed AI volume.</p>
+        <p class="sub">Observed pass-through paths, by routed AI.</p>
         <div class="scroll"><table id="tRoutes"></table></div>
       </div>
       <div class="card">
@@ -547,65 +363,48 @@
     </div>
   </section>
 
-
   <!-- ───────────────────────── Launchpad ───────────────────────── -->
   <section class="panel" id="p-launchpad" role="tabpanel" aria-labelledby="tab-launchpad" hidden>
     <div class="card">
       <h3>Tokens launched per day</h3>
-        <div class="agenote" data-age="launchpad" hidden></div>
-      <p class="sub">
-        Every pool carrying the LONG hook is a launchpad token, and the hook address is in the pool's own
-        <code>Initialize</code> log — so this is a census, not a selection. Counting a launch needs only that log,
-        which is why the cadence covers the whole population while the valuations further down cover a rationed
-        subset: pricing a token needs its supply and a live quote, and there are hundreds of them.
-      </p>
+      <div class="agenote" data-age="launchpad" hidden></div>
+      <p class="sub">Every pool carrying the LONG hook is a launch, so this is a census of the whole platform, not a sample.</p>
       <div id="kpiLaunches"></div>
       <div class="chart" id="cLaunches"></div>
       <div id="takeLaunches"></div>
     </div>
 
-    <div class="card" style="margin-top:14px">
+    <div class="card">
       <h3>Cumulative tokens launched</h3>
-        <div class="agenote" data-age="launchpad" hidden></div>
-      <p class="sub">The same series, accumulated. A platform thesis wants this line to keep bending upward;
-        a single burst that flattens is a launch event rather than infrastructure.</p>
+      <div class="agenote" data-age="launchpad" hidden></div>
+      <p class="sub">A platform wants this line to keep bending upward; a burst that flattens is an event.</p>
       <div class="chart" id="cLaunchCum"></div>
     </div>
 
-    <div style="height:14px"></div>
     <div class="card">
-      <h3>How many tokens LONG has produced, by size</h3>
-        <div class="agenote" data-age="launchpad" hidden></div>
-      <p class="sub">
-        The platform thesis says long.xyz is infrastructure that keeps producing assets rather than a venue that
-        got lucky once. That is a counting question. Every pool carrying the LONG hook is a launchpad token and
-        the hook address sits in the pool's own <code>Initialize</code> log, so this population needs no curation
-        and cannot be cherry-picked.
-        <b>Read the market caps with the backing beside them.</b> Supply times the last pool price is the standard
-        construction, and for a token with a few thousand dollars of liquidity it is a number in the shape of a
-        fact — one small buy against a thin book revalues the entire supply. Every row shows what is actually
-        standing within ±10% of spot, and the ratio between the two.
-      </p>
+      <h3>What LONG has produced, by size</h3>
+      <div class="agenote" data-age="launchpad" hidden></div>
+      <p class="sub">Nominal caps beside the liquidity standing within 10% of spot, because a thin book prints any number.</p>
       <div id="kpiRunners"></div>
       <div class="chart" id="cRunners"></div>
       <div id="takeRunners"></div>
       <div class="scroll"><table id="tRunners"></table></div>
     </div>
-
   </section>
+
   <!-- ───────────────────────── Method ───────────────────────── -->
   <section class="panel" id="p-method" role="tabpanel" aria-labelledby="tab-method" hidden>
     <div class="card">
       <h3>How this is measured</h3>
-      <p class="sub">Every number on this site comes from Robinhood Chain logs via public RPC. Nothing is modelled or estimated unless it says so.</p>
+      <p class="sub">Every number comes from Robinhood Chain logs. Nothing is modelled or estimated unless it says so.</p>
       <div id="methodBody"></div>
     </div>
-    <div class="card" style="margin-top:14px">
+    <div class="card">
       <h3>Contracts</h3>
       <p class="sub">Each address was established by tracing real transfers, not from a directory.</p>
       <div class="kv" id="contractKv"></div>
     </div>
-    <div class="card" style="margin-top:14px">
+    <div class="card">
       <h3>Self-checks</h3>
       <p class="sub">Assertions that must hold if the indexing is correct.</p>
       <div id="checks"></div>

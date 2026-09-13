@@ -9,7 +9,11 @@ const POOL_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951";
 const AI_NVDA_POOL = "0xcbdfea90430a30ee4469c9902e120a77e7c7e4711d5643671c1d1957f2f1ce27";
 const SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f";
 
-const $ = (s, r = document) => r.querySelector(s);
+/* A selector that misses returns a detached element rather than null. Renderers
+   write into many optional targets, and the page has been restructured more than
+   once; a card that no longer exists must not take down the renderer that used
+   to fill it. Writes to the detached element simply go nowhere. */
+const $ = (s, r = document) => r.querySelector(s) || document.createElement("div");
 const el = (tag, attrs = {}, html) => {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
@@ -555,19 +559,53 @@ async function rpcCall(method, params, tries = 3) {
 
 /* ── live header ─────────────────────────────────────────────────────────── */
 
-/** Header price and market cap, from the same canonical state the panels use. */
+/**
+ * ONE paint for every place the price and market cap appear.
+ *
+ * The header, the cockpit tiles and the price card used to repaint on different
+ * timers -- the header every 20 seconds, the card only when the tab re-rendered --
+ * so for stretches they showed different prints a few pixels apart. Everything
+ * that displays price or cap now goes through here, from one marketState().
+ * The 24-hour change is computed from the on-chain series, not read from an
+ * aggregator whose price is not the one being shown.
+ */
+function onChainChange24(price) {
+  const hrs = usdSeries().hrs;
+  if (!hrs.length || !price) return null;
+  // Anchored to the clock, not to the last indexed hour: the live price is now,
+  // so the reference has to be 24 hours before now or a stale index stretches it.
+  const t = Math.floor(Date.now() / 1000) - 24 * 3600;
+  let prior = null;
+  for (const h of hrs) if (h.t <= t) prior = h;
+  if (!prior || !(prior.close > 0) || t - prior.t > 6 * 3600) return null;   // no close near enough to call it 24h
+  const r = price / prior.close;
+  return r > 20 || r < 0.05 ? null : r - 1;   // a units seam is not a move
+}
+const moneyPx = (v) => `$${v < 0.01 ? v.toExponential(2) : v.toFixed(4)}`;
 function paintHeaderMarket() {
   if (!S.flow || !S.burns) return;                  // marketState needs the artifacts
   const M = marketState();
-  if (M.price) {
-    const ch = S.usdChange24h;
-    $("#hUsd").innerHTML = `$${M.price < 0.01 ? M.price.toExponential(2) : M.price.toFixed(4)}` +
-      (ch == null ? "" : ` <span class="${ch >= 0 ? "up" : "down"}" style="font-size:12px">${ch >= 0 ? "+" : ""}${ch}%</span>`);
-    $("#hUsd").title = `price source: ${M.source}`;
-  }
+  if (!M.price) return;
+  const ch = onChainChange24(M.price);
+  const chHtml = ch == null ? "" : `<span class="${ch >= 0 ? "up" : "down"}">${pct(ch, 1)}</span>`;
+  $("#hUsd").innerHTML = `${moneyPx(M.price)} <span style="font-size:12px">${chHtml}</span>`;
+  $("#hUsd").title = `price source: ${M.source}`;
   if (M.mcap) {
     $("#hMcap").textContent = "$" + compact(M.mcap);
+    $("#hMcapLbl").textContent = `Cap · ${compact(M.supply, 1)} supply`;
     $("#hMcap").title = `${M.supplyLive ? "live" : "indexed"} supply × ${M.source}`;
+  }
+  // the same numbers wherever else they are on screen
+  const tp = $("#ctPrice .val"), tm = $("#ctMcap .val");
+  tp.innerHTML = moneyPx(M.price);
+  $("#ctPrice .note").innerHTML = `${chHtml || "—"} over 24h, on chain`;
+  tm.textContent = M.mcap ? "$" + compact(M.mcap) : "—";
+  $("#ctMcap .note").textContent = M.mcap ? `× ${compact(M.supply, 1)} AI ${M.supplyLive ? "live" : "indexed"} supply` : "";
+  const big = $("#kpiPrice .big");
+  if (big.isConnected) {
+    big.textContent = moneyPx(M.price);
+    const d = $("#kpiPrice .delta"); if (d.isConnected && ch != null) { d.textContent = `${pctOrMult(ch, 1)} 24h`; d.className = `delta ${ch >= 0 ? "up" : "down"}`; }
+    const u = $("#kpiPrice .unit"); if (u.isConnected && M.mcap) u.textContent = `market cap $${compact(M.mcap)}`;
   }
 }
 
@@ -1654,7 +1692,8 @@ function renderInvestor() {
      is 100% by construction. Ranking against them reported "lowest in its range"
      for a figure whose denominator had simply acquired seven more pools. */
   const capComparable = cap.filter((v) => v.venues > 1);
-  const cap7 = cap.slice(-7), cap7p = cap.slice(-14, -7);
+  // The tile and the dial read the same population: comparable days only.
+  const cap7 = capComparable.slice(-7), cap7p = capComparable.slice(-14, -7);
   const capNow = cap7.reduce((s, v) => s + v.main, 0) / Math.max(1e-9, cap7.reduce((s, v) => s + v.total, 0));
   const capPrior = cap7p.length ? cap7p.reduce((s, v) => s + v.main, 0) / Math.max(1e-9, cap7p.reduce((s, v) => s + v.total, 0)) : null;
   $("#kpiCapture").innerHTML = kpiEl(pctLevel(capNow, 1),
@@ -1695,7 +1734,6 @@ function renderInvestor() {
      outside totalSupply, vault AI still exists inside it. They are near-identical in size only because the fee splits 1:1.</span>`);
 
   renderPrice(feeSeries);
-  try { renderLaunchRate(); } catch { /* the census is optional; never blank the tab */ }
   try { renderAdoption(); } catch { /* the census is optional; never blank the tab */ }
   try { renderNearDepth(); } catch { /* near-spot depth is optional */ }
   try { renderDepth(); } catch { /* depth is optional; never blank the tab */ }
@@ -1776,8 +1814,6 @@ function renderInvestor() {
       why: `the last ${L ? fmtAge(L.minutes) : "window"}, read from the chain just now; half weight because it is minutes, not days` },
   ];
   const read = renderCockpit(structure, demand);
-  renderRegime(kappa, sc, capNow, feeAnnual, impliedVol,
-    { kappa: kd.map((d) => d.ratio), capture: capComparable.map((d) => d.share) });
   renderValuation(feeAnnual, impliedVol, vols);
   renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak, kd.map((d) => d.ratio));
   renderVerdict(read, net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kd.map((d) => d.ratio));
@@ -2102,16 +2138,24 @@ function renderLeak() {
   /* The baseline is the first COMPARABLE day in the window, never a single-venue
      day whose leakage is 0% by construction. The tile read "from 0.0% on Aug 15"
      against exactly the artifact the comparable filter exists to remove. */
-  const first = series.find((d) => d.comparable) || null;
-  const leakNow = last ? last.leak : 0;
+  const comparable = series.filter((d) => d.comparable);
+  const first = comparable[0] || null;
+  /* The headline is the trailing WEEK over comparable days, the same figure the
+     Demand/Structure dial ranks, so the tile, the dial and the verdict can never
+     quote three different leakages. The last day sits beside it. */
+  const wk7 = comparable.slice(-7);
+  const wkTot = sumOf(wk7, (d) => d.total);
+  const leakNow = wkTot > 0 ? sumOf(wk7, (d) => d.hookless) / wkTot : (last ? last.leak : 0);
+  const leakDay = last ? last.leak : null;
+  const wkPrior = comparable.slice(-14, -7);
+  const wkPriorTot = sumOf(wkPrior, (d) => d.total);
+  const leakPrior = wkPriorTot > 0 ? sumOf(wkPrior, (d) => d.hookless) / wkPriorTot : null;
 
   const liveLeak = S.live?.leak;
   $("#kpiLeak").innerHTML = kpiEl(pctLevel(leakNow, 1),
-    first ? `from ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : "", leakNow > (first?.leak ?? 0) ? "down" : "up",
-    `of volume on the ${S.flow.pools.length} deepest-indexed venues pays no fee`)
-    + (liveLeak == null ? "" : `<div class="livenote">Live: <b>${pctLevel(liveLeak, 1)}</b> over the last
-      ${fmtAge(S.live.minutes)} across ${S.live.venues} venues, read from the chain just now — the figure above is
-      settled daily history and is ${fmtAge(Math.round((Date.now() / 1000 - (S.meta.updatedAt || 0)) / 60))} old.</div>`);
+    leakPrior == null ? "" : `${pts(leakNow - leakPrior)} wk/wk`, leakPrior != null && leakNow > leakPrior ? "down" : "up",
+    `of indexed volume pays the vault nothing, 7d`)
+    + `<div class="livenote">${leakDay == null ? "" : `Last complete day <b>${pctLevel(leakDay, 1)}</b>`}${first ? ` · ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : ""}${liveLeak == null ? "" : ` · live <b>${pctLevel(liveLeak, 1)}</b> over the last ${fmtAge(S.live.minutes)}`}</div>`;
   if (series.length > 1) {
     multiLine($("#cInvLeak"), series, {
       xKey: "t", zeroBase: true, area: true, xFmt: dayFmt,
@@ -2131,7 +2175,7 @@ function renderLeak() {
   const main = S.flow.pools.find((p) => p.poolId === S.meta.contracts.aiNvdaPool);
 
   $("#takeLeak").innerHTML = takeEl(leakNow > 0.5 ? "neg" : leakNow > 0.25 ? "warn" : "pos",
-    `<b>${pctLevel(leakNow, 1)} of AI volume now crosses pools that pay the vault nothing</b>${first ? `, against ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : ""}.
+    `<b>${pctLevel(leakNow, 1)} of AI volume this week crossed pools that pay the vault nothing</b>${first ? `, against ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : ""}.
      ${worst && worst.v > 0
         ? `The largest of them is <b>AI / ${worst.p.pairSymbol} at ${feeOf(worst.p)}</b>, opened ${dayFmt(worst.p.createdAt)} with no hook —
            versus <b>${feeOf(main)}</b> on the tolled AI/NVDA pool. Routers choose on execution cost, so the cheaper hookless venue wins the flow.`
@@ -2139,59 +2183,7 @@ function renderLeak() {
      This is why revenue fell while total volume did not. It is a <b>structural</b> problem, not a cyclical one:
      v4 pools are permissionless, so the toll can always be undercut by a pool that provides no funding to the protocol.`);
 
-  return { leakNow, worst, series, comparable: series.filter((d) => d.comparable) };
-}
-
-/* One outside writeup's four cases, kept for comparison and nothing else. They are
-   not a scale: they are one author's assumptions about a token with two months of
-   history, and for a while this page was scoring measurements against them, which
-   made "how is the asset doing" indistinguishable from "how closely does it track a
-   stranger's spreadsheet". Every band a reader sees now comes from the asset's own
-   distribution; these appear once, labelled, as a footnote. */
-const referenceCase = (v, sc) => v >= sc.extraBull ? "extra-bull" : v >= sc.bull ? "bull"
-  : v >= sc.base ? "base" : v >= sc.bear ? "bear→base" : "below bear";
-
-/** Band from the asset's own measured range. High is good; callers invert if not. */
-function ownBand(values, v) {
-  const p = percentileOf(values, v);
-  if (p == null) return ["na", "no range yet"];
-  const pc = Math.round(p * 100) + "th";
-  if (p >= 0.8) return ["xbull", `${pc} — highest`];
-  if (p >= 0.6) return ["bull", `${pc} — high`];
-  if (p >= 0.4) return ["base", `${pc} — typical`];
-  if (p >= 0.2) return ["bear", `${pc} — low`];
-  return ["bear", `${pc} — lowest`];
-}
-
-function renderRegime(kappa, sc, capNow, feeAnnual, impliedVol, hist = {}) {
-  const b = S.burns;
-  const mainSc = { bear: .05, base: .10, bull: .12, extraBull: .12 };  // the same writeup's main-pool-share cases
-  const rows = [
-    { k: "Cross-routing κ (vs direct volume)", v: pctLevel(kappa, 1), band: ownBand(hist.kappa || [], kappa),
-      note: `measured from same-tx pass-through hops · that writeup called this ${referenceCase(kappa, sc)}` },
-    { k: "Fee capture on AI/NVDA", v: pctLevel(capNow, 1), band: ownBand(hist.capture || [], capNow),
-      note: `indexed pools only · that writeup called this ${referenceCase(capNow, mainSc)}` },
-    { k: "Fee run-rate", v: `${compact(feeAnnual)} AI/yr`, band: ["na", "measured"],
-      note: "all three splitter legs, annualised from 7d" },
-    { k: "NVDA reserve (not redeemable)", v: `${nf(b.vault.nvdaBalance, 1)} NVDA`, band: ["na", "measured"],
-      note: "no outflow ever observed; holders cannot redeem" },
-    { k: "Supply removed", v: pctLevel((b.burned + b.vault.aiBalance) / b.genesisSupply, 2), band: ["na", "measured"],
-      note: "burned + vault-locked, of genesis" },
-  ];
-  table($("#tRegime"), [
-    { h: "Input", f: (x) => x.k },
-    { h: "Measured", f: (x) => `<b>${x.v}</b>` },
-    { h: "In its own range", f: (x) => `<span class="band ${x.band[0]}">${x.band[1]}</span>` },
-    { h: "Note", f: (x) => `<span class="muted">${x.note}</span>` },
-  ], rows);
-  const kP = percentileOf(hist.kappa || [], kappa);
-  $("#regimeTake").innerHTML = takeEl(kP == null ? "warn" : kP >= 0.5 ? "pos" : "warn",
-    `Every figure in this table is measured on chain; none of them is a forecast. The bands say where each one sits
-     in <b>its own</b> history, because that is the only scale the data itself supplies
-     ${kP == null ? "" : `— hub conversion is at its ${Math.round(kP * 100)}th percentile`}.
-     <span class="muted">The notes also give how one circulating valuation writeup labelled these inputs. That writeup
-     prompted the questions this page answers, but its cases are assumptions and nothing here is scored against
-     them — where it and the measurement disagree, the measurement is the evidence.</span>`);
+  return { leakNow, leakDay, worst, series, comparable };
 }
 
 function renderValuation(feeAnnual, impliedVol, vols) {
@@ -2414,6 +2406,17 @@ function reading(s, d) {
   return { tone, title, body };
 }
 
+/** A tile sparkline: the shape of a series, no axes, filled under the line. */
+function spark(vals, color) {
+  const xs = (vals || []).filter((v) => v != null && isFinite(v));
+  if (xs.length < 4) return "";
+  const W = 100, Hh = 26, lo = minOf(xs), hi = maxOf(xs), span = hi - lo || 1;
+  const pts2 = xs.map((v, i) => `${((i / (xs.length - 1)) * W).toFixed(1)},${(Hh - 2 - ((v - lo) / span) * (Hh - 4)).toFixed(1)}`);
+  return `<svg class="spark" viewBox="0 0 ${W} ${Hh}" preserveAspectRatio="none" aria-hidden="true">
+    <polygon points="0,${Hh} ${pts2.join(" ")} ${W},${Hh}" fill="${color}"/>
+    <polyline points="${pts2.join(" ")}" stroke="${color}"/></svg>`;
+}
+
 /* Re-render a host without losing which <details> the reader had opened. The
    cockpit is rewritten on every live tick; without this, "How this is scored"
    snapped shut twenty seconds after being opened. */
@@ -2472,17 +2475,32 @@ function renderCockpit(structure, demand) {
   const L = S.live;
   const thr = S.holders?.aiThresholds?.[HOLDER_AI_INDEX] ?? 1e5;
 
+  /* Sparklines carry the shape; the number carries the level. Price is the last
+     7 days of hourly closes, holders the last 30 days of snapshots, volume the last
+     30 complete days in dollars. The price and cap tiles are filled by
+     paintHeaderMarket so they can never disagree with the header. */
+  const pxSpark = usdSeries().hrs.slice(-24 * 7).map((h) => h.close);
+  const hSpark = H.slice(-6 * 30).map((x) => x.aboveAi?.[HOLDER_AI_INDEX]).filter((v) => v != null);
+  const vSpark = completeDays(dailyDollars(null)).slice(-30).map((d) => d.volUsd);
+  const ch24 = onChainChange24(M.price);
   const tiles = [
+    { id: "ctPrice", lbl: "AI · USD", val: M.price ? moneyPx(M.price) : "—",
+      note: ch24 == null ? "on chain" : `<span class="${ch24 >= 0 ? "up" : "down"}">${pct(ch24, 1)}</span> over 24h, on chain`,
+      spark: spark(pxSpark, (ch24 ?? 0) >= 0 ? "var(--buy)" : "var(--sell)") },
+    { id: "ctMcap", lbl: "Market cap", val: M.mcap ? `$${compact(M.mcap)}` : "—",
+      note: M.mcap ? `× ${compact(M.supply, 1)} AI ${M.supplyLive ? "live" : "indexed"} supply` : "" },
     { lbl: "Live flow", val: L && L.swaps ? `${L.net >= 0 ? "+" : "−"}${compact(Math.abs(L.net))}` : "—",
       cls: L && L.swaps ? (L.net >= 0 ? "up" : "down") : "",
-      note: L && L.swaps ? `AI net ${L.net >= 0 ? "bought" : "sold"} in the last ${fmtAge(L.minutes)} · ${L.swaps.toLocaleString()} trades` : "waiting on the chain" },
+      note: L && L.swaps ? `AI net ${L.net >= 0 ? "bought" : "sold"} in ${fmtAge(L.minutes)} · ${L.swaps.toLocaleString()} trades` : "waiting on the chain" },
     { lbl: `Holders, ${compact(thr, 0)}+ AI`, val: b100 == null ? "—" : b100.toLocaleString(),
       cls: b100w ? (b100 >= b100w ? "up" : "down") : "",
-      note: b100w ? `${pct(b100 / b100w - 1, 1)} in 7d · ${hNow.holders.toLocaleString()} holders in all` : "replay pending" },
+      note: b100w ? `${pct(b100 / b100w - 1, 1)} in 7d · ${hNow.holders.toLocaleString()} holders in all` : "replay pending",
+      spark: spark(hSpark, b100w && b100 < b100w ? "var(--sell)" : "var(--buy)") },
     { lbl: "Vault, in dollars", val: D.vaultUsd ? `$${compact(D.vaultUsd)}` : "—",
-      note: D.vaultUsd && M.mcap ? `${pctLevel(D.vaultUsd / M.mcap, 2)} of market cap · not redeemable` : "NVDA price pending" },
-    { lbl: "Volume, last 24h", val: D.vol24 ? `$${compact(D.vol24)}` : "—",
-      note: D.vol24 && M.mcap ? `${pctLevel(D.vol24 / M.mcap, 1)} of market cap turned over · ${S.flow.pools.length} venues` : "indexed venues" },
+      note: D.vaultUsd && M.mcap ? `${pctLevel(D.vaultUsd / M.mcap, 2)} of cap · not redeemable` : "NVDA price pending" },
+    { lbl: "Volume, 24h", val: D.vol24 ? `$${compact(D.vol24)}` : "—",
+      note: D.vol24 && M.mcap ? `${pctLevel(D.vol24 / M.mcap, 1)} of cap turned over · ${S.flow.pools.length} venues` : "indexed venues",
+      spark: spark(vSpark, "var(--series-3)") },
   ];
 
   const dial = (name, ax, words) => {
@@ -2509,7 +2527,7 @@ function renderCockpit(structure, demand) {
 
   rerender($("#rating"), `
     <div class="rating">
-      <div class="cockpit">${tiles.map((t) => `<div class="ctile"><div class="lbl">${t.lbl}</div><div class="val ${t.cls || ""}">${t.val}</div><div class="note">${t.note}</div></div>`).join("")}</div>
+      <div class="cockpit">${tiles.map((t) => `<div class="ctile"${t.id ? ` id="${t.id}"` : ""}>${t.spark || ""}<div class="lbl">${t.lbl}</div><div class="val ${t.cls || ""}">${t.val}</div><div class="note">${t.note}</div></div>`).join("")}</div>
       <div class="dials">
         ${dial("Structure", Sx, { up: "improving", flat: "steady", down: "deteriorating", na: "unranked" })}
         ${dial("Demand", Dx, { up: "buying", flat: "balanced", down: "selling", na: "unranked" })}
@@ -2940,49 +2958,6 @@ function renderSinceLast(now) {
  * whole population. The cap figures beside it do not -- they come from the ~300
  * priced tokens -- and are labelled as the ceiling they are.
  */
-function renderLaunchRate() {
-  const r = S.launchpad;
-  const rows = completeDays(r?.launchesByDay || []);
-  if (!rows.length) {
-    $("#kpiLaunchRate").innerHTML = `<p class="muted">Launch history not measured yet.</p>`;
-    for (const id of ["#cLaunchRate", "#takeLaunchRate"]) { const e = $(id); if (e) e.innerHTML = ""; }
-    return;
-  }
-  const last7 = trailing(rows, 7, (d) => d.launched);
-  const prior7 = trailing(rows, 7, (d) => d.launched, 7);
-  const trend = prior7 > 0 ? last7 / prior7 - 1 : null;
-  const total = rows.at(-1).cumulative;
-  const capNow = r.history?.at(-1)?.totalMcapUsd ?? null;
-
-  $("#kpiLaunchRate").innerHTML = kpiEl(last7.toLocaleString(),
-    trend == null ? "" : `${pct(trend, 0)} wk/wk`, (trend ?? 0) >= 0 ? "up" : "down",
-    "tokens launched in the last 7 complete days")
-    + (r.censusPartial
-      ? `<div class="warnline">The census has not finished walking back to genesis, so every count here is a <b>floor</b>.</div>`
-      : "")
-    + `<div class="livenote"><b>${total.toLocaleString()}</b> launched across <b>${rows.length}</b> days
-       · busiest day <b>${maxOf(rows.map((d) => d.launched)).toLocaleString()}</b>
-       · combined nominal cap of the <b>${r.priced ?? 0}</b> priced <b>$${compact(capNow ?? 0)}</b>,
-       <b>${r.runners ?? 0}</b> of them above $${compact(r.runnerFloor || 1e6, 0)}</div>`;
-
-  barChart($("#cLaunchRate"), rows.slice(-45), {
-    xKey: "t", yKey: "launched", color: "var(--series-3)", xFmt: dayFmt, fmt: (v) => v.toFixed(0),
-    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.launched.toLocaleString()} launched</div>
-      <div class="k">${d.cumulative.toLocaleString()} cumulative</div>`,
-  });
-
-  $("#takeLaunchRate").innerHTML = takeEl((trend ?? 0) >= 0 ? "pos" : "warn",
-    `<b>${last7.toLocaleString()}</b> tokens launched in the last 7 complete days${trend == null ? "" :
-      `, ${trend >= 0 ? "up" : "down"} <b>${pctLevel(Math.abs(trend), 0)}</b> on the week before`},
-     bringing the total to <b>${total.toLocaleString()}</b> across ${rows.length} days.
-     ${capNow == null ? "" : `The <b>${r.priced ?? 0}</b> priced tokens carry <b>$${compact(capNow)}</b> of
-       nominal cap between them, <b>${r.runners ?? 0}</b> of it above $${compact(r.runnerFloor || 1e6, 0)}.`}
-     <span class="muted">Counted from every pool carrying the LONG hook, so the cadence is the whole
-     population and cannot be cherry-picked. The cap figures are not: they cover only the ${r.priced ?? 0}
-     priced tokens, which are the most actively traded, so read them as a ceiling on value and the launch
-     count as the floor on how many exist. Cadence is a statement about the mint.</span>`);
-}
-
 function renderAdoption() {
   const rows = completeDays(S.launchpad?.anchorFlow || []);
   if (rows.length < 3) {
@@ -3053,8 +3028,8 @@ function renderAdoption() {
        `, ${(offLow + 1).toFixed(1)}\u00d7 off that low`}. The week is down because the comparison week contains
        the peak; the last three days are up. Both are the same series.`}
      <span class="muted">Read the direction over a week and the turn over three days, never the level on one.
-       Card 6b holds the cumulative standing this flow feeds, and it will keep reporting third place whatever
-       this does.</span>`);
+       The anchor rank beside this is the cumulative standing this flow feeds, and it will keep reporting third
+       place whatever this does.</span>`);
 }
 
 /**
@@ -3131,21 +3106,11 @@ function renderNearDepth() {
 function renderDepth() {
   const d = S.depth;
   if (!d || !d.pools?.length) {
-    $("#kpiDepth").innerHTML = `<p class="muted">Liquidity depth not measured yet.</p>`;
-    for (const id of ["#cDepth", "#tDepth", "#takeDepth"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    for (const id of ["#cDepth", "#tDepth"]) $(id).innerHTML = "";
     return;
   }
-  const buy = d.imbalanceUsd >= 0;
-  const side = buy ? "buyside" : "sellside";
-  const pctOfBook = d.bidUsd + d.askUsd > 0 ? Math.abs(d.imbalanceUsd) / (d.bidUsd + d.askUsd) : 0;
-
-  $("#kpiDepth").innerHTML = kpiEl(`$${compact(Math.abs(d.imbalanceUsd))}`,
-    `${side} imbalance`, buy ? "up" : "down",
-    `within \u00b1${pctLevel(d.windowPct, 0)} of spot, across ${d.pools.length} venues`)
-    + `<div class="livenote">Bids <b>$${compact(d.bidUsd)}</b> against asks <b>$${compact(d.askUsd)}</b>
-       \u00b7 ${pctLevel(pctOfBook, 0)} of the book in that window sits on the ${side}
-       \u00b7 total depth TVL <b>$${compact(d.tvlUsd)}</b>${d.skipped ? ` \u00b7 <span class="warnline">${d.skipped} venue(s) not yet replayed</span>` : ""}</div>`;
-
+  /* The near-spot card carries the headline; this draws the whole book and the
+     per-venue table under it. */
   depthChart($("#cDepth"), d.book, {
     spot: d.pools[0]?.spotUsd ?? d.aiUsd,
     fmt: (v) => `$${compact(v, 0)}`,
@@ -3168,19 +3133,6 @@ function renderDepth() {
         return `<span class="band ${s >= 0 ? "bull" : "bear"}">${s >= 0 ? "bid" : "ask"} ${pctLevel(Math.abs(s), 0)}</span>`;
       } },
   ], d.pools);
-
-  const top = d.pools[0];
-  $("#takeDepth").innerHTML = takeEl(buy ? "pos" : "neg",
-    `Within <b>\u00b1${pctLevel(d.windowPct, 0)}</b> of spot there is <b>$${compact(d.bidUsd)}</b> of committed buying
-     against <b>$${compact(d.askUsd)}</b> of committed selling \u2014 a <b>$${compact(Math.abs(d.imbalanceUsd))} ${side}</b>
-     imbalance. ${buy
-       ? `The book is thicker underneath than overhead, so equal size moves the price further up than down.`
-       : `The book is thicker overhead than underneath, so equal size moves the price further down than up.`}
-     ${top ? `Most of it sits on <b>AI / ${top.pair}</b> ($${compact(top.tvlUsd)} of $${compact(d.tvlUsd)}).` : ""}
-     <span class="muted">This is cost-to-move, not a forecast, and it is not a floor: liquidity providers can
-     withdraw in a single block, and a wall that is not there when you trade was never support. Measured on the
-     ${d.pools.length} venues indexed in depth, which excludes any Uniswap v3 pools \u2014 this chain has some, and
-     they are not in this figure.</span>`);
 }
 
 /**
@@ -3404,11 +3356,11 @@ function renderVerdict(read, net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow
   const diverges = L && L.swaps > 0 && (L.net >= 0) !== (net7 >= 0);
   const liveLine = !L || !L.swaps ? ""
     : diverges
-      ? `<b>Right now that has flipped:</b> the last ${L.minutes} minutes show net
+      ? `<b>Right now that has flipped:</b> the last ${fmtAge(L.minutes)} show net
          ${L.net >= 0 ? "buying" : "selling"} of <b>${compact(Math.abs(L.net))} AI</b>, against the week's
          net ${net7 >= 0 ? "buying" : "selling"}. ${spanWord(L.minutes)} is not a trend against
          seven days, but a turn shows here first.`
-      : `The last ${L.minutes} minutes agree with the week: net ${L.net >= 0 ? "buying" : "selling"} of
+      : `The last ${fmtAge(L.minutes)} agree with the week: net ${L.net >= 0 ? "buying" : "selling"} of
          <b>${compact(Math.abs(L.net))} AI</b>.`;
 
   const stamp = S.meta?.headTime
