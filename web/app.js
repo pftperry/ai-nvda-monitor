@@ -3244,10 +3244,11 @@ function renderRwa() {
       ${tile("In DEX liquidity", `$${compact(T.dexUsd)}`, `stock tokens held by the pool manager, all venues`)}
       ${tile("Stock pools", `${T.poolsLong.toLocaleString()} / ${T.poolsAll.toLocaleString()}`, `pools quoting a stock token carry the LONG hook (${pctLevel(T.poolsAll ? T.poolsLong / T.poolsAll : null, 0)})`)}
     </div>`;
+    const win = R.swapShare?.windowHours ? (R.swapShare.windowHours >= 24 ? `${Math.round(R.swapShare.windowHours / 24)}d` : `${R.swapShare.windowHours}h`) : "window";
     $("#readRwa").innerHTML = takeEl(T.share >= 0.25 ? "pos" : "neu",
-      `<b>${pctLevel(T.share, 1)}</b> of the tokenized-stock value on Robinhood Chain sits inside DEX liquidity or the community vault,
-       and <b>${pctLevel(T.poolsAll ? T.poolsLong / T.poolsAll : null, 0)}</b> of the pools that quote a stock token are LONG launches.
-       ${nv.symbol} leads: <b>${pctLevel(nv.share, 1)}</b> of every ${nv.symbol} token on the chain is in a pool or the vault.
+      `<b>${pctLevel(T.share, 1)}</b> of the tokenized-stock value on Robinhood Chain sits inside DEX liquidity or the community vault${T.poolsAll ? `,
+       and <b>${pctLevel(T.poolsLong / T.poolsAll, 0)}</b> of the ${T.poolsAll.toLocaleString()} pools that quote a stock token are LONG launches` : ""}.
+       <b>${pctLevel(nv.share, 1)}</b> of every ${nv.symbol} token on the chain is in a pool or the vault${R.tokens[0] !== nv ? `; ${R.tokens[0].symbol} leads by dollars at ${pctLevel(R.tokens[0].share, 1)}` : ""}.
        <span class="muted">Supply is the token's on-chain <code>totalSupply</code>; the pool-manager balance is DEX inventory on every venue,
        LONG-hooked or not, so the share is an upper bound on LONG's own. Prices from each stock's busiest USDG pool.</span>`);
     const sw = R.swapShare?.perToken || [];
@@ -3258,8 +3259,8 @@ function renderRwa() {
       { h: "In vault", f: (t) => (t.inVault ? nf(t.inVault, 0) : `<span class="muted">0</span>`) },
       { h: "Captured", attrs: () => ({ class: "bar-cell" }), f: (t) => `<div class="fill" style="width:${Math.min(120, t.share * 120)}px"></div><span>${pctLevel(t.share, 1)}</span>` },
       { h: "USD in pools", f: (t) => (t.dexUsd == null ? `<span class="muted">unpriced</span>` : `$${compact(t.dexUsd)}`) },
-      { h: "LONG pools / all", f: (t) => `${t.poolsLong.toLocaleString()} / ${t.poolsAll.toLocaleString()}${t.poolsPartial ? "*" : ""}` },
-      { h: "Swaps 24h via LONG", f: (t) => { const s = sw.find((x) => x.token === t.token); return s ? `${s.long.toLocaleString()} / ${s.all.toLocaleString()} <span class="muted">${pctLevel(s.share, 0)}</span>` : "—"; } },
+      { h: "LONG pools / all", f: (t) => (t.poolsAll || !t.poolsPartial ? `${t.poolsLong.toLocaleString()} / ${t.poolsAll.toLocaleString()}${t.poolsPartial ? "*" : ""}` : `<span class="muted">cataloguing</span>`) },
+      { h: `Swaps ${win} via LONG`, f: (t) => { const s = sw.find((x) => x.token === t.token); return s ? `${s.long.toLocaleString()} / ${s.all.toLocaleString()} <span class="muted">${pctLevel(s.share, 0)}</span>` : "—"; } },
     ], R.tokens);
     const nvAddr = Object.keys(R.daily || {})[0];
     const daily = nvAddr ? (R.daily[nvAddr] || []) : [];
@@ -3278,16 +3279,16 @@ function renderRwa() {
 
     /* ── trading share ──────────────────────────────────────────────────── */
     const ss = R.swapShare;
-    if (ss) {
+    if (ss && ss.stockSwaps > 0) {
       $("#rwaSwaps").innerHTML = `<div class="tiles">
-        ${tile("Stock swaps via LONG", pctLevel(ss.share, 1), `${ss.longSwaps.toLocaleString()} of ${ss.stockSwaps.toLocaleString()} swaps touching a stock token, last 24h`, "", "hero")}
-        ${tile("Stock swaps, 24h", ss.stockSwaps.toLocaleString(), ss.chainSwaps ? `${pctLevel(ss.stockSwaps / ss.chainSwaps, 1)} of ${ss.chainSwaps.toLocaleString()} swaps on the chain` : "all venues")}
+        ${tile("Stock swaps via LONG", pctLevel(ss.share, 1), `${ss.longSwaps.toLocaleString()} of ${ss.stockSwaps.toLocaleString()} swaps touching a stock token, last ${win}`, "", "hero")}
+        ${tile(`Stock swaps, ${win}`, ss.stockSwaps.toLocaleString(), ss.chainSwaps ? `${pctLevel(ss.stockSwaps / ss.chainSwaps, 1)} of ${ss.chainSwaps.toLocaleString()} swaps on the chain` : "all venues")}
         ${tile("Paired with AI", ss.longSwaps ? pctLevel(ss.aiPairedSwaps / ss.longSwaps, 0) : "—", `of LONG's stock swaps were in an AI pool (${ss.aiPairedSwaps.toLocaleString()})`)}
-        ${tile("Elsewhere", (ss.stockSwaps - ss.longSwaps).toLocaleString(), `stock swaps in hookless or other-hook pools${ss.truncated ? " · window cut short by budget" : ""}`)}
+        ${tile("Elsewhere", (ss.stockSwaps - ss.longSwaps).toLocaleString(), `stock swaps in hookless or other-hook pools${ss.truncated ? " · window cut short by budget" : ""}${ss.catalogueComplete === false ? " · pool catalogue still filling" : ""}`)}
       </div>`;
       table($("#tSwapShare"), [
         { h: "Stock", f: (r) => `<b>${r.symbol}</b>` },
-        { h: "Swaps 24h", f: (r) => r.all.toLocaleString() },
+        { h: `Swaps ${win}`, f: (r) => r.all.toLocaleString() },
         { h: "Via LONG", f: (r) => r.long.toLocaleString() },
         { h: "Share", attrs: () => ({ class: "bar-cell" }), f: (r) => `<div class="fill" style="width:${Math.min(120, (r.share || 0) * 120)}px"></div><span>${pctLevel(r.share, 0)}</span>` },
       ], ss.perToken.slice(0, 12));
@@ -3295,15 +3296,15 @@ function renderRwa() {
       if (sh.length > 1) {
         lineChart($("#cSwapShare"), sh.slice(-24 * 14), {
           xKey: "t", yKey: "swapShare", zeroBase: true, area: true, color: "var(--series-3)", xFmt: dayFmt, fmt: (v) => pctLevel(v, 0),
-          tip: (h) => `<div class="k">${tsFmt(h.t)}</div><div>${pctLevel(h.swapShare, 1)} of stock swaps via LONG</div><div class="k">${(h.longSwaps || 0).toLocaleString()} of ${(h.stockSwaps || 0).toLocaleString()}, trailing 24h</div>`,
+          tip: (h) => `<div class="k">${tsFmt(h.t)}</div><div>${pctLevel(h.swapShare, 1)} of stock swaps via LONG</div><div class="k">${(h.longSwaps || 0).toLocaleString()} of ${(h.stockSwaps || 0).toLocaleString()} in the ${win} window</div>`,
         });
       } else $("#cSwapShare").innerHTML = `<p class="muted" style="padding:12px 0">The share is sampled each slow-path run; a line appears once there are two.</p>`;
       $("#readSwaps").innerHTML = takeEl(ss.share >= 0.5 ? "pos" : "neu",
-        `Over the last day, <b>${pctLevel(ss.share, 1)}</b> of every swap on Robinhood Chain that touched a tokenized stock went through a
+        `Over the last ${win}, <b>${pctLevel(ss.share, 1)}</b> of every swap on Robinhood Chain that touched a tokenized stock went through a
          LONG pool${ss.longSwaps ? `, and <b>${pctLevel(ss.aiPairedSwaps / ss.longSwaps, 0)}</b> of those were AI pairs` : ""}. The rest traded in
-         pools without the hook, which pay LONG nothing. <span class="muted">Counted from every Swap the pool manager emitted in the window,
-         matched against every pool that was ever initialised with a stock token on either side.</span>`);
-    } else { $("#rwaSwaps").innerHTML = pending; for (const id of ["#tSwapShare", "#cSwapShare", "#readSwaps"]) $(id).innerHTML = ""; }
+         pools without the hook, which pay LONG nothing. <span class="muted">Counted from every Swap the pool manager emitted in the census's
+         activity window, matched against every pool ever initialised with a stock token on either side; sampled each slow-path run and kept as a series.</span>`);
+    } else { $("#rwaSwaps").innerHTML = `<p class="muted">The pool catalogue is still being built; the trading share appears once it covers the stock tokens.</p>`; for (const id of ["#tSwapShare", "#cSwapShare", "#readSwaps"]) $(id).innerHTML = ""; }
   }
 
   /* ── liquidity: size, ownership, compounding ─────────────────────────── */
@@ -3314,9 +3315,12 @@ function renderRwa() {
   }
   const tvl = D.tvlUsd || 0, own = D.hookTvlUsd ?? null;
   const flagship = D.pools.find((p) => p.poolId === S.meta.contracts.aiNvdaPool) || D.pools[0];
-  const H = (D.history || []).map((h) => ({ ...h, tvl: h.tvl ?? (h.bid + h.ask) }));
+  /* Only rows that carry the full-book value; older rows hold near-window depth
+     (bids + asks within 50%), a smaller number, and mixing them would print a
+     rally that never happened. */
+  const H = (D.history || []).filter((h) => h.tvl != null);
   const wkRow = H.find((h) => h.t >= (H.at(-1)?.t || 0) - 7 * 86400);
-  const tvlD = wkRow && wkRow !== H.at(-1) ? tvl / wkRow.tvl - 1 : null;
+  const tvlD = wkRow && wkRow !== H.at(-1) && H.at(-1).t - wkRow.t >= 6 * 86400 ? tvl / wkRow.tvl - 1 : null;
   $("#rwaLiq").innerHTML = `<div class="tiles three">
     ${tile("Total liquidity", `$${compact(tvl)}`, `${D.pools.length} indexed venues${tvlD != null ? ` · <span class="${tvlD >= 0 ? "up" : "down"}">${pct(tvlD, 1)}</span> in 7d` : ""}`, "", "hero")}
     ${tile("Protocol-owned", own == null ? "—" : pctLevel(tvl ? own / tvl : null, 1), own == null ? "ladders predate the split" : `$${compact(own)} held by the LONG hook itself`)}
@@ -3328,7 +3332,7 @@ function renderRwa() {
       zeroBase: true, area: true, xFmt: dayFmt, fmt: (v) => `$${compact(v)}`,
       tip: (h) => `<div class="k">${tsFmt(h.t)}</div><div>$${compact(h.tvl)} total liquidity</div>${h.hookTvl != null ? `<div>$${compact(h.hookTvl)} protocol-owned</div>` : ""}<div class="k">${h.venues} venues</div>`,
     });
-  } else $("#cTvl").innerHTML = `<p class="muted" style="padding:12px 0">Accrues hourly.</p>`;
+  } else $("#cTvl").innerHTML = `<p class="muted" style="padding:12px 0">Accrues hourly from ${H.length ? tsFmt(H[0].t) : "the next index"}.</p>`;
   $("#readLiq").innerHTML = takeEl("neu",
     `<b>$${compact(tvl)}</b> of resting liquidity across AI's ${D.pools.length} indexed venues${own != null ? `, of which <b>${pctLevel(tvl ? own / tvl : null, 1)}</b> is the protocol's own position` : ""}.
      Liquidity the protocol owns cannot be pulled by a market maker on a bad day, which is the "sell wall" the founder describes; the rest can leave in one block.

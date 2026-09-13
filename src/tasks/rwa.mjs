@@ -72,7 +72,9 @@ async function stockPools(token, latest, prior, opts) {
     const p = decodeInitialize(l);
     if (seen.has(p.poolId)) continue;
     seen.add(p.poolId);
-    state.pools.push({ id: p.poolId, c0: p.currency0, c1: p.currency1, hooks: p.hooks, fee: p.fee, block: p.block });
+    /* Kept small: NVDA alone quotes ten thousand pools. Whether the pool is LONG's
+       and whether AI is on the other side are the only two facts the share needs. */
+    state.pools.push({ id: p.poolId, long: p.hooks === LONG_HOOK, ai: p.currency0 === AI || p.currency1 === AI });
   }
   state.cursor = reached;
   state.partial = !!(asC0.truncated || asC1.truncated);
@@ -125,18 +127,39 @@ export async function indexRwa(latest, tm, opts = {}) {
   const res = await rpcBatch(calls);
   const num = (h, dec) => (h && h !== "0x" ? fmtUnits(BigInt(h), dec) : null);
 
-  /* 3. Every pool quoting each stock, LONG-hooked or not, for the trading share. */
+  /* 3. Daily DEX inventory for the tracked stock, from transfers, so the trend
+        exists from genesis rather than from today. Before the pool catalogue,
+        because one series that reaches genesis is worth more than a catalogue
+        that half-finished. */
+  const daily = {};
+  const dexState = (store && store.get("rwaDex")) || {};
+  for (const tok of DAILY_TRACKED) {
+    if (opts.deadline && Date.now() > opts.deadline) break;
+    const st = await dexInventoryDaily(tok, latest, tm, dexState[tok], { deadline: opts.deadline, decimals: decimals.get(tok) ?? 18 });
+    dexState[tok] = st;
+    let cum = 0;
+    daily[tok] = Object.entries(st.byDay).map(([d, v]) => [Number(d), v]).sort((a, b) => a[0] - b[0])
+      .map(([t, net]) => ({ t, net: +net.toFixed(4), cum: +(cum += net).toFixed(4) }));
+    if (st.partial) log(`  ${sym(tok)} inventory replay stopped at block ${st.cursor.toLocaleString()} (budget); resumes next run`);
+  }
+  if (store) store.set("rwaDex", dexState);
+
+  /* 4. Every pool quoting each stock, LONG-hooked or not, for the trading share.
+        Resumable per token; a run that runs out of budget finishes the rest next time. */
   const poolState = (store && store.get("rwaPools")) || {};
-  const allStockPools = new Map();   // poolId → { token(s), hooks }
+  const allStockPools = new Map();   // poolId → { long, ai, stocks }
+  let catalogued = 0;
   for (const a of stocks) {
     if (opts.deadline && Date.now() > opts.deadline) break;
     poolState[a] = await stockPools(a, latest, poolState[a], { deadline: opts.deadline });
-    for (const p of poolState[a].pools) {
-      const e = allStockPools.get(p.id) || { hooks: p.hooks, stocks: new Set(), c0: p.c0, c1: p.c1 };
-      e.stocks.add(a); allStockPools.set(p.id, e);
-    }
+    catalogued++;
+  }
+  for (const a of stocks) for (const p of poolState[a]?.pools || []) {
+    const e = allStockPools.get(p.id) || { long: p.long, ai: p.ai, stocks: new Set() };
+    e.stocks.add(a); allStockPools.set(p.id, e);
   }
   if (store) store.set("rwaPools", poolState);
+  log(`  pool catalogue: ${allStockPools.size.toLocaleString()} pools quote a stock token (${catalogued} of ${stocks.length} tokens scanned this run)`);
 
   const tokens = [];
   stocks.forEach((a, i) => {
@@ -151,8 +174,8 @@ export async function indexRwa(latest, tm, opts = {}) {
       share: (inDex + inVault) / supply, dexShare: inDex / supply, vaultShare: inVault / supply,
       priceUsd: usd, supplyUsd: usd ? supply * usd : null, dexUsd: usd ? inDex * usd : null, vaultUsd: usd ? inVault * usd : null,
       longPools: degree.get(a) || 0, aiPools: withAi.get(a) || 0,
-      poolsAll: mine.length, poolsLong: mine.filter((p) => p.hooks === LONG_HOOK).length,
-      poolsPartial: !!poolState[a]?.partial,
+      poolsAll: mine.length, poolsLong: mine.filter((p) => p.long).length,
+      poolsPartial: !poolState[a] || !!poolState[a].partial,
     });
   });
   tokens.sort((a, b) => (b.dexUsd ?? 0) - (a.dexUsd ?? 0) || b.longPools - a.longPools);
@@ -161,18 +184,19 @@ export async function indexRwa(latest, tm, opts = {}) {
         whether the pool carries the LONG hook. Counts, not volume, because a
         count needs no price and cannot be inflated by one whale. */
   let swapShare = null;
-  if (opts.swaps?.counts) {
+  if (opts.swaps?.counts && allStockPools.size) {
     const per = new Map();   // token → { all, long }
     let all = 0, long = 0, aiPaired = 0;
     for (const [id, n] of opts.swaps.counts) {
       const e = allStockPools.get(id); if (!e) continue;
-      const isLong = e.hooks === LONG_HOOK;
-      all += n; if (isLong) long += n;
-      if (isLong && (e.c0 === AI || e.c1 === AI)) aiPaired += n;
-      for (const t of e.stocks) { const r = per.get(t) || { all: 0, long: 0 }; r.all += n; if (isLong) r.long += n; per.set(t, r); }
+      all += n; if (e.long) long += n;
+      if (e.long && e.ai) aiPaired += n;
+      for (const t of e.stocks) { const r = per.get(t) || { all: 0, long: 0 }; r.all += n; if (e.long) r.long += n; per.set(t, r); }
     }
     swapShare = {
-      windowBlocks: opts.swaps.blocks, truncated: !!opts.swaps.truncated, chainSwaps: opts.swaps.total ?? null,
+      windowBlocks: opts.swaps.blocks, windowHours: +((opts.swaps.blocks / 845_649) * 24).toFixed(1),
+      catalogueComplete: catalogued === stocks.length && stocks.every((a) => !poolState[a]?.partial),
+      truncated: !!opts.swaps.truncated, chainSwaps: opts.swaps.total ?? null,
       stockSwaps: all, longSwaps: long, aiPairedSwaps: aiPaired, share: all > 0 ? long / all : null,
       perToken: [...per].map(([t, r]) => ({ token: t, symbol: sym(t), all: r.all, long: r.long, share: r.all ? r.long / r.all : null })).sort((x, y) => y.all - x.all),
     };
@@ -187,27 +211,14 @@ export async function indexRwa(latest, tm, opts = {}) {
     supplyUsd: priced.reduce((s, t) => s + t.supplyUsd, 0),
     dexUsd: priced.reduce((s, t) => s + t.dexUsd, 0),
     vaultUsd: priced.reduce((s, t) => s + t.vaultUsd, 0),
-    poolsAll: tokens.reduce((s, t) => s + t.poolsAll, 0),
-    poolsLong: tokens.reduce((s, t) => s + t.poolsLong, 0),
+    // Distinct pools: a pool quoting two stocks against each other counts once.
+    poolsAll: allStockPools.size,
+    poolsLong: [...allStockPools.values()].filter((p) => p.long).length,
+    cataloguePartial: tokens.some((t) => t.poolsPartial),
   };
   totals.share = totals.supplyUsd > 0 ? (totals.dexUsd + totals.vaultUsd) / totals.supplyUsd : null;
 
-  /* 6. Daily DEX inventory for the tracked stock, from transfers, so the trend
-        exists from genesis rather than from today. */
-  const daily = {};
-  const dexState = (store && store.get("rwaDex")) || {};
-  for (const tok of DAILY_TRACKED) {
-    if (opts.deadline && Date.now() > opts.deadline) break;
-    const st = await dexInventoryDaily(tok, latest, tm, dexState[tok], { deadline: opts.deadline, decimals: decimals.get(tok) ?? 18 });
-    dexState[tok] = st;
-    let cum = 0;
-    daily[tok] = Object.entries(st.byDay).map(([d, v]) => [Number(d), v]).sort((a, b) => a[0] - b[0])
-      .map(([t, net]) => ({ t, net: +net.toFixed(4), cum: +(cum += net).toFixed(4) }));
-    if (st.partial) log(`  ${sym(tok)} inventory replay stopped at block ${st.cursor.toLocaleString()} (budget); resumes next run`);
-  }
-  if (store) store.set("rwaDex", dexState);
-
-  /* 7. History: one row per hour at most, 120 days deep. */
+  /* 6. History: one row per hour at most, 120 days deep. */
   const stamp = Math.floor(Date.now() / 1000);
   const hour = Math.floor(stamp / 3600) * 3600;
   const history = (opts.prior?.history || []).filter((h) => h.t !== hour).slice(-24 * 120);

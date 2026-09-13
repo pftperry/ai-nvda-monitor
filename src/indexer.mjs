@@ -470,11 +470,14 @@ if (!fast && !flag("no-launchpad")) {
        logs, so it lives here rather than in its own step. */
     step("Measuring tokenized-stock capture");
     try {
-      const rwaDeadline = Date.now() + opt("rwa-budget", 300) * 1000;
-      const day = await rankByActivity(latest, C.BLOCKS_PER_DAY, { deadline: rwaDeadline, chunk: 40_000 });
+      /* The swap window is the two-hour activity scan the census already paid for.
+         A day of Swap logs on this chain is 3.5 million rows: the first attempt
+         spent its whole budget downloading them and had nothing left for the pool
+         catalogue, so the share reads as a two-hour sample, kept as a series. */
+      const rwaDeadline = Date.now() + opt("rwa-budget", 420) * 1000;
       const rwa = await indexRwa(latest, tm, {
         store, pools: census.pools, symbols, decimals, anchorUsd: anchors,
-        swaps: { counts: day.counts, blocks: C.BLOCKS_PER_DAY, total: day.swaps, truncated: day.truncated },
+        swaps: { counts: rank.counts, blocks: Math.round(C.BLOCKS_PER_DAY / 12), total: rank.swaps, truncated: rank.truncated },
         prior: readData("rwa.json"), deadline: rwaDeadline,
       });
       writeData("rwa.json", rwa);
