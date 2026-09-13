@@ -69,6 +69,51 @@ export async function indexBurns(latest, tm, opts = {}) {
   log("  scanning AI mints (Transfer from 0x0)...");
   const mints = await scan(FILTERS.mints);
 
+  /* The top-up must land HERE, before anything reads these arrays.
+
+     It used to sit below the daily buckets and the running totals, which meant
+     it appended the newest events to arrays that had already been summed. The
+     run logged "topped up 414 blocks so the ledger and the live balances agree"
+     and then reconciled against totals that did not contain them. It went unseen
+     because the window is usually empty: it takes a fee event landing inside a
+     few hundred blocks to produce a residual, and when one finally did, both the
+     supply reconciliation and the vault invariant failed by exactly 182.2494 AI --
+     one split at block 61,599,036, inside the topped-up range, counted by neither
+     leg. Ordering, not arithmetic. */
+  /* Close the race between the log scan and the live balance reads.
+
+     The scan covers up to the block captured when the run STARTED; balanceOf and
+     totalSupply answer for whatever block is current when they are called. On a
+     25-second refresh that is the same block and nobody notices. On a run that
+     backfills twenty pools it is twenty-six minutes and some fifteen thousand
+     blocks apart, and the ledger stops reconciling -- measured, the vault came back
+     423.88 AI above the sum of its own inbound transfers, and supply missed by the
+     same amount, because the fee splits 1:1 so both legs lose equally.
+
+     The reads cannot be pinned backwards: this node serves no archive state and
+     eth_call at any past block answers "metadata is not found". So the scan is
+     brought forward to meet them instead. What remains is the second between the
+     head read and the call rather than the length of the whole run. */
+  const stateBlock = await blockNumber();
+  if (stateBlock > latest) {
+    /* A loop, not push(...spread): spreading an array passes one argument per
+       element and overflows the call stack on a long one. This top-up is short by
+       construction, but that exact line has already taken down the bridge step. */
+    const topUp = async (filter, arr) => {
+      for (const x of await scanRange(filter, latest + 1, stateBlock)) arr.push(x);
+    };
+    await topUp(FILTERS.burns, burns);
+    await topUp(FILTERS.locks, locks);
+    await topUp(FILTERS.nvda, nvda);
+    await topUp(FILTERS.legBurn, legBurn);
+    await topUp(FILTERS.legLock, legLock);
+    await topUp(FILTERS.legPlatform, legPlatform);
+    await topUp(FILTERS.platform, platform);
+    await topUp(FILTERS.mints, mints);
+    log(`  topped up ${(stateBlock - latest).toLocaleString()} blocks so the ledger and the live balances agree on a block`);
+    latest = stateBlock;
+  }
+
   // Seed from the stored series so merged buckets accumulate rather than restart.
   const daily = new Map();
   if (prev && Array.isArray(prev.daily)) {
@@ -115,39 +160,6 @@ export async function indexBurns(latest, tm, opts = {}) {
   const feeLock = (carried.feeLegs?.lock || 0) + sum(legLock);
   const feePlatform = (carried.feeLegs?.platform || 0) + sum(legPlatform);
 
-  /* Close the race between the log scan and the live balance reads.
-
-     The scan covers up to the block captured when the run STARTED; balanceOf and
-     totalSupply answer for whatever block is current when they are called. On a
-     25-second refresh that is the same block and nobody notices. On a run that
-     backfills twenty pools it is twenty-six minutes and some fifteen thousand
-     blocks apart, and the ledger stops reconciling -- measured, the vault came back
-     423.88 AI above the sum of its own inbound transfers, and supply missed by the
-     same amount, because the fee splits 1:1 so both legs lose equally.
-
-     The reads cannot be pinned backwards: this node serves no archive state and
-     eth_call at any past block answers "metadata is not found". So the scan is
-     brought forward to meet them instead. What remains is the second between the
-     head read and the call rather than the length of the whole run. */
-  const stateBlock = await blockNumber();
-  if (stateBlock > latest) {
-    /* A loop, not push(...spread): spreading an array passes one argument per
-       element and overflows the call stack on a long one. This top-up is short by
-       construction, but that exact line has already taken down the bridge step. */
-    const topUp = async (filter, arr) => {
-      for (const x of await scanRange(filter, latest + 1, stateBlock)) arr.push(x);
-    };
-    await topUp(FILTERS.burns, burns);
-    await topUp(FILTERS.locks, locks);
-    await topUp(FILTERS.nvda, nvda);
-    await topUp(FILTERS.legBurn, legBurn);
-    await topUp(FILTERS.legLock, legLock);
-    await topUp(FILTERS.legPlatform, legPlatform);
-    await topUp(FILTERS.platform, platform);
-    await topUp(FILTERS.mints, mints);
-    log(`  topped up ${(stateBlock - latest).toLocaleString()} blocks so the ledger and the live balances agree on a block`);
-    latest = stateBlock;
-  }
 
   // Live state, straight from the chain.
   const [supply, vaultAI, vaultNVDA, pmAI, hookAI, nvdaSupply] = await Promise.all([

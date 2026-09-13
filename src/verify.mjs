@@ -76,11 +76,6 @@ check(
   `residual ${(burns.genesisSupply - burns.burned - burns.totalSupply).toExponential(3)} AI${skewNote}`
 );
 check("burns are non-zero", burns.burned > 0, `${burns.burned.toFixed(2)} AI`);
-check(
-  "vault AI balance matches summed inbound locks",
-  Math.abs(burns.vault.aiBalance - burns.lockedInVault) <= Math.max(1, burns.lockedInVault * 0.001),
-  `balance ${burns.vault.aiBalance.toFixed(2)} vs inbound ${burns.lockedInVault.toFixed(2)}`
-);
 check("effective float is positive and below total supply",
   burns.effectiveFloat > 0 && burns.effectiveFloat < burns.totalSupply,
   `${burns.effectiveFloat.toFixed(0)} of ${burns.totalSupply.toFixed(0)}`);
@@ -93,6 +88,15 @@ const partition = burns.vault.aiBalance + burns.poolManagerAI + burns.effectiveF
 check("live supply partitions exactly into vault + pool inventory + float",
   Math.abs(partition - burns.totalSupply) < 1,
   `${partition.toFixed(2)} vs totalSupply ${burns.totalSupply.toFixed(2)}`);
+/* One assertion, one tolerance.
+
+   The vault balance and the sum of its inbound transfers were checked twice: once
+   against 0.1% of the balance and once against the skew allowance. The same gap
+   therefore came back both green and red, and the loose reading certified a 182 AI
+   discrepancy as fine. Two tolerances on one quantity means the weaker one is
+   noise, so only the strict reading survives. It proves two things at once: that
+   every token in the vault arrived through a transfer the ledger counted, and that
+   none has ever left. */
 check("nothing has ever left the vault",
   Math.abs(burns.lockedInVault - burns.vault.aiBalance) <= reconTolerance,
   `inbound ${burns.lockedInVault.toFixed(2)} vs balance ${burns.vault.aiBalance.toFixed(2)}`);
