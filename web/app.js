@@ -990,8 +990,9 @@ function knownName(a) {
     [c.poolManager || ""]: "v4 pool manager",
     [c.feeSplitter || ""]: "fee splitter",
   };
-  const treasury = (S.treasury?.treasuryWallets || []).some((w) => w.address === (a || "").toLowerCase());
-  return k[(a || "").toLowerCase()] || (treasury ? "LONG treasury wallet" : null);
+  const lc = (a || "").toLowerCase();
+  const treasury = (S.treasury?.treasuryWallets || []).some((w) => w.address === lc);
+  return k[lc] || S.treasury?.identities?.[lc]?.short || (treasury ? "LONG treasury wallet" : null);
 }
 const addrCell = (a) => {
   const name = knownName(a);
@@ -3013,19 +3014,20 @@ function renderTreasury() {
 
   /* The reading: what a holder should take from the treasury's behaviour. */
   const wk = (T.weeklyAi || []).slice(-4);
-  const rSold = sumOf(wk, (r) => r.sold), rBought = sumOf(wk, (r) => r.bought), rLp = sumOf(wk, (r) => r.lpAdded), rMoved = sumOf(wk, (r) => r.sentOn), rBridged = sumOf(wk, (r) => r.bridged || 0);
-  const rOut = rSold + rMoved + rBridged, rIn = rBought + rLp;
+  const rSold = sumOf(wk, (r) => r.sold), rBought = sumOf(wk, (r) => r.bought), rLp = sumOf(wk, (r) => r.lpAdded), rMoved = sumOf(wk, (r) => r.sentOn), rPaid = sumOf(wk, (r) => r.paidOut || 0), rBridged = sumOf(wk, (r) => r.bridged || 0);
+  const rOut = rSold + rMoved + rPaid + rBridged, rIn = rBought + rLp;
   const recentTone = rOut > rIn * 2 ? "warn" : rIn > rOut ? "pos" : "neu";
   /* The paragraph reads from the same end-state view as the table below it: where
      the AI sat when each transaction ENDED, not which address it was first handed
      to. By counterparty, a hand-off to a router that sold into a pool in the same
      transaction read as "moved to an address this page cannot name"; it is a sale. */
   const paidOutN = new Set(W.flatMap((w) => Object.keys(w.aiU.sentOnTo || {}).filter((l) => l.startsWith("0x")))).size;
+  const heldOnFomo = W.filter((w) => /FOMO/.test(T.identities?.[w.a]?.short || "")).reduce((s, w) => s + w.agg.held, 0);
   $("#readTreasury").innerHTML = takeEl(recentTone,
     `Over the treasury's life, about <b>$${compact(soldAll)}</b> was sold${viaRows.length ? ` ($${compact(sold)} in swaps the wallets signed themselves: ${viaRows.map(([n, v]) => `$${compact(v)} via ${n}`).join(", ")}; $${compact(handoffSold)} more handed to a router or pool that sold it in the same transaction)` : ""},
      <b>$${compact(paidOut)}</b> was paid to <b>${paidOutN}</b> wallets outside the operator's set, <b>$${compact(bridged)}</b> was bridged off the chain${movedOther > 0 ? `, <b>$${compact(movedOther)}</b> moved to unresolved addresses` : ""},
-     <b>$${compact(lp)}</b> was seeded as liquidity and <b>$${compact(bought)}</b> spent buying; <b>$${compact(held)}</b> is still held in the operator's accounts, at today's prices.
-     Over the last four weeks in AI: sold <b>${compact(rSold)}</b>, bought <b>${compact(rBought)}</b>, seeded <b>${compact(rLp)}</b>, bridged <b>${compact(rBridged)}</b>, moved <b>${compact(rMoved)}</b>.
+     <b>$${compact(lp)}</b> was seeded as liquidity and <b>$${compact(bought)}</b> spent buying; <b>$${compact(held)}</b> is still held${heldOnFomo ? `, <b>$${compact(heldOnFomo)}</b> of it in a personal FOMO trading wallet` : " in the operator's accounts"}, at today's prices.
+     Over the last four weeks in AI: sold <b>${compact(rSold)}</b>, bought <b>${compact(rBought)}</b>, seeded <b>${compact(rLp)}</b>, bridged <b>${compact(rBridged)}</b>${rPaid ? `, paid to outside wallets <b>${compact(rPaid)}</b>` : ""}${rMoved ? `, moved unresolved <b>${compact(rMoved)}</b>` : ""}.
      ${recentTone === "pos" ? "Recently the treasury has put more back into AI and its pools than it has taken out: a flywheel, while it lasts."
        : recentTone === "warn" ? "Recently the treasury has been a net source of supply: selling, bridging or moving fee income out faster than it recycles it. That is the overhang to price in."
        : "Recently the two roughly balance."}
@@ -3062,12 +3064,18 @@ function renderTreasury() {
   for (const w of W) for (const [k, v] of Object.entries(w.aiU.pools || {})) seeded[k] = (seeded[k] || 0) + v;
   const bridgedByChain = {};
   for (const b of bridgesRows) { const key = b.chain; bridgedByChain[key] = (bridgedByChain[key] || 0) + (b.byToken.USDG || 0); }
+  /* Who holds the parked AI, by name where the chain or a public record says. */
+  const ids = T.identities || {};
+  const parkedBy = W.filter((w) => (w.ai.balance || 0) > 0).sort((a, b) => (b.ai.balance || 0) - (a.ai.balance || 0));
+  const parkedNote = parkedBy.length
+    ? parkedBy.map((w) => `${compact(w.ai.balance)} in ${ids[w.a] ? `<b>${ids[w.a].short}</b> ${short(w.a)}` : short(w.a)}`).join("; ") + (ids[parkedBy[0].a]?.who ? `. ${ids[parkedBy[0].a].who}: ${ids[parkedBy[0].a].evidence}` : "")
+    : "nothing held";
   const termRows = [
     { k: "Sold into v4 pools (AI)", ai: cat.soldV4, usd: usdAi(cat.soldV4), note: "the pool manager held the AI at the end of the transaction; sold on Robinhood Chain's own DEX, through whichever router" },
     { k: "Sent into Uniswap v3 / Algebra pools (AI)", ai: cat.v3, usd: usdAi(cat.v3), note: "sold or seeded on v3-style venues; classified per transaction by their own Swap and Mint events" },
     { k: "Sold through a router, buyer unresolved (AI)", ai: cat.soldRouters, usd: usdAi(cat.soldRouters), note: "a Settler or router still held the AI when the transaction ended" },
-    { k: `Paid to ${cat.external.n} external wallets (AI)`, ai: cat.external.v, usd: usdAi(cat.external.v), note: "round amounts to smart accounts and EOAs outside the operator's set; most have since sold or moved it" },
-    { k: "Parked in the operator's accounts (AI)", ai: cat.parked, usd: usdAi(cat.parked), note: "still held; the largest is untouched since mid-July" },
+    { k: `Paid to ${cat.external.n} external wallets (AI)`, ai: cat.external.v, usd: usdAi(cat.external.v), note: `round amounts to smart accounts and EOAs outside the operator's set; most have since sold or moved it${cat.external.addrs.filter(([a]) => ids[a]).map(([a, v]) => `; ${compact(v)} of it to the ${ids[a].short} ${short(a)}`).join("")}` },
+    { k: "Parked in the operator's accounts (AI)", ai: cat.parked, usd: usdAi(cat.parked), note: parkedNote },
     { k: "Seeded as liquidity (AI)", ai: cat.lp, usd: usdAi(cat.lp), note: Object.entries(seeded).map(([k, v]) => `${k} ${compact(v)}`).join(", ") || "none observed" },
     ...Object.entries(bridgedByChain).sort((a, b) => b[1] - a[1]).map(([chain, v]) => ({ k: `Bridged to ${chain} (USDG)`, ai: null, usd: v,
       note: bridgesRows.filter((b) => b.chain === chain).map((b) => b.recipient ? `${b.recipient.slice(0, 6)}…${b.recipient.slice(-4)}${notes[b.recipient] ? ` (${notes[b.recipient].split(";")[0]})` : /^0x/.test(b.recipient) && (treasurySet2.has(b.recipient.toLowerCase()) || b.recipient.toLowerCase() === (S.meta.contracts.platformFeeRecipient || "").toLowerCase()) ? " (the operator's own address on that chain)" : ""} $${compact(b.byToken.USDG || 0)}` : `unresolved $${compact(b.byToken.USDG || 0)}`).join(" · ") })),
@@ -3085,7 +3093,8 @@ function renderTreasury() {
     (bridgesRows.length ? `<div class="livenote"><b>Bridged off the chain</b> (Relay's index, by destination): ${bridgesRows.map((b) =>
       `${Object.entries(b.byToken).map(([s, v]) => `${s === "USDG" ? "$" : ""}${compact(v)}${s === "USDG" ? "" : " " + s}`).join(" + ")} → <b>${b.chain}</b>${b.recipient ? ` <span class="mono" title="${b.recipient}${notes[b.recipient] ? " — " + notes[b.recipient] : ""}">${b.recipient.slice(0, 6)}…${b.recipient.slice(-4)}</span>` : ""} in ${b.deposits} deposit${b.deposits === 1 ? "" : "s"}`).join(" · ")}.</div>` : "")
     + (wentRows.length ? `<div class="livenote"><b>Where the AI that left ended up</b>, by the address holding it at the end of each transaction: ${wentRows.map(([l, v]) => `${destLabel(l)} <b>${compact(v)}</b>`).join(" · ")}.</div>` : "")
-    + (Object.keys(notes).length ? `<div class="livenote"><b>Off-chain hops, identified by hand on the public Solana RPC (13 Sep 2026):</b> ${Object.entries(notes).map(([a, n]) => `<span class="mono" title="${a}">${a.slice(0, 6)}…${a.slice(-4)}</span> ${n}`).join(" · ")}.</div>` : "");
+    + (Object.keys(notes).length ? `<div class="livenote"><b>Off-chain hops, identified by hand on the public Solana RPC (13 Sep 2026):</b> ${Object.entries(notes).map(([a, n]) => `<span class="mono" title="${a}">${a.slice(0, 6)}…${a.slice(-4)}</span> ${n}`).join(" · ")}.</div>` : "")
+    + (Object.keys(ids).length ? `<div class="livenote"><b>Who the wallets are</b> (Safe owners read from the chain): ${Object.entries(ids).map(([a, d]) => `<span class="mono" title="${a}">${short(a)}</span> <b>${d.short}</b>, ${d.who} <span class="muted">(${d.evidence})</span>`).join(" · ")}.</div>` : "");
 
   /* The flow diagram. */
   const wallets = W.map((w, i) => ({ id: `w${i}`, label: knownName(w.a) || short(w.a), v: w.agg.inUsd, color: "var(--series-3)", labelRight: false }));
@@ -3121,11 +3130,11 @@ function renderTreasury() {
   /* Weekly uses of AI. */
   const weekly = (T.weeklyAi || []).slice(-16);
   if (weekly.length > 1) {
-    groupedBars($("#cTreasuryWeekly"), weekly.map((d) => ({ ...d, out: (d.sentOn || 0) + (d.bridged || 0) })), {
+    groupedBars($("#cTreasuryWeekly"), weekly.map((d) => ({ ...d, out: (d.sentOn || 0) + (d.paidOut || 0) + (d.bridged || 0) })), {
       xKey: "t", keys: ["sold", "bought", "lpAdded", "out"], colors: ["var(--sell)", "var(--buy)", "var(--series-2)", "var(--text-muted)"], xFmt: dayFmt,
       tip: (d) => `<div class="k">week of ${dayFmt(d.t)}</div><div><span style="color:var(--sell)">●</span> sold ${compact(d.sold)} AI</div>
         <div><span style="color:var(--buy)">●</span> bought ${compact(d.bought)} AI</div><div><span style="color:var(--series-2)">●</span> seeded ${compact(d.lpAdded)} AI</div>
-        <div><span style="color:var(--text-muted)">●</span> moved or bridged ${compact(d.out)} AI</div>`,
+        <div><span style="color:var(--text-muted)">●</span> paid out, moved or bridged ${compact(d.out)} AI${d.paidOut ? ` (${compact(d.paidOut)} to outside wallets)` : ""}</div>`,
     });
   } else $("#cTreasuryWeekly").innerHTML = `<p class="muted" style="padding:16px 0">Weekly uses accrue as transactions are classified.</p>`;
 

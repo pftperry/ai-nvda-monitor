@@ -71,6 +71,24 @@ export const OFFCHAIN_NOTES = {
   "2Z3ZTALEr4MTh6k2tcU2ZQqWETtHVNrBjrfa8d9CRf7V": "Solana collector wallet (19 transactions): receives USDC from the two above and sends it on to GSFdsv…",
   "GSFdsvuANvVJ2MvX5kpt2optkQEYs4dE4mAjzpDDyQWE": "Solana address with exchange-scale activity (~46 transactions an hour): consistent with an exchange deposit address, the last hop visible on chain",
 };
+/* What kind of account each treasury wallet is. Read from the chain where the
+   chain says it (Safe owners via getOwners()/getThreshold(), account code), and
+   from the transfer pattern otherwise. Labels for the measured wallets, not
+   measurements; no person is named. */
+export const IDENTITIES = {
+  "0x1890e719822bc704c4f117aa4109401c2bab6f79": { short: "personal FOMO trading wallet", who: "a personal trading wallet on the FOMO app, not an operations account",
+    evidence: "receives the steady stream of small launchpad-token airdrops and social-app transfers a FOMO account gets (dozens a day); its 18.47M AI has not moved since 16 Jul 2026" },
+  "0xa1627ad8a4e6ad23e1085c6872079a60f985007b": { short: "operator account", who: "the operator's main smart account (Alchemy Modular Account v2)",
+    evidence: "receives the fee wallet's forwards; sole or co-owner of the three Safes below; the account that sells through Robinhood Wallet's Settler and Rainbow and bridges USDG to Solana" },
+  "0xae346da9a51535e782d22cdf010a3ce0ba6140ca": { short: "operator Safe (2-of-2)", who: "Safe multisig owned by the operator account and a co-signer", evidence: "getOwners() = 0xa1627ad8…, 0x20481f27…; getThreshold() = 2" },
+  "0xce6541c872a8b50fb7b285de52ad0d189ba89dcc": { short: "operator Safe (2-of-2)", who: "Safe multisig owned by the operator account and the same co-signer", evidence: "getOwners() = 0xa1627ad8…, 0x20481f27…; getThreshold() = 2; received 3,000,000 AI from the sibling Safe" },
+  "0xf1a19597e8842c27bfed01475bec5e12aeeed69a": { short: "operator Safe (1-of-1)", who: "Safe owned by the operator account alone", evidence: "getOwners() = 0xa1627ad8…; getThreshold() = 1" },
+  "0x20481f270ef6842c0938219c2a51fe13ec8435bf": { short: "Safe co-signer", who: "the second owner of both 2-of-2 operator Safes", evidence: "getOwners() on 0xae346da9… and 0xce6541c8…; paid 2.2M AI directly by the operator accounts" },
+};
+/* Accounts the chain itself proves are the operator's, which the hop-based
+   discovery would otherwise leave as "outside wallets": Safes whose getOwners()
+   returns the same owner set as the Safes already followed. */
+const OPERATOR_ACCOUNTS = ["0xce6541c872a8b50fb7b285de52ad0d189ba89dcc"];
 const MACHINERY = new Set([POOL_MANAGER, LONG_HOOK, FEE_SPLITTER, COMMUNITY_VAULT, BURN_ADDRESS]);
 const HOPS = 4;          // how many of the fee wallet's destinations to follow
 const HOP2 = 4;          // and how many of THEIR wallet-like destinations (the operator's other accounts)
@@ -220,6 +238,7 @@ export async function indexTreasury(latest, tm, opts = {}) {
   const feeAI = state.wallets[PLATFORM_FEE_RECIPIENT].AI;
   const hops = Object.entries(feeAI.byDest).filter(([a]) => !NAMES[a]).sort((a, b) => b[1] - a[1]).slice(0, HOPS).map(([a]) => a);
   for (const h of hops) wallets.add(h);
+  for (const a of OPERATOR_ACCOUNTS) wallets.add(a);
   for (const w of [...wallets]) if (w !== PLATFORM_FEE_RECIPIENT) await walk(w);
   /* Second tier: the largest AI destinations of those wallets that are themselves
      wallet-like (an EOA, a 7702 account, a Safe), which is how the operator's other
@@ -364,10 +383,19 @@ export async function indexTreasury(latest, tm, opts = {}) {
       const k = state.txKinds[`${p.tx}:${w}`]; if (!k) continue;
       const raw = k.net?.[AI.toLowerCase()]; if (!raw) continue;
       const v = fmtUnits(BigInt(raw) < 0n ? -BigInt(raw) : BigInt(raw), 18), outFlow = BigInt(raw) < 0n;
-      const key = k.kind === "lp+" && outFlow ? "lpAdded" : k.kind === "lp-" && !outFlow ? "lpRemoved" : k.kind === "swap" ? (outFlow ? "sold" : "bought") : k.kind === "out" ? (k.bridged ? "bridged" : wallets.has(p.cp) ? null : "sentOn") : null;
+      /* Same end-state rule as the per-wallet uses: a plain send whose AI ended in
+         a pool or a router is a sale; one that ended in an outside wallet is paid
+         out; only a send this page cannot place stays "sentOn". */
+      const endOfSend = () => {
+        const to = k.aiTo; if (!to) return "sentOn";
+        if (to === POOL_MANAGER || /Uniswap v3|Algebra|Settler|router|Router|Permit2|hook/.test(NAMES[to] || "")) return "sold";
+        if (wallets.has(to)) return null;
+        return NAMES[to] ? "sentOn" : "paidOut";
+      };
+      const key = k.kind === "lp+" && outFlow ? "lpAdded" : k.kind === "lp-" && !outFlow ? "lpRemoved" : k.kind === "swap" ? (outFlow ? "sold" : "bought") : k.kind === "out" ? (k.bridged ? "bridged" : wallets.has(p.cp) ? null : endOfSend()) : null;
       if (!key) continue;
       const t = Math.floor((tm.at(p.block) || 0) / WEEK) * WEEK; if (!t) continue;
-      const r = weekly.get(t) || { t, sold: 0, bought: 0, lpAdded: 0, lpRemoved: 0, sentOn: 0, bridged: 0 };
+      const r = weekly.get(t) || { t, sold: 0, bought: 0, lpAdded: 0, lpRemoved: 0, sentOn: 0, paidOut: 0, bridged: 0 };
       r[key] += v; weekly.set(t, r);
     }
   }
@@ -420,6 +448,7 @@ export async function indexTreasury(latest, tm, opts = {}) {
     cursor, partial, feeCursor, classVersion: CLASS_VERSION, unclassified: pending,
     names: NAMES,
     notes: OFFCHAIN_NOTES,
+    identities: IDENTITIES,
     bridges: Object.values(bridgeSummary).map((b) => ({ ...b, byToken: Object.fromEntries(Object.entries(b.byToken).map(([k, v]) => [k, r4(v)])) })).sort((a, b) => b.deposits - a.deposits),
     feeWallet: view(PLATFORM_FEE_RECIPIENT),
     treasuryWallets: [...wallets].filter((w) => w !== PLATFORM_FEE_RECIPIENT).map(view),
