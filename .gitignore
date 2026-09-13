@@ -4,3 +4,7 @@ node_modules/
 .DS_Store
 web/data/.raw/
 index.log
+
+# generated social cards
+tools/cards/*.png
+tools/cards/*.svg

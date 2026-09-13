@@ -504,13 +504,13 @@ async function refreshData() {
     const meta = await loadJSON("meta.json");
     if (!meta || meta.headBlock === S.meta?.headBlock) return;   // nothing newly indexed
     const [flow, burns] = await Promise.all(["flow.json", "burns.json"].map(loadJSON));
-    const [routing, bridges, tape, pools, depth, launchpad] = await Promise.all(
-      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json"].map((f) => loadJSON(f).catch(() => null))
+    const [routing, bridges, tape, pools, depth, launchpad, holders] = await Promise.all(
+      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json"].map((f) => loadJSON(f).catch(() => null))
     );
     Object.assign(S, {
       meta, flow, burns,
       routing: routing ?? S.routing, bridges: bridges ?? S.bridges,
-      tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth, launchpad: launchpad ?? S.launchpad,
+      tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth, launchpad: launchpad ?? S.launchpad, holders: holders ?? S.holders,
     });
     renderAll();
     refreshLiveTail();   // the live window starts at the new head, so re-scope it
@@ -756,6 +756,89 @@ function renderBurn() {
 }
 
 /* ── tab 2: float & lockup ──────────────────────────────────────────────── */
+/**
+ * Who holds AI.
+ *
+ * Two readings of one replay. The dollar buckets are the view holder dashboards
+ * show, and a reader can check the counts against one. The AI-balance line is the
+ * one that says something about the future: dollar buckets rise with the price by
+ * construction, so only a count at a fixed token balance can tell accumulation
+ * from appreciation.
+ */
+const HOLDER_AI_INDEX = 1;   // which of aiThresholds the line and the verdict track
+
+function renderHolders() {
+  const h = S.holders;
+  const snaps = (h?.snapshots || []).filter((x) => x.holders > 0);
+  // Hidden entirely until the first replay is published, rather than an empty card.
+  const card = $("#kpiHolders")?.closest(".card");
+  if (card) card.hidden = snaps.length < 2;
+  if (snaps.length < 2) {
+    $("#kpiHolders").innerHTML = `<p class="muted">Holder replay not published yet.</p>`;
+    for (const id of ["#cHolderBuckets", "#cHoldersAi", "#takeHolders"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    return;
+  }
+  const last = snaps.at(-1);
+  const wk = snaps[Math.max(0, snaps.length - 1 - 42)];          // 42 four-hour rows = 7 days
+  const thr = h.aiThresholds?.[HOLDER_AI_INDEX];
+  const aiNow = last.aboveAi?.[HOLDER_AI_INDEX], aiWk = wk.aboveAi?.[HOLDER_AI_INDEX];
+  const dHolders = last.holders - wk.holders;
+
+  $("#kpiHolders").innerHTML = kpiEl(last.holders.toLocaleString(),
+    `${dHolders >= 0 ? "+" : ""}${dHolders.toLocaleString()} in 7d`, dHolders >= 0 ? "up" : "down",
+    "addresses holding AI, excluding protocol contracts")
+    + (h.complete ? "" : `<div class="warnline">The replay has not reached the chain head yet, so these counts are as of an earlier block.</div>`)
+    + `<div class="livenote">replayed from every AI transfer since genesis
+       · balances reconcile to supply to within <b>${Math.abs(h.reconciliation?.residualAi ?? 0).toFixed(6)}</b> AI
+       · as of ${dayFmt(last.t)}</div>`;
+
+  /* Tiles, not a stacked chart: under $10 is most of the population and the top
+     bucket is a few percent of it, the same spread that made the launchpad bars
+     unreadable. The weekly change sits under each count. */
+  if (last.buckets && wk.buckets) {
+    $("#cHolderBuckets").innerHTML = `<div class="bucketrow">${h.buckets.map((b, i) => {
+      const n = last.buckets[i], d = n - wk.buckets[i];
+      return `<div class="bucket"><div class="bn">${n.toLocaleString()}</div><div class="bl">${b.label}</div>
+        <div class="bl" style="color:${d >= 0 ? "var(--buy)" : "var(--sell)"}">${d >= 0 ? "+" : ""}${d.toLocaleString()} in 7d</div></div>`;
+    }).join("")}</div>`;
+  } else $("#cHolderBuckets").innerHTML = "";
+
+  if (thr != null) {
+    const rows = snaps.slice(-360).map((x) => ({ t: x.t, n: x.aboveAi?.[HOLDER_AI_INDEX] ?? null })).filter((x) => x.n != null);
+    lineChart($("#cHoldersAi"), rows, {
+      xKey: "t", yKey: "n", color: "var(--series-1)", area: true, xFmt: dayFmt,
+      fmt: (v) => v.toFixed(0),
+      tip: (d) => `<div class="k">${dayFmt(d.t)} ${new Date(d.t * 1000).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric" })}</div>
+        <div>${d.n.toLocaleString()} addresses hold ${compact(thr, 0)}+ AI</div>`,
+    });
+  }
+
+  /* The verdict compares breadth at a fixed token balance with the price over the
+     same week. A band of one percent either way is "flat", because a few addresses
+     crossing a threshold on a single transfer is not a trend. */
+  const pWk = wk.price && last.price ? last.price / wk.price - 1 : null;
+  const aWk = aiWk ? aiNow / aiWk - 1 : null;
+  const dir = (x) => (x == null ? null : x > 0.01 ? "up" : x < -0.01 ? "down" : "flat");
+  const a = dir(aWk), p = dir(pWk);
+  const read =
+    a === "up" && p !== "up" ? ["pos", "accumulation", "more addresses are holding meaningful size while the price has not run, which is buying rather than appreciation"] :
+    a === "up" && p === "up" ? ["pos", "broadening into strength", "the base of meaningful holders is growing along with the price rather than the rally being carried by fewer hands"] :
+    a === "down" && p === "up" ? ["warn", "distribution into the rally", "the price is rising while fewer addresses hold meaningful size, which is holders selling into strength"] :
+    a === "down" ? ["warn", "thinning", "fewer addresses hold meaningful size and the price is not rising to compensate"] :
+    ["neu", "steady", "the count of meaningful holders is within a percent of where it was a week ago"];
+
+  $("#takeHolders").innerHTML = takeEl(read[0],
+    `<b>${aiNow?.toLocaleString() ?? "—"}</b> addresses hold ${compact(thr, 0)} AI or more, against
+     <b>${aiWk?.toLocaleString() ?? "—"}</b> a week ago${aWk == null ? "" : ` (<b>${pct(aWk, 1)}</b>)`},
+     while the price moved <b>${pWk == null ? "—" : pct(pWk, 1)}</b>. That reads as <b>${read[1]}</b>:
+     ${read[2]}.
+     <span class="muted">The threshold is in AI, not dollars, on purpose. Dollar buckets climb whenever the price
+     does, so a rally manufactures "new $1k holders" without anyone buying; a fixed token balance cannot be crossed
+     that way. Protocol contracts (pool manager, vault, hook, fee splitter) are excluded from every count and kept
+     in the supply reconciliation. An address is not a person: exchanges and bots hold for many, and one person
+     can hold across many.</span>`);
+}
+
 function renderFloat() {
   const b = S.burns;
   const removed = b.burned + b.vault.aiBalance;
@@ -2905,8 +2988,31 @@ function renderMethod() {
 }
 
 /* ── boot ───────────────────────────────────────────────────────────────── */
+/**
+ * An age note on every card fed by a slow-path artifact.
+ *
+ * The banner at the top reads meta.json, which the fast refresh rewrites every few
+ * hours. Bridges, the launchpad census and the holder replay are written by other
+ * runs, so when those stopped for a day the banner stayed quiet and the bridge chart
+ * simply ended a day early with nothing saying why. Each card now checks its own
+ * artifact. Eight hours is past the six-hour refresh plus a run’s length; anything
+ * older than that is a stall, not a schedule.
+ */
+function renderAges() {
+  const now = Date.now() / 1000;
+  for (const el of document.querySelectorAll("[data-age]")) {
+    const a = S[el.dataset.age];
+    const mins = a?.updatedAt ? Math.round((now - a.updatedAt) / 60) : null;
+    if (mins == null || mins < 8 * 60) { el.hidden = true; continue; }
+    el.hidden = false;
+    el.innerHTML = `Measured <b>${fmtAge(mins)} ago</b> \u2014 this card refreshes on the slower cycle and has missed at least one.`;
+  }
+}
+
 function renderAll() {
   renderInvestor(); renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
+  try { renderHolders(); } catch { /* the holder replay is optional; never blank the tab */ }
+  renderAges();
   /* Also on first paint, from the artifact timestamp -- waiting for the live poll
      would leave the staleness unreported for thirty seconds, or forever if the RPC
      is blocked, which is exactly when it matters most. */
@@ -2940,10 +3046,10 @@ async function boot() {
     const [meta, flow, burns] = await Promise.all(
       ["meta.json", "flow.json", "burns.json"].map(loadJSON)
     );
-    const [routing, bridges, tape, pools, depth, launchpad] = await Promise.all(
-      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json"].map((f) => loadJSON(f).catch(() => null))
+    const [routing, bridges, tape, pools, depth, launchpad, holders] = await Promise.all(
+      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json"].map((f) => loadJSON(f).catch(() => null))
     );
-    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad });
+    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad, holders });
   } catch (e) {
     $("#boot").remove();
     $("#bootErr").innerHTML = `<div class="err"><b>Could not load indexed data.</b><br>

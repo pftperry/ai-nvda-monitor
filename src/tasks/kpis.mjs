@@ -85,7 +85,14 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, now, prior 
   const fd = [...flowDays.values()].filter((r) => r.t < Math.floor(now / DAY) * DAY).sort((a, b) => a.t - b.t);
   const net7 = trailing(fd, 7, (r) => r.net);
 
-  const org = bridges?.byKind?.organic;
+  /* A value only counts as this hour's reading if its artifact was written
+     recently. Bridges refresh on the slow path, and when that path stopped firing
+     for a day this panel stamped the same 1.37% onto every hourly row -- which a
+     correlation study reads as a quiet, perfectly stable series rather than as no
+     data. Past eight hours the field is recorded as missing. */
+  const FRESH = 8 * 3600;
+  const fresh = (a) => !!a && now - (a.updatedAt || 0) <= FRESH;
+  const org = fresh(bridges) ? bridges.byKind?.organic : null;
 
   const row = {
     t: hour,
@@ -103,6 +110,10 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, now, prior 
     depthImbalance: depth?.imbalanceUsd ?? null,
     depthBid: depth?.bidUsd ?? null,
     depthAsk: depth?.askUsd ?? null,
+    // The band a trade actually reaches; the +/-50% figures above are dominated by
+    // out-of-range liquidity and read bid-heavy when the near book is level.
+    nearBid: depth?.near?.[0]?.bidUsd ?? null,
+    nearAsk: depth?.near?.[0]?.askUsd ?? null,
   };
 
   /* Every field's window, written beside the data.
@@ -123,12 +134,19 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, now, prior 
     removedPerDay: "AI burned + locked, trailing 7 complete days, per day",
     supplyRemoved: "(burned + vault balance) / genesis supply, cumulative",
     net7: "net AI bought minus sold, trailing 7 complete days, all indexed pools",
-    organicShare: "flow-weighted AI-pair share of organic bridges; rotates, so it is stale by up to a few runs",
+    organicShare: "flow-weighted AI-pair share of organic bridges; null when bridges.json is over 8h old",
     depthImbalance: "USD bids minus asks within +/-50% of spot, all indexed venues",
     depthBid: "USD of quote below spot", depthAsk: "USD of AI above spot",
+    nearBid: "USD of quote within 2% below spot", nearAsk: "USD of AI within 2% above spot",
   };
 
-  const history = (prior?.rows || []).filter((r) => r.t !== hour).slice(-24 * 120);
+  /* One-time repair of rows already written during the stall: bridges.json was
+     last written 2026-09-12 14:15 UTC and next written 2026-09-13 16:15, so any
+     row stamped more than eight hours into that gap carried a stale reading.
+     Idempotent, and a no-op once those rows age out of the retained window. */
+  const STALL_FROM = 1789222528 + FRESH, STALL_TO = 1789316138;
+  const history = (prior?.rows || []).filter((r) => r.t !== hour).slice(-24 * 120)
+    .map((r) => (r.t > STALL_FROM && r.t < STALL_TO && r.organicShare != null ? { ...r, organicShare: null } : r));
   history.push(row);
   history.sort((a, b) => a.t - b.t);
   return { updatedAt: now, defs, rows: history };

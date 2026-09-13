@@ -110,6 +110,7 @@
     <div class="grid g2">
       <div class="card">
         <h3>1. Tokens launched per day</h3>
+        <div class="agenote" data-age="launchpad" hidden></div>
         <p class="sub">
           <b>Tokens the LONG launchpad creates each day.</b> Every pool carrying the LONG hook is a launchpad
           token and the hook address sits in the pool’s own <code>Initialize</code> log, so this is a census
@@ -190,6 +191,7 @@
       </div>
       <div class="card">
         <h3>6b. AI as a base pair — stock and flow</h3>
+        <div class="agenote" data-age="launchpad" hidden></div>
         <p class="sub">
           The hub thesis says other tokens will come to quote themselves in AI the way they quote themselves in
           ETH. That is a counting question and this counts it: across every pool the LONG launchpad has created,
@@ -376,6 +378,24 @@
       <div class="scroll" style="margin-top:12px"><table id="tSupply"></table></div>
     </div>
 
+    <div class="card" style="margin-top:14px">
+      <h3>Who holds AI</h3>
+        <div class="agenote" data-age="holders" hidden></div>
+      <p class="sub">
+        Every AI transfer since genesis replayed into a balance per address, snapshotted every four hours. Nothing
+        is sampled, and the balances must sum to supply exactly before any count is published.
+        <b>Two readings, and only one of them leads.</b> The dollar tiles are the familiar view and match what holder
+        dashboards show. But a dollar bucket rises whenever the price does, so a rally manufactures new “$1k holders”
+        without anyone buying. The line underneath counts addresses above a fixed balance <i>in AI</i>, which price
+        cannot move: when it rises, tokens have genuinely spread into more meaningful hands.
+      </p>
+      <div id="kpiHolders"></div>
+      <div id="cHolderBuckets"></div>
+      <h4 class="subhead">Addresses holding a meaningful balance, in AI</h4>
+      <div class="chart" id="cHoldersAi"></div>
+      <div id="takeHolders"></div>
+    </div>
+
     <div class="grid g2" style="margin-top:14px">
       <div class="card">
         <h3>Permanent removal over time</h3>
@@ -421,6 +441,7 @@
       </div>
       <div class="card">
         <h3>New AI bridges per day</h3>
+        <div class="agenote" data-age="bridges" hidden></div>
         <p class="sub">Pools opened against AI each day that are <b>still trading</b> now; hover for how many
           opened in total. Formation rate is the clearest read on whether AI is being adopted as a venue — but the surviving count is
           survivorship-filtered, so older days under-report by however many bridges have since gone quiet.</p>
@@ -430,6 +451,7 @@
 
     <div class="card" style="margin-top:14px">
       <h3>AI-pair share by token</h3>
+        <div class="agenote" data-age="bridges" hidden></div>
       <p class="sub">
         For each token, the share of its total measured on-chain volume that settles on its AI
         bridge rather than its other venues. Tokens the launchpad created against AI are marked
@@ -465,6 +487,7 @@
   <section class="panel" id="p-launchpad" role="tabpanel" aria-labelledby="tab-launchpad" hidden>
     <div class="card">
       <h3>Tokens launched per day</h3>
+        <div class="agenote" data-age="launchpad" hidden></div>
       <p class="sub">
         Every pool carrying the LONG hook is a launchpad token, and the hook address is in the pool's own
         <code>Initialize</code> log — so this is a census, not a selection. Counting a launch needs only that log,
@@ -478,6 +501,7 @@
 
     <div class="card" style="margin-top:14px">
       <h3>Cumulative tokens launched</h3>
+        <div class="agenote" data-age="launchpad" hidden></div>
       <p class="sub">The same series, accumulated. A platform thesis wants this line to keep bending upward;
         a single burst that flattens is a launch event rather than infrastructure.</p>
       <div class="chart" id="cLaunchCum"></div>
@@ -486,6 +510,7 @@
     <div style="height:14px"></div>
     <div class="card">
       <h3>How many tokens LONG has produced, by size</h3>
+        <div class="agenote" data-age="launchpad" hidden></div>
       <p class="sub">
         The platform thesis says long.xyz is infrastructure that keeps producing assets rather than a venue that
         got lucky once. That is a counting question. Every pool carrying the LONG hook is a launchpad token and

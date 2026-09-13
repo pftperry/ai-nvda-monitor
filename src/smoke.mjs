@@ -73,6 +73,21 @@ console.log("Module graph");
   ok(`all ${edges} relative imports across ${files.length} modules resolve`, () => {
     assert(!broken.length, `missing:\n         ${broken.join("\n         ")}`);
   });
+
+  /* Resolving imports is not parsing. An import line inserted above the indexer's
+     shebang left every path resolvable and the file unparseable, and this check
+     passed it -- CI would then have failed the index step on every run and quietly
+     republished the last good data. So every module, the page script included, is
+     also handed to the real parser. */
+  const { execFileSync } = await import("child_process");
+  const unparsed = [];
+  for (const f of [...files, "web/app.js"]) {
+    try { execFileSync(process.execPath, ["--check", f], { stdio: "pipe" }); }
+    catch (e) { unparsed.push(`${f}: ${String(e.stderr || e.message).split("\n").find((l) => l.trim()) || "syntax error"}`); }
+  }
+  ok(`all ${files.length + 1} modules parse`, () => {
+    assert(!unparsed.length, `unparseable:\n         ${unparsed.join("\n         ")}`);
+  });
 }
 
 console.log("Routing");

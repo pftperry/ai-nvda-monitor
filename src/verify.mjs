@@ -34,6 +34,7 @@ const bridges = readData("bridges.json");
 const poolsArtifact = readData("pools.json");
 const depth = readData("depth.json");
 const launchpad = readData("launchpad.json");
+const holders = readData("holders.json");
 
 if (!meta || !burns || !flow) {
   console.error("Missing data artifacts. Run `npm run index` first.");
@@ -422,6 +423,36 @@ if (launchpad && launchpad.buckets?.length) {
     }
   } else console.log("  --  anchor flow absent (older artifact)");
 } else console.log("  --  launchpad.json absent (optional)");
+
+console.log("\nHolder distribution");
+if (holders && holders.snapshots?.length) {
+  /* A holder count is only as good as the replay under it, and a replay can be
+     wrong in a way that still produces plausible counts: skip one window of
+     transfers and a few thousand addresses simply hold the wrong amount. The
+     balances have to sum to supply to the wei, and no address may be negative. */
+  check("holder balances sum exactly to supply", Math.abs(holders.reconciliation.residualAi) < 1e-6,
+    `residual ${holders.reconciliation.residualAi} AI`);
+  check("no address holds a negative balance", holders.reconciliation.negativeBalances === 0,
+    `${holders.reconciliation.negativeBalances} negative`);
+
+  const snaps = holders.snapshots;
+  check("snapshots run on an unbroken four-hour grid",
+    snaps.every((x, i) => i === 0 || x.t - snaps[i - 1].t === 14400), `${snaps.length} snapshots`);
+  check("dollar buckets partition the holders",
+    snaps.every((x) => x.buckets == null || x.buckets.reduce((a, b) => a + b, 0) === x.holders));
+  check("higher AI thresholds never count more holders than lower ones",
+    snaps.every((x) => (x.aboveAi || []).every((v, i, a) => v <= x.holders && (i === 0 || v <= a[i - 1]))));
+
+  /* The replay’s supply at its last four-hour boundary against the live read. They
+     cannot match exactly -- burns keep landing after the boundary -- but the gap is
+     at most a few hours of burn, far under a tenth of a percent. */
+  const last = snaps.at(-1);
+  warn("the replayed supply agrees with the live supply",
+    Math.abs(last.supply - burns.totalSupply) / burns.totalSupply < 0.001,
+    `${last.supply.toFixed(0)} replayed vs ${burns.totalSupply.toFixed(0)} live`);
+  warn("the holder replay has reached the head", holders.complete === true,
+    holders.complete ? "" : "still resuming from its cursor; counts are as of an earlier block");
+} else console.log("  --  holders.json absent (optional)");
 console.log(`
 ${checks - failures}/${checks} checks passed${warnings ? `, ${warnings} warning${warnings === 1 ? "" : "s"}` : ""}.`);
 if (failures) {

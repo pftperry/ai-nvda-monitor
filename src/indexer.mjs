@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 import * as C from "./config.mjs";
 import { blockNumber, rpcCalls } from "./rpc.mjs";
 import { hookPermissions } from "./decode.mjs";
@@ -12,6 +13,7 @@ import { indexDepth } from "./tasks/depth.mjs";
 import { snapshotKpis } from "./tasks/kpis.mjs";
 import { censusLongPools, rankByActivity, classifyLaunches, anchorPrices, priceLaunchpadTokens, summariseLaunchpad } from "./tasks/launchpad.mjs";
 import { indexBurns } from "./tasks/burns.mjs";
+import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
 
 const argv = process.argv.slice(2);
@@ -413,6 +415,35 @@ try {
   console.log(`  kpi panel: ${kpis.rows.length} hourly rows`);
 } catch (e) {
   softFail("kpi snapshot", e, "the panel keeps its previous rows");
+}
+
+/* Holder distribution. Runs on every mode: once backfilled, a fast refresh adds a
+   few thousand transfers and costs seconds. The first pass replays roughly four
+   million transfers and does not fit one run, so it is budgeted and resumes from
+   its cursor -- and, like the census, an unfinished replay never replaces a
+   finished artifact already on disk. */
+/* Only once there is something to resume from. Without the committed seed or a
+   cached replay, a CI run would start from genesis at 75 seconds a pass and publish
+   July-era counts labelled as current for a day or more. */
+if (!flag("no-holders") && (store.get("holders") || fs.existsSync("seed/holders-state.json.gz"))) {
+  step("Replaying AI transfers into holder balances");
+  try {
+    const budget = opt("holders-budget", fast ? 75 : deep ? 1500 : 600);
+    const prior = readData("holders.json");
+    const out = await indexHolders(latest, tm, {
+      state: await pickHolderState(store.get("holders"), "seed/holders-state.json.gz"),
+      priceAt: usdPriceLookup(flowOut),
+      deadline: Date.now() + budget * 1000,
+    });
+    store.set("holders", out.state);
+    if (prior?.complete && !out.artifact.complete) {
+      console.log("  replay still catching up; keeping the complete holders.json already published");
+    } else {
+      writeData("holders.json", { updatedAt: now, ...out.artifact });
+    }
+  } catch (e) {
+    softFail("holders", e, "the previous holders.json stays in place");
+  }
 }
 
 store.save();
