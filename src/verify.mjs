@@ -293,6 +293,35 @@ if (depth && depth.pools?.length) {
 
   warn("every indexed venue has a replayed tick ladder", !depth.skipped,
     depth.skipped ? `${depth.skipped} venue(s) not yet replayed; depth understates until they are` : "");
+
+  /* The near-spot bands are what the headline KPI reads, and they are summed on a
+     second pass through the same ladder walk as the wide book. Two independent
+     sums of one quantity is exactly the setup where a units or sign slip hides, so
+     assert the containment: a tighter band cannot hold more than a looser one, and
+     none of them can hold more than the whole window. */
+  if (depth.near?.length) {
+    const w = depth.near.map((n) => n.pct);
+    check("near-spot windows are ordered and inside the full book",
+      w.every((x, i) => x > 0 && (i === 0 || x > w[i - 1])) && w[w.length - 1] <= depth.windowPct,
+      w.map((x) => (x * 100).toFixed(0) + "%").join(" < ") + ` <= ${(depth.windowPct * 100).toFixed(0)}%`);
+
+    const nested = depth.near.every((n, i) =>
+      i === 0 || (n.bidUsd >= depth.near[i - 1].bidUsd - 1 && n.askUsd >= depth.near[i - 1].askUsd - 1));
+    const contained = depth.near.every((n) => n.bidUsd <= depth.bidUsd + 1 && n.askUsd <= depth.askUsd + 1);
+    check("depth in a tighter band never exceeds a wider one", nested && contained,
+      depth.near.map((n) => `${(n.pct * 100).toFixed(0)}%: ${Math.round(n.bidUsd / 1e3)}k/${Math.round(n.askUsd / 1e3)}k`).join(", ") +
+      ` vs full ${Math.round(depth.bidUsd / 1e3)}k/${Math.round(depth.askUsd / 1e3)}k`);
+
+    check("near-spot depth is positive and finite",
+      depth.near.every((n) => isFinite(n.bidUsd) && isFinite(n.askUsd) && n.bidUsd >= 0 && n.askUsd >= 0));
+
+    /* Sanity on the headline itself: a book that reads 0% or 100% bids within two
+       percent of spot is a decoded-wrong book, not a one-sided market. */
+    const tight = depth.near[0];
+    const share = tight.bidUsd / Math.max(1, tight.bidUsd + tight.askUsd);
+    warn("the near-spot book has both sides", share > 0.01 && share < 0.99,
+      `${(share * 100).toFixed(1)}% bids within ${(tight.pct * 100).toFixed(0)}% of spot`);
+  } else console.log("  --  near-spot bands absent (older artifact)");
 } else console.log("  --  depth.json absent (optional)");
 
 console.log("\nLaunchpad census");
@@ -348,6 +377,36 @@ if (launchpad && launchpad.buckets?.length) {
   const cum = (lp.launchesByDay || []).map((d) => d.cumulative);
   check("cumulative launches never decrease",
     cum.every((v, i) => i === 0 || v >= cum[i - 1]), `${cum.length} day(s)`);
+
+  /* The adoption ratio is the first thing on the Investor tab, so it gets the
+     tightest reading. Its whole value is that both terms come from the census by
+     address and neither depends on the real-world-asset list: assert that, by
+     checking the totals against the census the same file reports. */
+  const flow = lp.anchorFlow || [];
+  if (flow.length) {
+    check("every day’s AI-anchored count fits inside that day’s pool count",
+      flow.every((d) => d.ai >= 0 && d.all > 0 && d.ai <= d.all),
+      `${flow.length} day(s)`);
+
+    check("the published share is the ratio it claims to be",
+      flow.every((d) => Math.abs((d.share ?? 0) - d.ai / d.all) < 1e-5));
+
+    /* The flow must reconcile with the stock. Every pool the census counted lands
+       in exactly one day, and every AI-side pool is what the anchor ranking counts,
+       so these are the same population summed two ways. A gap means one of them
+       stopped seeing part of the census -- which is precisely the failure that a
+       cumulative rank cannot show. */
+    const sumAll = flow.reduce((n, d) => n + d.all, 0);
+    const sumAi = flow.reduce((n, d) => n + d.ai, 0);
+    warn("the daily flow sums back to the census",
+      Math.abs(sumAll - lp.poolsWithHook) <= Math.max(2, lp.poolsWithHook * 0.001),
+      `${sumAll.toLocaleString()} across days vs ${(lp.poolsWithHook ?? 0).toLocaleString()} in the census`);
+    if (lp.aiAnchorRank?.pools) {
+      check("AI-side pools sum to AI’s standing in the anchor ranking",
+        Math.abs(sumAi - lp.aiAnchorRank.pools) <= Math.max(2, lp.aiAnchorRank.pools * 0.001),
+        `${sumAi.toLocaleString()} across days vs ${lp.aiAnchorRank.pools.toLocaleString()} ranked`);
+    }
+  } else console.log("  --  anchor flow absent (older artifact)");
 } else console.log("  --  launchpad.json absent (optional)");
 console.log(`
 ${checks - failures}/${checks} checks passed${warnings ? `, ${warnings} warning${warnings === 1 ? "" : "s"}` : ""}.`);

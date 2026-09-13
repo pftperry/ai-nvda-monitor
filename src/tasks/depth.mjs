@@ -67,6 +67,20 @@ export async function poolTickLadder(poolId, latest, prior = null, opts = {}) {
  * $X/P. So NVDA, ETH and the rest get dollar values without trusting anything
  * beyond the stablecoin peg, which the Method tab already states as an assumption.
  */
+/**
+ * The bands a trade can actually reach.
+ *
+ * The full book is measured over +/-50% because that is the shape worth drawing.
+ * It is the wrong window for asking which way price goes next. Measured on this
+ * book: bids are 57.8% of depth across +/-50% and 49.1% across +/-2%, so the
+ * "buyside imbalance" the headline reported was almost entirely liquidity parked
+ * far out of range, not money standing under the price. Depth fifty percent away
+ * cannot be hit by any trade that matters this week; depth two percent away is hit
+ * by an ordinary one. These are summed exactly from the tick ladder rather than
+ * from the 0.83%-wide display bins, which cannot resolve a 2% band.
+ */
+export const NEAR_WINDOWS = [0.02, 0.05, 0.10];
+
 export function poolDepth(pool, ladder, aiUsd, opts = {}) {
   const windowPct = opts.windowPct ?? 0.5;
   const bins = opts.bins ?? 120;
@@ -102,6 +116,7 @@ export function poolDepth(pool, ladder, aiUsd, opts = {}) {
   const ticks = Object.keys(ladder.net).map(Number).sort((a, b) => a - b);
   let L = 0n;
   let bidUsd = 0, askUsd = 0, tvlUsd = 0;
+  const near = NEAR_WINDOWS.map((pct) => ({ pct, bidUsd: 0, askUsd: 0 }));
 
   for (let i = 0; i < ticks.length - 1; i++) {
     L += BigInt(ladder.net[ticks[i]]);
@@ -132,6 +147,13 @@ export function poolDepth(pool, ladder, aiUsd, opts = {}) {
       rows[idx].ask += ai;
       bidUsd += quote;
       askUsd += ai;
+      /* Same rule as the bins, on tighter bands: quote below spot is a committed
+         bid, AI above spot is committed supply. A position straddling spot lands
+         its two legs on opposite sides, which is what it is. */
+      for (const n of near) {
+        if (priceUsd >= aiUsd * (1 - n.pct) && priceUsd < aiUsd) n.bidUsd += quote;
+        else if (priceUsd > aiUsd && priceUsd <= aiUsd * (1 + n.pct)) n.askUsd += ai;
+      }
     }
   }
 
@@ -139,6 +161,7 @@ export function poolDepth(pool, ladder, aiUsd, opts = {}) {
     poolId: pool.poolId, pair: pool.pairSymbol, fee: pool.lastFeePips ?? pool.fee,
     spot: +spotQuotePerAi.toPrecision(8), spotUsd: +aiUsd.toPrecision(8),
     tvlUsd: Math.round(tvlUsd), bidUsd: Math.round(bidUsd), askUsd: Math.round(askUsd),
+    near: near.map((n) => ({ pct: n.pct, bidUsd: Math.round(n.bidUsd), askUsd: Math.round(n.askUsd) })),
     bins: rows.map((r) => ({ p: +((r.lo + r.hi) / 2).toPrecision(6), bid: Math.round(r.bid), ask: Math.round(r.ask) })),
   };
 }
@@ -186,6 +209,11 @@ export async function indexDepth(pools, latest, aiUsd, opts = {}) {
   if (opts.io?.write) opts.io.write("ladders.json", { updatedAt: Math.floor(Date.now() / 1000), ladders });
 
   out.sort((a, b) => b.tvlUsd - a.tvlUsd);
+  const near = NEAR_WINDOWS.map((pct, i) => ({
+    pct,
+    bidUsd: out.reduce((s, d) => s + (d.near?.[i]?.bidUsd || 0), 0),
+    askUsd: out.reduce((s, d) => s + (d.near?.[i]?.askUsd || 0), 0),
+  }));
   const bidUsd = out.reduce((s, d) => s + d.bidUsd, 0);
   const askUsd = out.reduce((s, d) => s + d.askUsd, 0);
 
@@ -207,6 +235,10 @@ export async function indexDepth(pools, latest, aiUsd, opts = {}) {
   history.push({
     t: hourKey, bid: Math.round(bidUsd), ask: Math.round(askUsd),
     imbalance: Math.round(bidUsd - askUsd), aiUsd: +aiUsd.toPrecision(8),
+    /* The tightest band, hour by hour. Nothing can rank today against its own
+       history until there is a history, and there are four hours of it; this is
+       what makes the percentile possible later rather than an excuse to skip it. */
+    nearBid: near[0].bidUsd, nearAsk: near[0].askUsd, nearPct: near[0].pct,
     venues: out.length,
   });
   history.sort((a, b) => a.t - b.t);
@@ -223,11 +255,12 @@ export async function indexDepth(pools, latest, aiUsd, opts = {}) {
     }
   }
 
-  log(`  depth across ${out.length} pools: buyside $${(bidUsd / 1e6).toFixed(2)}M vs sellside $${(askUsd / 1e6).toFixed(2)}M` +
+  log(`  near spot (+/-${(near[0].pct * 100).toFixed(0)}%): buyside $${Math.round(near[0].bidUsd).toLocaleString()} vs sellside $${Math.round(near[0].askUsd).toLocaleString()}`);
+  log(`  depth across ${out.length} pools: buyside ${(bidUsd / 1e6).toFixed(2)}M vs sellside ${(askUsd / 1e6).toFixed(2)}M` +
       `${skipped ? ` (${skipped} pool(s) skipped)` : ""}`);
 
   return {
-    windowPct, bins, aiUsd,
+    windowPct, bins, aiUsd, near,
     // Every pool shares one dollars-per-AI grid, so these bins are addable.
     gridIsUsdPerAi: true,
     pools: out,

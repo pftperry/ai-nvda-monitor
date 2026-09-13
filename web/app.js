@@ -1494,7 +1494,7 @@ function renderInvestor() {
     `<b>${pctLevel(capNow, 1)}</b> of AI volume across the ${S.flow.pools.length} indexed pools crosses the tolled
      AI/NVDA pool${capPrior == null ? "" : `, ${capNow >= capPrior ? "up" : "down"} from ${pctLevel(capPrior, 1)} the week before`}.
      This is the awkward one: every new bridge grows the hub but routes volume <i>away</i> from the pool that
-     feeds the vault, so success in indicator 4 can quietly shrink indicator 2. Watch them together, not apart.
+     feeds the vault, so success in indicator 6 can quietly shrink indicator 4. Watch them together, not apart.
      <span class="muted">Denominator is indexed pools only, so treat the level as a trend, not an absolute.</span>`);
 
   /* ── 6. float removal ─────────────────────────────────────────────── */
@@ -1519,6 +1519,8 @@ function renderInvestor() {
      outside totalSupply, vault AI still exists inside it. They are near-identical in size only because the fee splits 1:1.</span>`);
 
   renderPrice(feeSeries);
+  try { renderAdoption(); } catch { /* the census is optional; never blank the tab */ }
+  try { renderNearDepth(); } catch { /* near-spot depth is optional */ }
   try { renderDepth(); } catch { /* depth is optional; never blank the tab */ }
   try { renderAnchorRank(); } catch { /* the anchor census is optional */ }
   try { renderRunners(); renderLaunches(); } catch { /* the launchpad tab is optional */ }
@@ -2273,6 +2275,158 @@ function renderSinceLast(now) {
  * sellside are named rather than left as a sign, because "+$1.1M" tells you nothing
  * about direction unless you already know the convention.
  */
+/**
+ * 1. Platform adoption of AI.
+ *
+ * Share of new LONG pools that put AI on one side, weekly and daily. The stock
+ * version of this (card 6b) can only rise, so it cannot tell anyone that adoption
+ * halved; the flow can, and did.
+ */
+function renderAdoption() {
+  const rows = completeDays(S.launchpad?.anchorFlow || []);
+  if (rows.length < 3) {
+    $("#kpiAdopt").innerHTML = `<p class="muted">Anchor adoption not measured yet. It needs the LONG census, which builds over the first few runs.</p>`;
+    for (const id of ["#cAdopt", "#takeAdopt"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    return;
+  }
+
+  /* Weekly, not daily, for the headline. Pool creation is bursty enough that a
+     single day swings the ratio by a factor of five, and a number that moves that
+     much on its own is not a level anyone can act on. */
+  const ai7 = trailing(rows, 7, (d) => d.ai), all7 = trailing(rows, 7, (d) => d.all);
+  const ai7p = trailing(rows, 7, (d) => d.ai, 7), all7p = trailing(rows, 7, (d) => d.all, 7);
+  const share = all7 ? ai7 / all7 : null;
+  const sharePrior = all7p ? ai7p / all7p : null;
+  const rel = share != null && sharePrior ? share / sharePrior - 1 : null;
+
+  /* No percentile on this one, deliberately.
+
+     Ranking today against the full sixty days put the latest day at the 89th
+     percentile while the week was down 59%, because most of those days predate
+     the platform anchoring anything in AI at all. That is the changing-composition
+     trap the capture and leakage series were already rebuilt to avoid: a
+     percentile is only meaningful over a period that measures the same thing
+     throughout, and the early history here does not. What the data does support
+     is two windows of different length, which is what it gets. */
+  const ai3 = trailing(rows, 3, (d) => d.ai), all3 = trailing(rows, 3, (d) => d.all);
+  const ai3p = trailing(rows, 3, (d) => d.ai, 3), all3p = trailing(rows, 3, (d) => d.all, 3);
+  const short = all3 ? ai3 / all3 : null, shortPrior = all3p ? ai3p / all3p : null;
+  const shortRel = short != null && shortPrior ? short / shortPrior - 1 : null;
+
+  $("#kpiAdopt").innerHTML = kpiEl(pctLevel(share, 1),
+    rel == null ? "" : `${pct(rel, 0)} vs prior week`, (rel ?? 0) >= 0 ? "up" : "down",
+    "of new LONG pools anchored in AI, last 7 complete days")
+    + `<div class="livenote"><b>${ai7.toLocaleString()}</b> AI-anchored pools created in those 7 days,
+       out of <b>${all7.toLocaleString()}</b>
+       ${short == null ? "" : `\u00b7 last 3 days <b>${pctLevel(short, 1)}</b>${shortRel == null ? "" :
+          `, ${shortRel >= 0 ? "up" : "down"} ${pctLevel(Math.abs(shortRel), 0)} on the 3 before`}`}</div>`;
+
+  lineChart($("#cAdopt"), rows.slice(-45), {
+    xKey: "t", yKey: "share", color: "var(--series-1)", area: true, zeroBase: true, xFmt: dayFmt,
+    fmt: (v) => pctLevel(v, 0),
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${pctLevel(d.share, 1)} of new pools</div>
+      <div class="k">${d.ai.toLocaleString()} of ${d.all.toLocaleString()}</div>`,
+  });
+
+  /* The trough that matters is the one AFTER the peak. Taking the minimum over a
+     fixed trailing window found 23 August, before the platform had adopted AI at
+     all, and printed "peaked 4 Sep, bottomed 23 Aug, climbing since" -- a story
+     whose bottom precedes its top. */
+  const peakIdx = rows.reduce((bi, r, i) => (r.share > rows[bi].share ? i : bi), 0);
+  const peak = rows[peakIdx];
+  const after = rows.slice(peakIdx + 1);
+  const trough = after.length ? after.reduce((a, b) => (b.share < a.share ? b : a)) : null;
+  const last = rows.at(-1);
+  const offLow = trough && trough.share > 0 ? last.share / trough.share - 1 : null;
+
+  /* The week is down and the last three days are up, and both are true. Leading
+     with either alone would be a call rather than a reading. */
+  $("#takeAdopt").innerHTML = takeEl(
+    (rel ?? 0) >= 0 ? "pos" : (shortRel ?? 0) > 0 ? "neu" : "warn",
+    `<b>${pctLevel(share, 1)}</b> of the pools LONG created in the last 7 complete days put AI on one side,
+     against <b>${pctLevel(sharePrior, 1)}</b> the week before${rel == null ? "" : ` \u2014 <b>${pct(rel, 0)}</b>`}.
+     That is <b>${ai7.toLocaleString()}</b> new pools, each needing an AI side seeded before it can trade.
+     ${trough == null ? "" : `The weekly number is still carrying the collapse: adoption peaked at
+       <b>${pctLevel(peak.share, 0)}</b> on ${dayFmt(peak.t)}, fell to <b>${pctLevel(trough.share, 1)}</b> by
+       ${dayFmt(trough.t)}, and has recovered to <b>${pctLevel(last.share, 1)}</b>${offLow == null ? "" :
+       `, ${(offLow + 1).toFixed(1)}\u00d7 off that low`}. The week is down because the comparison week contains
+       the peak; the last three days are up. Both are the same series.`}
+     <span class="muted">Read the direction over a week and the turn over three days, never the level on one.
+       Card 6b holds the cumulative standing this flow feeds, and it will keep reporting third place whatever
+       this does.</span>`);
+}
+
+/**
+ * 2. Near-spot depth imbalance.
+ *
+ * The same book as the depth card above, read at the distance a trade reaches.
+ */
+function renderNearDepth() {
+  const d = S.depth;
+  const near = d?.near || [];
+  if (!near.length) {
+    $("#kpiNear").innerHTML = `<p class="muted">Near-spot depth not measured yet.</p>`;
+    for (const id of ["#cNear", "#takeNear"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    return;
+  }
+  const tight = near[0];
+  const bidShare = tight.bidUsd + tight.askUsd > 0 ? tight.bidUsd / (tight.bidUsd + tight.askUsd) : null;
+  const wide = d.bidUsd + d.askUsd > 0 ? d.bidUsd / (d.bidUsd + d.askUsd) : null;
+
+  /* Percentile against its own history, once there is one. Four hourly points is
+     not a distribution, and saying so is better than ranking against it. */
+  const hist = (d.history || []).filter((h) => h.nearBid != null && h.nearBid + h.nearAsk > 0)
+    .map((h) => h.nearBid / (h.nearBid + h.nearAsk));
+  const p = percentileOf(hist, bidShare, 12);
+
+  /* A band, not a verdict. Anything inside a couple of points of even is even --
+     the two sides are within a rounding error of each other and calling that
+     direction would be reading noise. */
+  const tone = bidShare == null ? "" : bidShare >= 0.55 ? "up" : bidShare <= 0.45 ? "down" : "";
+  const word = bidShare == null ? "—" : bidShare >= 0.55 ? "bid-heavy" : bidShare <= 0.45 ? "offered" : "level";
+
+  $("#kpiNear").innerHTML = kpiEl(pctLevel(bidShare, 1), word, tone,
+    `of depth within ±${(tight.pct * 100).toFixed(0)}% of spot is bids`)
+    + `<div class="livenote"><b>$${compact(tight.askUsd)}</b> of asks to lift AI ${(tight.pct * 100).toFixed(0)}%
+       · <b>$${compact(tight.bidUsd)}</b> of bids to push it down the same
+       ${p == null
+         ? `· <span class="muted">${hist.length} hour(s) of history, too few to rank this against; it accrues</span>`
+         : `· ranks <b>${pctLevel(p, 0)}</b> against its own ${hist.length} hours`}</div>`;
+
+  /* The profile is the point: one bar per band, showing where the skew appears.
+     A single number for "the imbalance" hides that it is entirely a wide-window
+     effect, which is the thing a reader most needs to know. */
+  const prof = near.map((n) => ({
+    label: `±${(n.pct * 100).toFixed(0)}%`,
+    share: n.bidUsd + n.askUsd > 0 ? n.bidUsd / (n.bidUsd + n.askUsd) : 0,
+    bid: n.bidUsd, ask: n.askUsd,
+  }));
+  prof.push({ label: `±${(d.windowPct * 100).toFixed(0)}%`, share: wide ?? 0, bid: d.bidUsd, ask: d.askUsd });
+  barChart($("#cNear"), prof, {
+    xKey: "label", yKey: "share", color: "var(--buy)", xFmt: (v) => v,
+    fmt: (v) => pctLevel(v, 0),
+    tip: (x) => `<div class="k">within ${x.label} of spot</div>
+      <div>${pctLevel(x.share, 1)} bids</div>
+      <div class="k">$${compact(x.bid)} bid · $${compact(x.ask)} ask</div>`,
+  });
+
+  const cap = marketState().mcap ?? null;
+  $("#takeNear").innerHTML = takeEl(tone === "up" ? "pos" : tone === "down" ? "warn" : "neu",
+    `Within ±${(tight.pct * 100).toFixed(0)}% of spot the book is <b>${word}</b> at
+     <b>${pctLevel(bidShare, 1)}</b> bids: <b>$${compact(tight.askUsd)}</b> standing above the price and
+     <b>$${compact(tight.bidUsd)}</b> below it.
+     ${wide == null ? "" : `Across the full ±${(d.windowPct * 100).toFixed(0)}% window the same book reads
+       <b>${pctLevel(wide, 1)}</b> bids, so the buyside imbalance the headline reports is
+       ${wide - (bidShare ?? 0) > 0.04
+         ? `<b>almost entirely liquidity parked out of range</b> rather than money standing under the price`
+         : `broadly the same story at both distances`}.`}
+     <span class="muted">The size is the part worth sitting with${cap ? `: about $${compact(tight.askUsd)} of buying
+     moves a $${compact(cap)} market cap by ${(tight.pct * 100).toFixed(0)}%` : ""}. A cap that large resting on a
+     book that thin is a nominal valuation in the same sense the launchpad tokens' are, and it cuts both ways:
+     the same thinness that lets a modest bid run the price lets a modest sale retrace it. Positions can also be
+     pulled in a block, so treat this as the shape of the book now, not support that will be there later.</span>`);
+}
+
 function renderDepth() {
   const d = S.depth;
   if (!d || !d.pools?.length) {

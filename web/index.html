@@ -106,16 +106,61 @@
     </div>
 
     <h2 class="section-title">Leading indicators</h2>
+
     <div class="grid g2">
       <div class="card">
-        <h3>1. Net flow momentum</h3>
+        <h3>1. Platform adoption of AI</h3>
+        <p class="sub">
+          <b>AI’s share of the pools the LONG launchpad creates each day.</b> Card 6b counts the pools that
+          quote themselves in AI and finds 5,552 of them, third behind WETH and NVDA. That is a stock, and a
+          stock accumulated since July cannot fall: it will read “third” for months after adoption stops.
+          This is the flow underneath it, which is the part that can turn.
+          It leads price for a mechanical reason rather than a sentimental one. A new pool anchored in AI has
+          to be seeded with AI on one side, so the launcher must source it before the pool can trade. That is
+          demand which does not require anyone to hold an opinion on AI, and it shows up in pool creations
+          before it shows up in fees, because pools already trading keep paying fees long after new ones stop
+          being built.
+          <b>Both terms are counted from the census by address</b>, so unlike the rest of the Launchpad tab
+          this ratio does not inherit the real-world-asset list’s undercount.
+          What it is not: proof of open-market buying. A launcher may seed from AI already held, and a
+          one-sided range needs very little of it. Read it as the adoption rate, and read fees and depth for
+          the money.
+        </p>
+        <div id="kpiAdopt"></div>
+        <div class="chart" id="cAdopt"></div>
+        <div id="takeAdopt"></div>
+      </div>
+      <div class="card">
+        <h3>2. Near-spot depth imbalance</h3>
+        <p class="sub">
+          <b>Which way is cheaper to push, measured where a trade can actually reach.</b> Buying consumes the
+          asks above spot; selling consumes the bids below it. More bids than asks means it costs less to move
+          AI up than down.
+          The full book above is drawn across ±50% because that is the shape worth seeing, but it is the
+          wrong window for this question: depth half the price away cannot be touched by any trade that
+          matters this week. These bands are summed straight from the tick ladders, not from the chart’s
+          0.83%-wide bins, which cannot resolve two percent.
+          The gap between the two readings is itself the finding. Across ±50% this book is decisively
+          bid-heavy; within ±2% it is level. The apparent support is parked out of range rather than
+          standing under the price.
+          <b>Liquidity is not a promise.</b> A position can be withdrawn in one block, so this is the shape of
+          the book now, not a floor under it later.
+        </p>
+        <div id="kpiNear"></div>
+        <div class="chart" id="cNear"></div>
+        <div id="takeNear"></div>
+      </div>
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>3. Net flow momentum</h3>
         <p class="sub">Who is absorbing whom. Buy/sell imbalance turns before price does, because it is what moves it.</p>
         <div id="kpiFlow"></div>
         <div class="chart" id="cInvFlow"></div>
         <div id="takeFlow"></div>
       </div>
       <div class="card">
-        <h3>2. Fee run-rate</h3>
+        <h3>4. Fee run-rate</h3>
         <p class="sub">All three fee legs, annualised. This is the protocol's revenue, and it is paid in AI, so it is also the burn engine.</p>
         <div id="kpiFee"></div>
         <div class="chart" id="cInvFee"></div>
@@ -125,14 +170,14 @@
 
     <div class="grid g2" style="margin-top:14px">
       <div class="card">
-        <h3>3. Hard backing</h3>
+        <h3>5. Hard backing</h3>
         <p class="sub">NVDA accumulating in the vault. Unlike the burn, this is an asset that cannot be inflated away.</p>
         <div id="kpiVault"></div>
         <div class="chart" id="cInvVault"></div>
         <div id="takeVault"></div>
       </div>
       <div class="card">
-        <h3>4. Hub conversion (κ)</h3>
+        <h3>6. Hub conversion (κ)</h3>
         <p class="sub">
           <b>Cross-routed AI volume ÷ direct AI volume.</b> Swaps are grouped by transaction: one AI swap in a
           transaction is <i>direct</i> — someone wanted AI. Two or more, where the trader receives AI in one leg
@@ -147,7 +192,7 @@
         <div id="takeKappa"></div>
       </div>
       <div class="card">
-        <h3>4b. AI as a base pair</h3>
+        <h3>6b. AI as a base pair — the standing stock</h3>
         <p class="sub">
           The hub thesis says other tokens will come to quote themselves in AI the way they quote themselves in
           ETH. That is a counting question and this counts it: across every pool the LONG launchpad has created,
@@ -163,14 +208,14 @@
 
     <div class="grid g2" style="margin-top:14px">
       <div class="card">
-        <h3>5. Fee capture</h3>
+        <h3>7. Fee capture</h3>
         <p class="sub">Share of indexed AI volume crossing the tolled AI/NVDA pool. Revenue scales with this, so the hub's own success can cannibalise it.</p>
         <div id="kpiCapture"></div>
         <div class="chart" id="cInvCapture"></div>
         <div id="takeCapture"></div>
       </div>
       <div class="card">
-        <h3>6. Float removal</h3>
+        <h3>8. Float removal</h3>
         <p class="sub">AI destroyed or immobilised, cumulatively. A slow, one-way squeeze on what can actually trade.</p>
         <div id="kpiFloat"></div>
         <div class="chart" id="cInvFloat"></div>
@@ -180,7 +225,7 @@
 
     <div class="grid g2" style="margin-top:14px">
       <div class="card">
-        <h3>7. Cash-flow multiple, over time</h3>
+        <h3>9. Cash-flow multiple, over time</h3>
         <p class="sub">
           Market cap divided by the annualised fee run-rate. Both scale with the AI price, so it cancels:
           this multiple is <b>price-invariant</b> and needs no oracle. Lower is cheaper.
@@ -190,7 +235,7 @@
         <div id="takeMultiple"></div>
       </div>
       <div class="card">
-        <h3>8. Where the fees leak</h3>
+        <h3>10. Where the fees leak</h3>
         <p class="sub">
           Share of AI volume on fee-bearing (hooked) pools versus hookless ones. Anyone can open a v4 pool
           for AI with no hook and a lower fee; routers will prefer it, and the vault gets nothing.

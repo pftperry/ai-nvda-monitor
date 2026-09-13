@@ -334,8 +334,36 @@ export function ratioStats(rows) {
   const thinThreshold = +(median * 3).toFixed(1);
   return { median, thinThreshold, thin: xs.filter((x) => x >= thinThreshold).length, n: xs.length };
 }
+/**
+ * How often AI is chosen as a side of a new pool, day by day.
+ *
+ * The anchor ranking says AI is the platform’s third most-used base pair with
+ * 5,552 pools behind it. That is a stock, and a stock accumulated over sixty days
+ * cannot fall -- it will read "third" for months after adoption stops. The flow is
+ * the part that can turn, and it has: AI took 32% of new pools on 5 September and
+ * 1.3% on the 9th. A reader looking only at the rank would have seen nothing.
+ *
+ * Deliberately defined on address identity alone -- AI is one of the two currencies
+ * -- rather than on the launch classifier. The classifier depends on the
+ * real-world-asset symbol list, which is known to be short, so every count derived
+ * from it is a floor. Both terms of this ratio come from the census itself, so it
+ * inherits none of that undercount.
+ */
+export function anchorFlowByDay(pools, dayOf) {
+  const byDay = new Map();
+  for (const p of pools) {
+    const d = dayOf(p.block);
+    if (d === null || d === undefined) continue;
+    let r = byDay.get(d);
+    if (!r) byDay.set(d, (r = { t: d, all: 0, ai: 0 }));
+    r.all++;
+    if (p.c0 === AI || p.c1 === AI) r.ai++;
+  }
+  return [...byDay.values()].sort((a, b) => a.t - b.t)
+    .map((r) => ({ ...r, share: r.all ? +(r.ai / r.all).toFixed(6) : 0 }));
+}
 /** Launch cadence and the size distribution, assembled for the Launchpad tab. */
-export function summariseLaunchpad(pools, priced, dayOf, prior) {
+export function summariseLaunchpad(pools, priced, dayOf, prior, allPools = null) {
   const byDay = new Map();
   for (const p of pools) {
     const d = dayOf(p.block);
@@ -372,6 +400,7 @@ export function summariseLaunchpad(pools, priced, dayOf, prior) {
     thinThreshold: stats.thinThreshold,
     thinRunners: stats.thin,
     ratioMeasured: stats.n,
+    anchorFlow: allPools ? anchorFlowByDay(allPools, dayOf) : (prior?.anchorFlow || []),
     buckets, launchesByDay, history,
     top: priced.slice(0, 30),
   };

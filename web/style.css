@@ -259,6 +259,7 @@ footer h4 { color: var(--text-secondary); font-size: 12px; margin: 16px 0 7px; t
 .takeaway.pos { border-left-color: var(--buy); }
 .takeaway.neg { border-left-color: var(--sell); }
 .takeaway.warn { border-left-color: var(--warning); }
+.takeaway.neu { border-left-color: var(--border); }
 
 .kpi { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
 .kpi .big { font: 650 27px/1.05 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }

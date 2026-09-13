@@ -382,7 +382,9 @@ if (!fast && !flag("no-launchpad")) {
     } else writeData("launchpad.json", {
       updatedAt: now,
       censusPartial: census.partial,
-      ...summariseLaunchpad(launches, priced, (b) => tm.dayBucket(b), prior),
+      // census.pools, not launches: the adoption ratio is counted over every LONG
+      // pool, so neither term depends on the real-world-asset symbol list.
+      ...summariseLaunchpad(launches, priced, (b) => tm.dayBucket(b), prior, census.pools),
       poolsWithHook: census.pools.length,
       anchorRank: anchorRank.slice(0, 20),
       // The list is truncated for the page; the count must not be.
