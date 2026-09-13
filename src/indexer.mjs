@@ -365,7 +365,21 @@ if (!fast && !flag("no-launchpad")) {
       .map(([a, n], i) => ({ rank: i + 1, token: a, symbol: symbols.get(a) || null, pools: n }));
     const aiRow = anchorRank.find((r) => r.token === C.AI) || null;
 
-    writeData("launchpad.json", {
+    /* Never replace a finished census with an unfinished one.
+
+       The walk back to genesis costs about 1,600 seconds and the budget here is a
+       fraction of that, so a machine with a cold cache produces a partial census on
+       its first few runs -- fewer pools, fewer launches, every count lower. That is
+       correct as a starting point and wrong as a replacement for a complete one
+       already on disk, which is exactly what would happen the first time CI ran this
+       after a local backfill. The store still takes the new cursor, so the census
+       keeps converging in the background; only the published artifact is protected
+       until it can improve on what is there. */
+    const priorComplete = prior && prior.censusPartial === false;
+    const wouldShrink = priorComplete && (census.partial || census.pools.length < (prior.poolsWithHook ?? 0));
+    if (wouldShrink) {
+      console.log(`  census still catching up (${census.pools.length.toLocaleString()} pools vs ${(prior.poolsWithHook ?? 0).toLocaleString()} already published); keeping the complete artifact`);
+    } else writeData("launchpad.json", {
       updatedAt: now,
       censusPartial: census.partial,
       ...summariseLaunchpad(launches, priced, (b) => tm.dayBucket(b), prior),
