@@ -12,7 +12,7 @@ const WEEK = 7 * 86400;
 /* Bumped when the state gains fields a replay from genesis has to fill. A seed
    with a newer schema is adopted over a cache that is merely further along,
    because the cache cannot backfill what it never recorded. */
-export const HOLDER_STATE_SCHEMA = 2;
+export const HOLDER_STATE_SCHEMA = 3;   // 3: churn by set difference between snapshots
 
 /* Addresses that hold AI as machinery rather than as an owner. The pool manager
    holds every v4 pool's inventory, the vault holds the locked leg, the splitter
@@ -107,7 +107,16 @@ export async function indexHolders(latest, tm, opts = {}) {
   const firstSeen = new Map(Object.entries(prev.firstSeen || {}));
   const firstSeenFromGenesis = prev.firstSeenFromGenesis === true || startCursor < GENESIS_BLOCK;
   const whales = prev.whales ? prev.whales.slice() : [];
-  let newSince = prev.newSince || 0, exitSince = prev.exitSince || 0;
+
+  /* Churn is a SET DIFFERENCE between snapshots, not a count of transitions.
+     Counting every zero-to-funded transition looked right and read 382,640 wallets
+     funded in a week against 44,803 holders: routers and aggregators receive and
+     forward AI inside one transaction thousands of times a day, and each pass
+     counted as a wallet arriving and leaving. A wallet is new only if it holds at
+     this boundary and did not at the last one; it has left only if the reverse.
+     The previous boundary's holder set rides in the state so the definition
+     survives a resume. */
+  let prevHolders = new Set(prev.prevHolders || []);
 
   const snapshot = (t) => {
     // The hour that ENDED at t, not the one starting there, so a row never reads a later price.
@@ -116,9 +125,11 @@ export async function indexHolders(latest, tm, opts = {}) {
     const byAi = AI_THRESHOLDS.map(() => 0);
     let holders = 0;
     const sizes = [];
+    const curr = new Set();
     for (const [a, b] of balances) {
       if (b <= 0n || MACHINERY.has(a)) continue;
       holders++;
+      curr.add(a);
       const ai = Number(b / 10n ** 12n) / 1e6;
       sizes.push(ai);
       for (let k = 0; k < AI_THRESHOLDS.length; k++) if (ai >= AI_THRESHOLDS[k]) byAi[k]++;
@@ -138,6 +149,10 @@ export async function indexHolders(latest, tm, opts = {}) {
       for (let i = 0; i < Math.min(n, sizes.length); i++) s += sizes[i];
       return held > 0 ? +(s / held).toFixed(4) : null;
     });
+    let newHolders = 0, exits = 0;
+    for (const a of curr) if (!prevHolders.has(a)) newHolders++;
+    for (const a of prevHolders) if (!curr.has(a)) exits++;
+    prevHolders = curr;
     snaps.push({
       t, holders,
       price: price == null ? null : +price.toPrecision(6),
@@ -146,10 +161,8 @@ export async function indexHolders(latest, tm, opts = {}) {
       aboveAi: byAi,
       heldAi: Math.round(held),
       top,
-      newHolders: newSince,
-      exits: exitSince,
+      newHolders, exits,
     });
-    newSince = 0; exitSince = 0;
   };
 
   /* A large move, classified by which side of it is the pool. v4 settles a buy by
@@ -188,19 +201,12 @@ export async function indexHolders(latest, tm, opts = {}) {
       let toWasEmpty = false;
 
       if (x.from === BURN_ADDRESS) supply += x.value;
-      else {
-        const before = balances.get(x.from) || 0n;
-        const after = before - x.value;
-        balances.set(x.from, after);
-        if (before > 0n && after <= 0n && !MACHINERY.has(x.from)) exitSince++;
-      }
+      else balances.set(x.from, (balances.get(x.from) || 0n) - x.value);
       if (x.to === BURN_ADDRESS) supply -= x.value;
       else {
         const before = balances.get(x.to) || 0n;
-        const after = before + x.value;
-        balances.set(x.to, after);
-        if (before <= 0n && after > 0n && !MACHINERY.has(x.to)) {
-          newSince++;
+        balances.set(x.to, before + x.value);
+        if (before <= 0n && x.value > 0n && !MACHINERY.has(x.to)) {
           toWasEmpty = true;
           if (!firstSeen.has(x.to)) firstSeen.set(x.to, ts);
         }
@@ -271,7 +277,7 @@ export async function indexHolders(latest, tm, opts = {}) {
       firstSeen: Object.fromEntries(firstSeen),
       firstSeenFromGenesis,
       whales,
-      newSince, exitSince,
+      prevHolders: [...prevHolders],
     },
     artifact: {
       complete, cursor,

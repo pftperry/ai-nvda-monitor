@@ -529,17 +529,21 @@ if (holders && holders.snapshots?.length) {
   if (withChurn.length) {
     check("churn counts are non-negative integers",
       withChurn.every((x) => Number.isInteger(x.newHolders) && x.newHolders >= 0 && Number.isInteger(x.exits) && x.exits >= 0));
-    /* Net change in holders between snapshots equals new minus exits, exactly, on
-       a replay that began at genesis. On a seeded state the first row after the
-       seed is exempt, because its counters started mid-stream. */
+    /* Churn is a set difference between consecutive snapshots, so the holder count
+       moves by exactly new minus exited -- an identity, and a hard check. It also
+       bounds churn: pass-through routers once made a week read 382,640 wallets
+       funded against 44,803 holders, which no honest definition can produce. */
     const bad = [];
     for (let i = 1; i < withChurn.length; i++) {
       const a = withChurn[i - 1], b = withChurn[i];
       if (b.t - a.t !== 14400) continue;
       if (b.holders - a.holders !== b.newHolders - b.exits) bad.push(new Date(b.t * 1000).toISOString().slice(0, 16));
     }
-    warn("holder count moves by exactly new minus exited", bad.length <= 1,
+    check("holder count moves by exactly new minus exited", bad.length === 0,
       bad.length ? `${bad.length} snapshot(s) disagree, first ${bad[0]}` : `${withChurn.length - 1} transitions reconcile`);
+    const worst = withChurn.reduce((m, s) => Math.max(m, s.newHolders, s.exits), 0);
+    check("no four-hour window churns more wallets than exist", worst <= Math.max(...withChurn.map((s) => s.holders)),
+      `largest four-hour churn ${worst.toLocaleString()} wallets`);
   } else console.log("  --  churn absent (older artifact)");
   if (holders.cohorts?.length) {
     check("no cohort has more wallets holding than it acquired",
