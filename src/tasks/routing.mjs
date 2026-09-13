@@ -1,11 +1,15 @@
 const r6 = (x) => (x === 0 ? 0 : +x.toPrecision(6));
 
 /* How many recent complete days are checked for holes and repaired by widening
-   the scan. Three is what a full run's window already covers, so a repair never
-   costs more than a standard refresh. verify.mjs fails on a hole inside this
-   horizon and only warns beyond it, since nothing would fix an older one. */
-export const HOLE_HORIZON_DAYS = 3;
-export const HOLE_RATIO = 0.2;   // routing volume below this share of flow's is a hole, not a quiet day
+   the scan. A week: a repair is a one-off scan of at most seven days across the
+   active pools, about twice a standard refresh, and after it every day inside the
+   horizon is sound. verify.mjs fails on a hole inside this horizon and only warns
+   beyond it, since nothing would fix an older one.
+   Healthy days measure 0.85-0.95 of flow (routing counts a multi-leg transaction
+   once, flow counts each leg). The partially rebuilt days measured 0.35-0.39, so a
+   fifth was too lenient a threshold to catch them; half is comfortably between. */
+export const HOLE_HORIZON_DAYS = 7;
+export const HOLE_RATIO = 0.5;   // routing volume below this share of flow's is a hole, not a quiet day
 
 /**
  * A routing day whose volume disagrees with flow over the same day is a hole.

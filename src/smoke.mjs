@@ -178,6 +178,8 @@ ok("a routing day far below flow is reported as a hole, a quiet day is not", () 
   const perPool = [{ hourly: [...hourly(d1, 90e6), ...hourly(d2, 100e6), ...hourly(d3, 5e5)] }];
   const prior = { daily: [{ t: d3, direct: 0, cross: 0 }, { t: d2, direct: 0, cross: 0 }, { t: d1, direct: 80e6, cross: 5e6 }] };
   assert(routingHoleDay(perPool, prior, today) === d2, "the hollow day two days back is the repair target");
+  const shallow = { daily: [{ t: d2, direct: 35e6, cross: 3e6 }, { t: d1, direct: 80e6, cross: 5e6 }] };
+  assert(routingHoleDay(perPool, shallow, today) === d2, "a day at a third of flow is a hole too, not a quiet day");
   assert(routingHoleDay(perPool, { daily: [{ t: d1, direct: 80e6, cross: 5e6 }] }, today) === null, "a healthy day is not a hole");
   assert(routingHoleDay(perPool, { daily: [{ t: d1, direct: 80e6, cross: 5e6 }, { t: today, direct: 1, cross: 0 }] }, today) === null, "today is never judged: it is still filling");
   assert(routingHoleDay(perPool, null, today) === null, "no prior series, nothing to repair");

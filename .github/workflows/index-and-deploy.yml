@@ -15,7 +15,7 @@ on:
         # does. It is the default because the refresh relay below dispatches with it.
         default: "auto"
         type: choice
-        options: [auto, standard, quick, deep, rebuild, repair-usdg, repair-usdg-main, repair-pool]
+        options: [auto, standard, quick, deep, rebuild, repair-usdg, repair-usdg-main, repair-pool, seed-holders]
       pool:
         description: "For repair-pool: pool id prefix or pair symbol to re-derive"
         required: false
@@ -209,8 +209,25 @@ jobs:
                 echo "::error::repair-pool needs a pool id prefix or symbol in the 'pool' input"; exit 1
               fi
               node src/indexer.mjs --rebuild-pools "${{ github.event.inputs.pool }}" --top 20 --no-bridges ;;
+            # Replay every AI transfer from genesis into a fresh holder state and
+            # write it as the committed seed. Runs here rather than locally because
+            # the dedicated endpoint makes it a few minutes; on the public one it is
+            # an hour of throttling. Touches nothing else; the step below commits it.
+            seed-holders) node tools/backfill-holders.mjs --rebuild ;;
             *)       node src/indexer.mjs --top 20 ;;
           esac
+
+      - name: Commit the holder seed
+        if: github.event.inputs.mode == 'seed-holders' && steps.index.outcome == 'success'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add seed/holders-state.json.gz
+          if git diff --staged --quiet; then echo "seed unchanged"; else
+            git commit -m "chore(seed): holder state replayed from genesis (schema 2) [skip ci]"
+            git pull --rebase --autostash origin main || true
+            git push
+          fi
 
       # A silently-wrong index is worse than a failed one, so bad data never ships.
       - name: Verify invariants

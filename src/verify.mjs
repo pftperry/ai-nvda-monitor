@@ -4,6 +4,7 @@
    Run after `npm run index`; CI fails the build if anything here fails. */
 import { readData } from "./store.mjs";
 import * as C from "./config.mjs";
+import { HOLE_HORIZON_DAYS, HOLE_RATIO } from "./tasks/routing.mjs";
 
 let failures = 0, checks = 0, warnings = 0;
 function check(name, ok, detail = "") {
@@ -245,13 +246,13 @@ if (routing) {
       const fv = flowByDay.get(d.t) || 0;
       if (fv < 1e6) return false;
       const rv = (d.direct || 0) + (d.cross || 0);
-      return rv < 0.1 * fv || rv > 5 * fv;
+      return rv < HOLE_RATIO * fv || rv > 5 * fv;
     }).map((d) => `${new Date(d.t * 1000).toISOString().slice(0, 10)} ${((d.direct + d.cross) / 1e6).toFixed(1)}M vs ${((flowByDay.get(d.t) || 0) / 1e6).toFixed(1)}M`);
-    const near = routing.daily.filter((d) => d.t < today && d.t >= today - 3 * 86400);
-    const far = routing.daily.filter((d) => d.t < today - 3 * 86400 && d.t >= today - 14 * 86400);
+    const near = routing.daily.filter((d) => d.t < today && d.t >= today - HOLE_HORIZON_DAYS * 86400);
+    const far = routing.daily.filter((d) => d.t < today - HOLE_HORIZON_DAYS * 86400 && d.t >= today - 30 * 86400);
     const nearBad = judge(near), farBad = judge(far);
     check("recent routing days agree with flow over the same days", !nearBad.length,
-      nearBad.length ? nearBad.join("; ") : `${near.length} complete day(s) within 0.1-5x of flow`);
+      nearBad.length ? nearBad.join("; ") : `${near.length} complete day(s) within ${HOLE_RATIO}-5x of flow`);
     warn("older routing days agree with flow", !farBad.length,
       farBad.length ? `${farBad.join("; ")} — before the repair horizon; κ percentiles skip nothing, so treat them with care` : `${far.length} day(s)`);
     warn("routing carries a resume cursor", routing.cursor > 0,

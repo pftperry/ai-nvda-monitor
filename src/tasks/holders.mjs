@@ -341,6 +341,9 @@ export async function pickHolderState(cached, seedPath) {
   if (!seed) return cached || null;
   if (!cached) return seed;
   if ((seed.schema ?? 1) > (cached.schema ?? 1)) return seed;
+  // A cache that grew out of a balances-only seed carries the new schema but not
+  // the history behind it; a seed replayed from genesis does, and wins.
+  if (seed.firstSeenFromGenesis === true && cached.firstSeenFromGenesis !== true) return seed;
   if ((seed.cursor ?? 0) > (cached.cursor ?? 0)) return seed;
   return cached;
 }
