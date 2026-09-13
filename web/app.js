@@ -2330,24 +2330,6 @@ function renderLaunchRate() {
       <div class="k">${d.cumulative.toLocaleString()} cumulative</div>`,
   });
 
-  /* Its own chart, not a segment of the one above.
-
-     The first draft stacked these: bar height the cadence, a lit portion for the
-     survivors. Measured, about one percent of a cohort trades in any two-hour
-     window, so that portion is two pixels on a bar of three thousand -- the same
-     way the size buckets rendered four tokens as nothing next to 246. A quantity
-     two orders of magnitude below its companion needs its own axis, which means
-     its own chart. Same x, same days, read the shapes against each other. */
-  if (live) {
-    barChart($("#cLaunchLive"), win, {
-      xKey: "t", yKey: "active", color: "var(--buy)", xFmt: dayFmt, fmt: (v) => v.toFixed(0),
-      tip: (d) => `<div class="k">${dayFmt(d.t)}</div>
-        <div>${(d.active ?? 0).toLocaleString()} of ${d.launched.toLocaleString()} still trading</div>
-        <div class="k">${pctLevel(d.launched ? (d.active ?? 0) / d.launched : 0, 1)} of the cohort</div>`,
-    });
-  } else {
-    $("#cLaunchLive").innerHTML = `<p class="muted" style="padding:20px 0">Liveness not measured in this run.</p>`;
-  }
   const newest = rows.at(-1);
   const older = rows.slice(-30, -7);
   const oldAct = older.reduce((n, d) => n + (d.active || 0), 0);
@@ -2363,9 +2345,9 @@ function renderLaunchRate() {
        cohorts launched one to four weeks ago` : ""}. On ${dayFmt(newest.t)} alone,
        <b>${newest.launched.toLocaleString()}</b> were created and
        <b>${(newest.active ?? 0).toLocaleString()}</b> are trading.`}
-     <span class="muted">Cadence is a statement about the mint; the second chart is the one about the
-     ecosystem, and the distance between the two scales is what separates a launchpad from a treadmill. Two hours is a
-     strict test, so read older cohorts as survival and the newest bar as launch-day interest. The cap
+     <span class="muted">Cadence is a statement about the mint; the survival figure is the one about the
+     ecosystem, and the distance between them is what separates a launchpad from a treadmill. Two hours is a
+     strict test, so read older cohorts as survival and the newest day as launch-day interest. The cap
      figures beside the count cover only the ${r.priced ?? 0} priced tokens, which are the most actively traded, so they
      are a ceiling on value and a floor on how many launches exist.</span>`);
 }

@@ -111,27 +111,23 @@
       <div class="card">
         <h3>1. Launch cadence and what survives it</h3>
         <p class="sub">
-          <b>Tokens the LONG launchpad creates each day, and how many of them are still trading.</b>
-          The first chart is the cadence. The second counts, for each of the same days, the tokens born
-          that day whose pool traded in the last two hours. It matters to AI because AI is the platform’s third most-used base pair, so the
+          <b>Tokens the LONG launchpad creates each day.</b> Cadence is the count; how much of it survives
+          is read beside it, because the two are two orders of magnitude apart. Hover any bar for that
+          day’s launches and how many of them traded in the last two hours. It matters to AI because AI is the platform’s third most-used base pair, so the
           launchpad is the demand engine underneath the asset: mint volume feeds pool creation, pool creation
           feeds routing, and routing is what the fee is taken on.
           <b>Why liveness and not average market cap.</b> A cohort’s average cap is the obvious companion and
           it is not honestly available here. Pricing a token costs two calls, so only the 300 most actively
           traded are priced; that leaves most days with one or two priced tokens, and a single $295M outlier
           would make one July day outrank every other. Whether a pool traded is known for <i>every</i> launch,
-          because that scan is unfiltered. So the second dimension is measured over the whole population
-          rather than estimated from a biased sample of it. Platform-wide value is reported beside the count,
-          where the sample it comes from can be stated.
+          because that scan is unfiltered, so survival is measured over the whole population rather than
+          estimated from a biased sample of it. Platform-wide value is reported beside the count, where the
+          sample it comes from can be stated.
           Two hours is a strict test on purpose: it asks whether a token trades <i>now</i>, not whether it ever
           did, so older cohorts read as survival and the newest as launch-day activity.
         </p>
         <div id="kpiLaunchRate"></div>
         <div class="chart" id="cLaunchRate"></div>
-        <h4 class="subhead">Of those, the ones still trading</h4>
-        <p class="sub">Same days, its own scale. Stacking the two would have hidden the second: about one
-          percent of a cohort is live at any moment, which is a two-pixel sliver on a bar of three thousand.</p>
-        <div class="chart" id="cLaunchLive"></div>
         <div id="takeLaunchRate"></div>
       </div>
       <div class="card">
