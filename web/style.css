@@ -361,3 +361,8 @@ footer h4 { color: var(--text-secondary); font-size: 12px; margin: 16px 0 7px; t
 
 /* A slow-path card that has missed its refresh says so on the card itself. */
 .agenote { margin: 2px 0 8px; padding: 6px 10px; border-left: 3px solid var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); font-size: 12.5px; color: var(--text-primary); border-radius: 4px; }
+
+/* Credit for the rating framework, placed where the verdict is read rather than in a footer. */
+.attribution { margin: 12px 0 14px; padding: 10px 14px; border: 1px solid var(--border-strong, var(--border)); border-left: 4px solid var(--series-1); border-radius: 8px; font-size: 13px; line-height: 1.5; color: var(--text-secondary, var(--text-primary)); }
+.attribution b { color: var(--text-primary); }
+.attribution a { color: var(--series-1); }

@@ -2262,6 +2262,17 @@ function renderRating(parts) {
           rather than predictive. The Method tab shows the test.
         </div>
       </div>
+      <div class="attribution">
+        <b>Methodology credit — not the site owner’s view.</b> The framework this rating scores comes from
+        <a href="https://x.com/okay_lets_ride/status/2098082744899190788" target="_blank" rel="noopener noreferrer">Coulou’s
+        “AI – Valuation Report”</a> (@okay_lets_ride, 10 Sep 2026): protocol fee revenue, main-pool fee capture,
+        AI-pair share, cross-routing κ and the NVDA vault, with the 5–7.5% capitalisation rates used in the valuation
+        frame below. <b>Two things differ from the report:</b> each input is ranked against AI’s own measured history
+        rather than its bear/base/bull scenario values, and the weights are this site’s. So a
+        <b>${word}</b> reading means the inputs the report identifies are ${score >= 0.25 ? "improving" : score <= -0.25 ? "deteriorating" : "near typical"}
+        against their own recent range. It is not the report’s conclusion — a probability-weighted valuation well above
+        today’s market cap — and it is not investment advice.
+      </div>
       <div class="scale"><div class="needle" style="left:calc(${pos.toFixed(1)}% - 1.5px)"></div></div>
       <div class="scale-ends"><span>deteriorating</span><span>score ${score >= 0 ? "+" : ""}${score.toFixed(2)}</span><span>improving</span></div>
       <div class="coverage">${scored.length} of ${comps.length} inputs scored
@@ -2891,6 +2902,14 @@ function renderMethod() {
   const m = S.meta, b = S.burns;
   $("#methodBody").innerHTML = `
     <div style="font-size:13px;line-height:1.65;color:var(--text-secondary)">
+      <p><b style="color:var(--text-primary)">Rating framework and credit.</b> The Investor View rating scores the inputs
+      identified in <a href="https://x.com/okay_lets_ride/status/2098082744899190788" target="_blank" rel="noopener noreferrer">Coulou’s
+      “AI – Valuation Report”</a> (@okay_lets_ride, 10 Sep 2026) — fee revenue, main-pool capture, AI-pair share,
+      cross-routing κ and the NVDA vault — and the valuation frame uses its 5–7.5% capitalisation rates. The site does
+      not use the report’s scenario values or weights: every input is ranked against AI’s own measured history, and the
+      weights are this site’s own. The resulting call is therefore neither the report’s conclusion nor the site owner’s
+      investment view.</p>
+
       <p><b style="color:var(--text-primary)">Flow.</b> Every Uniswap v4 <code>Swap</code> log for the indexed AI pools is read from
       the singleton PoolManager and bucketed hourly. A trade is a <i>buy</i> when the swapper's
       <code>amount0</code> delta for AI is positive. That sign convention was not assumed: across 484
