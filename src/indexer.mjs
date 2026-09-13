@@ -5,11 +5,12 @@ import { hookPermissions } from "./decode.mjs";
 import { Store, writeData, readData } from "./store.mjs";
 import { loadTimeMap } from "./timemap.mjs";
 import { discoverPools, buildRoutingIndex } from "./tasks/pools.mjs";
-import { assertTokenMetadata } from "./tokens.mjs";
+import { assertTokenMetadata, resolveTokens } from "./tokens.mjs";
 import { indexFlow, rollup } from "./tasks/flow.mjs";
 import { analyseRouting } from "./tasks/routing.mjs";
 import { indexDepth } from "./tasks/depth.mjs";
 import { snapshotKpis } from "./tasks/kpis.mjs";
+import { censusLongPools, rankByActivity, classifyLaunches, anchorPrices, priceLaunchpadTokens, summariseLaunchpad } from "./tasks/launchpad.mjs";
 import { indexBurns } from "./tasks/burns.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
 
@@ -29,6 +30,23 @@ const ACTIVITY_WINDOW = opt("activity-window", quick ? 400_000 : 600_000);
 const ROUTING_WINDOW = opt("routing-window", quick ? 600_000 : deep ? DAY_BLOCKS * 14 : 2_500_000);
 const BRIDGES_WINDOW = opt("bridges-window", quick ? 400_000 : deep ? DAY_BLOCKS * 7 : 1_500_000);
 const BRIDGES_TOP = opt("bridges", quick ? 4 : deep ? 16 : 8);
+/**
+ * An optional stage failed. Say so where it will actually be seen.
+ *
+ * These stages are wrapped in try/catch on purpose -- a throttled RPC or a bad
+ * pool must not cost us the AI artifacts that are the point of the run. But a
+ * swallowed exception is how this morning's outage stayed invisible for hours: the
+ * job reported success while publishing nothing new. Measured again tonight, the
+ * launchpad census died on a missing import and the run still exited zero.
+ * console.warn is a plain line in a log nobody reads; a workflow annotation is not.
+ */
+function softFail(stage, e, consequence) {
+  console.warn(`  ${stage} failed (${e.message}); ${consequence}`);
+  if (process.env.GITHUB_ACTIONS) {
+    console.log(`::warning::${stage} failed: ${e.message} — ${consequence}`);
+  }
+}
+
 const t0 = Date.now();
 /* Report the cost of the stage just finished, in seconds and RPC calls. Tuning a
    refresh without this is guesswork: the obvious suspect is rarely the expensive
@@ -290,7 +308,79 @@ try {
     writeData("depth.json", { updatedAt: now, ...depth });
   }
 } catch (e) {
-  console.warn(`  depth failed (${e.message}); leaving the previous depth.json in place`);
+  softFail("depth", e, "the previous depth.json stays in place");
+}
+
+/* The LONG platform census. Its own cursor, its own artifact, and last in the run
+   on purpose: understanding AI's value accretion is this project's job, and a
+   platform-wide scan must never be able to slow that down or fail it. Skipped
+   entirely on a fast refresh, hard time budget otherwise, and any failure leaves
+   the previous artifact in place. */
+if (!fast && !flag("no-launchpad")) {
+  step("Censusing the LONG launchpad");
+  try {
+    const budget = opt("launchpad-budget", deep ? 900 : 420);
+    const deadline = Date.now() + budget * 1000;
+    const prior = readData("launchpad.json");
+    const census = await censusLongPools(latest, store.get("longCensus") || prior?.census, { deadline });
+    store.set("longCensus", { cursor: census.cursor, pools: census.pools, usdgPools: census.usdgPools });
+
+    /* Symbols only for tokens that behave like anchors. Resolving eighteen thousand
+       memecoins to classify forty anchors would cost more than the census. */
+    const degree = new Map();
+    for (const p of census.pools) for (const t of [p.c0, p.c1]) degree.set(t, (degree.get(t) || 0) + 1);
+    const likely = [...degree].filter(([, n]) => n >= 20).map(([a]) => a);
+    const anchorMeta = await resolveTokens(likely, { log: () => {} });
+    const symbols = new Map([...anchorMeta].map(([a, m]) => [a, m.symbol]));
+    const decimals = new Map([...anchorMeta].map(([a, m]) => [a, m.decimals]));
+
+    const { launches, degree: deg, unlisted } = classifyLaunches(census.pools, symbols, console.log);
+    // Two hours of blocks, from the constant the config actually exports. Written
+    // as C.SEC_PER_BLOCK first, which does not exist -- that would have made the
+    // window NaN and ranked nothing, silently.
+    const rank = await rankByActivity(latest, Math.round(C.BLOCKS_PER_DAY / 12), { deadline });
+    const anchors = anchorPrices(census.usdgPools, rank, decimals);
+
+    // Names for the launched side, but only for the ones that will be shown.
+    const busiest = launches
+      .map((l) => ({ l, n: rank.counts.get(l.id) || 0 }))
+      .sort((a, b) => b.n - a.n).slice(0, 300).map((x) => x.l.token);
+    const tokMeta = await resolveTokens([...new Set(busiest)], { log: () => {} });
+    for (const [a, m] of tokMeta) { symbols.set(a, m.symbol); decimals.set(a, m.decimals); }
+
+    const priced = await priceLaunchpadTokens(
+      // token and anchor come from the classifier; the pricer must not re-derive them.
+      launches.map((l) => ({ id: l.id, c0: l.c0, c1: l.c1, block: l.block, fee: l.fee, token: l.token, anchor: l.anchor })),
+      rank, anchors, store,
+      { perRun: opt("launchpad-per-run", 200), topN: 300, decimals, symbols, deadline });
+
+    /* AI's standing as a base pair, which is the platform's own answer to whether
+       AI is becoming infrastructure. Everything ranked above it is either a quote
+       asset or a real-world asset; AI is the only launched token that other tokens
+       choose to quote themselves in, and that is a stronger statement of the hub
+       thesis than anything derived from routing. */
+    const anchorRank = [...deg]
+      .filter(([a]) => (degree.get(a) || 0) >= 20)
+      .sort((a, b) => b[1] - a[1])
+      .map(([a, n], i) => ({ rank: i + 1, token: a, symbol: symbols.get(a) || null, pools: n }));
+    const aiRow = anchorRank.find((r) => r.token === C.AI) || null;
+
+    writeData("launchpad.json", {
+      updatedAt: now,
+      censusPartial: census.partial,
+      ...summariseLaunchpad(launches, priced, (b) => tm.dayBucket(b), prior),
+      poolsWithHook: census.pools.length,
+      anchorRank: anchorRank.slice(0, 20),
+      // The list is truncated for the page; the count must not be.
+      anchorCount: anchorRank.length,
+      aiAnchorRank: aiRow,
+      // Twenty-five, not ten: the first census found forty-three and reporting a
+      // third of them per run makes convergence needlessly slow.
+      unlistedAnchors: unlisted.slice(0, 25),
+    });
+  } catch (e) {
+    softFail("launchpad census", e, "the previous launchpad.json stays in place");
+  }
 }
 
 /* An hourly panel of every rating input beside price, for the study of which of
@@ -306,7 +396,7 @@ try {
   writeData("kpis.json", kpis);
   console.log(`  kpi panel: ${kpis.rows.length} hourly rows`);
 } catch (e) {
-  console.warn(`  kpi snapshot failed (${e.message}); the panel keeps its previous rows`);
+  softFail("kpi snapshot", e, "the panel keeps its previous rows");
 }
 
 store.save();
@@ -336,7 +426,7 @@ if (!fast && !flag("no-bridges")) {
     });
     writeData("bridges.json", { updatedAt: now, ...bridges });
   } catch (e) {
-    console.warn(`  bridge analysis failed (${e.message}); leaving previous bridges.json in place`);
+    softFail("bridge analysis", e, "the previous bridges.json stays in place");
   }
 }
 

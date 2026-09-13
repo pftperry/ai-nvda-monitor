@@ -120,6 +120,11 @@ export const LAUNCHPAD = {
     "0x0000000000000000000000000000000000000000",   // native ETH
     "0x5fc5360d0400a0fd4f2af552add042d716f1d168",   // USDG
   ]),
+  /* WETH by symbol, because the wrapper is a quote asset and omitting it was not a
+     rounding error: it is the counterparty in 70,594 pools, so every one of those
+     was being read as a launch against an unrecognised anchor. The self-audit caught
+     it on the first full run, which is the entire reason that audit exists. */
+  quoteSymbols: new Set(["WETH", "ETH", "USDG"]),
   /* Symbols of the real-world assets tokens get anchored to: equities, ETFs,
      commodities, pre-IPO exposure and the leveraged wrappers of those. Matched by
      symbol because the addresses are numerous and the symbols are what the platform
@@ -129,6 +134,11 @@ export const LAUNCHPAD = {
     "SGOV", "AMC", "GLD", "MSTR", "AMZN", "HOOD", "QQQ", "PLTR", "HIMS", "F",
     "COIN", "SHOP", "SNOW", "TTWO", "RDDT", "USO", "SNDK", "PFE", "RBLX", "LULU",
     "MCD", "MU", "OPENAI", "ANTHROPIC",
+    /* Added by the self-audit, which reported them as high-degree tokens absent from
+       this list on the first full census. Every one is an equity or an ETF, and the
+       omission was mine from reading a forty-row sample. Their pools were being
+       dropped from the launch count until they appeared here. */
+    "NFLX", "COST", "AMD", "USAR", "SLV", "INTC", "MRNA", "BB", "BA", "UPS",
   ]),
   /* Leveraged and pre-IPO wrappers: NVDAx3L, OPENAIx1L, ANTHROPICx1L and friends.
      Still real-world exposure, so still an anchor rather than a launch. */

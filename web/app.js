@@ -483,7 +483,7 @@ function table(host, cols, rows) {
 }
 
 /* ── data ───────────────────────────────────────────────────────────────── */
-const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, poolIdx: 0, hours: 24 };
+const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, poolIdx: 0, hours: 24 };
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -504,13 +504,13 @@ async function refreshData() {
     const meta = await loadJSON("meta.json");
     if (!meta || meta.headBlock === S.meta?.headBlock) return;   // nothing newly indexed
     const [flow, burns] = await Promise.all(["flow.json", "burns.json"].map(loadJSON));
-    const [routing, bridges, tape, pools, depth] = await Promise.all(
-      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json"].map((f) => loadJSON(f).catch(() => null))
+    const [routing, bridges, tape, pools, depth, launchpad] = await Promise.all(
+      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json"].map((f) => loadJSON(f).catch(() => null))
     );
     Object.assign(S, {
       meta, flow, burns,
       routing: routing ?? S.routing, bridges: bridges ?? S.bridges,
-      tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth,
+      tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth, launchpad: launchpad ?? S.launchpad,
     });
     renderAll();
     refreshLiveTail();   // the live window starts at the new head, so re-scope it
@@ -1520,6 +1520,8 @@ function renderInvestor() {
 
   renderPrice(feeSeries);
   try { renderDepth(); } catch { /* depth is optional; never blank the tab */ }
+  try { renderAnchorRank(); } catch { /* the anchor census is optional */ }
+  try { renderRunners(); renderLaunches(); } catch { /* the launchpad tab is optional */ }
   const leak = renderLeak();
   renderVenues();
   const mult = renderMultiple(feeSeries);
@@ -2326,6 +2328,180 @@ function renderDepth() {
      they are not in this figure.</span>`);
 }
 
+/**
+ * The launchpad's output by size.
+ *
+ * Deliberately leads with the backed count rather than the raw one. A launchpad
+ * that has produced five tokens above a million dollars sounds like a platform;
+ * that four of those five are valued at thirty to ninety times the money standing
+ * behind them is the part that decides whether the first sentence means anything.
+ * Reporting the raw count alone would be true and misleading, which is the failure
+ * mode this whole site has spent its time removing.
+ */
+/**
+ * Launch cadence: how fast the platform is producing tokens, and whether that rate
+ * is holding. The daily bars answer "is it still going"; the cumulative line
+ * answers "was this infrastructure or an event", which is the shape a platform
+ * thesis actually rests on.
+ */
+/**
+ * Where AI sits among the anchors other tokens choose.
+ *
+ * The strongest evidence for the hub thesis on this whole site, and it arrived by
+ * accident: censusing the launchpad meant counting how often each token is used as
+ * the other side of a pool, and AI came out sixth of everything on the platform.
+ * Every token above it is either a quote asset or a real-world asset. AI is the
+ * only LAUNCHED token that other launches quote themselves in, which is what
+ * "becoming infrastructure" would look like if it were happening.
+ *
+ * Reported as a rank with the field visible rather than as a bare count, because
+ * 1,083 pools means nothing without knowing that ETH has 3,040 and GOOGL has 308.
+ */
+function renderAnchorRank() {
+  const lp = S.launchpad;
+  const me = lp?.aiAnchorRank;
+  if (!lp?.anchorRank?.length || !me) {
+    $("#kpiAnchor").innerHTML = `<p class="muted">Anchor census not measured yet.</p>`;
+    for (const id of ["#cAnchor", "#takeAnchor"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    return;
+  }
+  const rows = lp.anchorRank.slice(0, 12);
+  const above = rows.filter((r) => r.rank < me.rank);
+  const rwaAbove = above.filter((r) => !/^(ETH|WETH|USDG)$/i.test(r.symbol || "")).length;
+
+  $("#kpiAnchor").innerHTML = kpiEl(`#${me.rank}`,
+    `of ${(lp.anchorCount ?? lp.anchorRank.length).toLocaleString()} anchors`, me.rank <= 10 ? "up" : "down",
+    `${me.pools.toLocaleString()} pools quote themselves in AI`)
+    + `<div class="livenote">Everything ranked above it is a quote asset or a real-world asset
+       \u00b7 <b>AI is the only launched token above ${rows[rows.length - 1]?.pools?.toLocaleString() ?? "the rest"} pools</b>
+       \u00b7 counted across ${lp.poolsWithHook?.toLocaleString() ?? "all"} LONG pools</div>`;
+
+  barChart($("#cAnchor"), rows.map((r) => ({ label: r.symbol || r.token.slice(0, 6), n: r.pools, isAi: r.token === S.meta?.contracts?.aiToken })), {
+    xKey: "label", yKey: "n", xFmt: (v) => v, fmt: (v) => compact(v, 0),
+    color: "var(--series-2)",
+    tip: (d) => `<div class="k">${d.label}</div><div>${d.n.toLocaleString()} pools anchored to it</div>`,
+  });
+
+  /* Built here rather than inline: "1 real-world assets and 1 quote assets" was
+     the first version, and bad grammar in a number-heavy page reads as carelessness
+     about the numbers too. */
+  const countOf = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const parts = [];
+  if (rwaAbove) parts.push(countOf(rwaAbove, "real-world asset"));
+  if (above.length - rwaAbove) parts.push(countOf(above.length - rwaAbove, "quote asset"));
+  const aboveDesc = above.length
+    ? `The ${above.length} above it ${above.length === 1 ? "is" : "are"} ${parts.join(" and ")}`
+    : "Nothing is used as an anchor more often";
+  $("#takeAnchor").innerHTML = takeEl(me.rank <= 10 ? "pos" : "warn",
+    `AI is the <b>#${me.rank}</b> most-used anchor on the platform, with <b>${me.pools.toLocaleString()}</b> pools quoting themselves in it.
+     ${aboveDesc} — so <b>AI is the only launched token anywhere near the top</b>.
+     That is the hub thesis stated as a count rather than inferred from routing: other tokens are choosing AI as
+     a base pair, which is a slower and more durable signal than volume passing through it.
+     <span class="muted">A pool existing is not a pool trading. This counts adoption, not activity, and the two
+     can diverge \u2014 read it beside cross-routing above, which counts the volume.</span>`);
+}
+
+function renderLaunches() {
+  const r = S.launchpad;
+  const rows = completeDays(r?.launchesByDay || []);
+  if (!rows.length) {
+    $("#kpiLaunches").innerHTML = `<p class="muted">Launch history not measured yet.</p>`;
+    for (const id of ["#cLaunches", "#cLaunchCum", "#takeLaunches"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    return;
+  }
+  /* A partial census is the dangerous state for this tab specifically. Every other
+     figure on the site degrades into "unknown" when its data is short; a launch
+     count degrades into a smaller number that looks exactly like a real one. The
+     scan resumes from a cursor across runs, so until it has reached genesis every
+     total here is a floor, and it has to say so before it says anything else. */
+  const partial = !!r.censusPartial;
+  const last7 = rows.slice(-7).reduce((s, d) => s + d.launched, 0);
+  const prior7 = rows.slice(-14, -7).reduce((s, d) => s + d.launched, 0);
+  const trend = prior7 > 0 ? last7 / prior7 - 1 : null;
+  const total = rows.at(-1).cumulative;
+
+  $("#kpiLaunches").innerHTML = kpiEl(`${last7}`,
+    trend == null ? "" : `${pct(trend, 0)} wk/wk`, (trend ?? 0) >= 0 ? "up" : "down",
+    "tokens launched in the last 7 complete days")
+    + (partial
+      ? `<div class="warnline">The census has not finished walking back to genesis, so every count on this tab is a <b>floor</b> rather than a total. It resumes from a cursor each run and settles after a few.</div>`
+      : "")
+    + `<div class="livenote"><b>${total.toLocaleString()}</b> launched across <b>${rows.length}</b> days · busiest day <b>${maxOf(rows.map((d) => d.launched))}</b> · counted from every LONG-hook pool, not only the ones valued below</div>`;
+
+  barChart($("#cLaunches"), rows.slice(-45), {
+    xKey: "t", yKey: "launched", color: "var(--series-3)", xFmt: dayFmt,
+    fmt: (v) => v.toFixed(0),
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.launched} launched</div>
+      <div class="k">${d.cumulative.toLocaleString()} cumulative</div>`,
+  });
+  lineChart($("#cLaunchCum"), rows, {
+    xKey: "t", yKey: "cumulative", color: "var(--series-1)", area: true, zeroBase: true, xFmt: dayFmt,
+    fmt: (v) => v.toFixed(0),
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.cumulative.toLocaleString()} launched to date</div>`,
+  });
+
+  /* The honest read of a launch count is not the count. A platform that mints a
+     thousand tokens nobody trades has produced a number, not an ecosystem, so the
+     cadence is reported next to how many of them reached any size. */
+  const priced = r.priced ?? 0, big = r.runners ?? 0;
+  $("#takeLaunches").innerHTML = takeEl((trend ?? 0) >= 0 ? "pos" : "warn",
+    `<b>${last7}</b> tokens launched in the last 7 complete days${trend == null ? "" :
+      `, ${trend >= 0 ? "up" : "down"} <b>${pctLevel(Math.abs(trend), 0)}</b> on the week before`},
+     bringing the total to <b>${total.toLocaleString()}</b>.
+     <span class="muted">Launch count on its own says how busy the mint is, not whether anything survives it:
+     of the ${priced} tokens currently priced, ${big} carry a nominal cap above ${compact(r.runnerFloor || 1e6)}.
+     Read this chart with the size distribution below.</span>${(r.unlistedAnchors || []).length ? `<br><b>Undercounting.</b> ${r.unlistedAnchors.length} token(s) are used as an anchor by dozens of pools but are absent from the real-world-asset list (${r.unlistedAnchors.slice(0, 4).map((u) => (u.symbol || u.token.slice(0, 8)) + " " + u.pools).join(", ")}). Launches against them are not counted until that list is updated, so every figure here is a floor.` : ""}`);
+}
+
+function renderRunners() {
+  const r = S.launchpad;
+  if (!r || !r.buckets?.length) {
+    $("#kpiRunners").innerHTML = `<p class="muted">Launchpad token census not measured yet.</p>`;
+    for (const id of ["#cRunners", "#tRunners", "#takeRunners"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    return;
+  }
+
+  $("#kpiRunners").innerHTML = kpiEl(`${r.runnersBacked ?? 0}`,
+    `of ${r.runners} above $${compact(r.runnerFloor)}`, (r.runnersBacked ?? 0) > 0 ? "up" : "down",
+    `launchpad tokens at $1M+ whose cap is within ${r.backedRatioCap}x its liquidity`)
+    + `<div class="livenote"><b>${r.priced}</b> LONG-hook tokens priced
+       \u00b7 combined nominal cap <b>${compact((r.history?.at(-1)?.totalMcapUsd) ?? 0)}</b>
+       \u00b7 a cap-to-backing ratio above ${r.backedRatioCap}x means the valuation rests on a thin last print</div>`;
+
+  barChart($("#cRunners"), r.buckets.map((b) => ({ label: b.label, n: b.count })), {
+    xKey: "label", yKey: "n", color: "var(--series-1)",
+    fmt: (v) => v.toFixed(0), xFmt: (v) => v,
+    tip: (d) => `<div class="k">${d.label}</div><div>${d.n} token${d.n === 1 ? "" : "s"}</div>`,
+  });
+
+  table($("#tRunners"), [
+    { h: "Token", f: (t) => t.symbol || `<span class="muted" title="${t.token}">unnamed</span>` },
+    { h: "Nominal cap", f: (t) => `${compact(t.mcapUsd)}` },
+    { h: "Liquidity \u00b110%", f: (t) => (t.backingUsd == null ? "\u2014" : `${compact(t.backingUsd)}`) },
+    { h: "Cap / backing", f: (t) => {
+        if (t.capToBacking == null) return "\u2014";
+        const hot = t.capToBacking > (r.backedRatioCap ?? 20);
+        return `<span class="band ${hot ? "bear" : "bull"}">${t.capToBacking}\u00d7</span>`;
+      } },
+    { h: "Swaps", f: (t) => (t.swaps || 0).toLocaleString() },
+  ], r.top);
+
+  const big = r.buckets.find((b) => b.key === "small");
+  const share = r.priced ? (big?.count ?? 0) / r.priced : 0;
+  $("#takeRunners").innerHTML = takeEl((r.runnersBacked ?? 0) >= 3 ? "pos" : "warn",
+    `The launchpad has <b>${r.priced}</b> priced tokens, and <b>${pctLevel(share, 0)}</b> of them sit between
+     $10k and $100k. <b>${r.runners}</b> clear $1M on nominal cap; <b>${r.runnersBacked}</b> of those has
+     liquidity within ${r.backedRatioCap}\u00d7 of that valuation.
+     ${(r.runnersBacked ?? 0) <= 1
+       ? `On this evidence the platform is producing volume of launches rather than a supply of durable assets \u2014
+          the distribution is overwhelmingly small, and the large caps are mostly nominal.`
+       : `That is a real spread of surviving assets rather than one outlier carrying the platform.`}
+     <span class="muted">Two things to hold in mind. This counts tokens that still trade, so launches that died
+     are absent and the census flatters the present. And the population is overwhelmingly memecoins: the one
+     genuine tokenised real-world asset here is NVDA, whose cap should track the underlying rather than its pool,
+     which makes the cap-to-backing ratio the wrong lens for it specifically.</span>`);
+}
+
 function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kappaHist = []) {
   const b = S.burns;
   const kMed = (() => {
@@ -2522,10 +2698,10 @@ async function boot() {
     const [meta, flow, burns] = await Promise.all(
       ["meta.json", "flow.json", "burns.json"].map(loadJSON)
     );
-    const [routing, bridges, tape, pools, depth] = await Promise.all(
-      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json"].map((f) => loadJSON(f).catch(() => null))
+    const [routing, bridges, tape, pools, depth, launchpad] = await Promise.all(
+      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json"].map((f) => loadJSON(f).catch(() => null))
     );
-    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth });
+    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad });
   } catch (e) {
     $("#boot").remove();
     $("#bootErr").innerHTML = `<div class="err"><b>Could not load indexed data.</b><br>

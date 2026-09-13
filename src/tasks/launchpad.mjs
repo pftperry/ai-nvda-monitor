@@ -63,7 +63,21 @@ export async function censusLongPools(latest, prior, opts = {}) {
   const cursor = logs.reachedBlock ?? latest;
   log(`  census: read ${seen.toLocaleString()} pool creations to block ${cursor.toLocaleString()}` +
       `${logs.truncated ? " (budget reached, resuming next run)" : ""}; ${pools.size.toLocaleString()} LONG pools known`);
-  return { cursor, partial: !!logs.truncated, pools: [...pools.values()], usdgPools: [...usdg.values()] };
+  /* Only the USDG pools that can price an ANCHOR are worth keeping. Every token on
+     the platform eventually gets a USDG pool, so retaining all of them meant 145,798
+     records against 130,044 LONG pools and a 52 MB cache -- for a lookup that needs
+     about forty entries. An anchor is a token many pools are matched against, so the
+     degree count already computed here is the filter. The rest are recomputed from
+     the tape if the definition ever changes, which is the right trade for a cache. */
+  const degree = new Map();
+  for (const p of pools.values()) for (const t of [p.c0, p.c1]) degree.set(t, (degree.get(t) || 0) + 1);
+  const keptUsdg = [...usdg.values()].filter((u) => {
+    const other = u.c0 === USDG ? u.c1 : u.c0;
+    return (degree.get(other) || 0) >= 20;
+  });
+  log(`  keeping ${keptUsdg.length} USDG pools that can price an anchor, of ${usdg.size} seen`);
+
+  return { cursor, partial: !!logs.truncated, pools: [...pools.values()], usdgPools: keptUsdg };
 }
 
 /**
@@ -142,7 +156,11 @@ export function classifyLaunches(pools, symbols, log = console.log) {
     const s = symbols.get(addr);
     return !!s && (LAUNCHPAD.rwaSymbols.has(s.toUpperCase()) || LAUNCHPAD.rwaSuffix.test(s));
   };
-  const isQuote = (addr) => LAUNCHPAD.quotes.has(addr);
+  const isQuote = (addr) => {
+    if (LAUNCHPAD.quotes.has(addr)) return true;
+    const sym = symbols.get(addr);
+    return !!sym && LAUNCHPAD.quoteSymbols.has(sym.toUpperCase());
+  };
 
   const degree = new Map();
   for (const p of pools) for (const t of [p.c0, p.c1]) degree.set(t, (degree.get(t) || 0) + 1);
@@ -158,7 +176,12 @@ export function classifyLaunches(pools, symbols, log = console.log) {
   }
 
   const unlisted = [...degree]
-    .filter(([a, n]) => n >= LAUNCHPAD.anchorDegree && !isRwa(a) && !isQuote(a))
+    /* AI is excluded from the missing-anchor report by name. It genuinely behaves
+       like an anchor -- 5,533 pools quote themselves in it, which is the hub thesis
+       in one number -- but it is a launched token, not a real-world asset, so it
+       will never belong on the RWA list and reporting it every run as a gap would
+       train the reader to skip the whole line. */
+    .filter(([a, n]) => n >= LAUNCHPAD.anchorDegree && !isRwa(a) && !isQuote(a) && a !== AI)
     .sort((a, b) => b[1] - a[1])
     .map(([a, n]) => ({ token: a, symbol: symbols.get(a) || null, pools: n }));
 
@@ -205,19 +228,22 @@ export async function priceLaunchpadTokens(pools, rank, anchorUsd, store, opts =
 
   /* A token's own address is whichever side of the pool is not the anchor. Pools
      where neither side has a dollar price are skipped rather than guessed at. */
+  /* Use the classification, do not re-derive it.
+     This originally picked the anchor as whichever side had a dollar price, falling
+     back to currency0 when both did -- and both usually do, because a token that
+     trades gets a USDG pool eventually. So the sides were assigned by address
+     ordering, and the output read "MU anchored to MOO", "HIMS anchored to BONER",
+     "AAPL anchored to INU": the memecoin treated as the real-world asset and the
+     stock priced as though it were the launch. classifyLaunches already decided
+     this correctly from the RWA list, so the only correct move is to carry its
+     answer through rather than guess at it a second time. */
   const jobs = [];
   for (const [id, swaps] of ranked) {
     const p = byId.get(id);
-    const a0 = anchorUsd.get(p.c0), a1 = anchorUsd.get(p.c1);
-    if (a0 == null && a1 == null) continue;
-    const anchorIsC0 = a0 != null;
-    jobs.push({
-      pool: p, swaps,
-      token: anchorIsC0 ? p.c1 : p.c0,
-      anchor: anchorIsC0 ? p.c0 : p.c1,
-      anchorPrice: anchorIsC0 ? a0 : a1,
-      tokenIsC0: !anchorIsC0,
-    });
+    if (!p.token || !p.anchor) continue;          // unclassified pools are not launches
+    const anchorPrice = anchorUsd.get(p.anchor);
+    if (anchorPrice == null) continue;            // no dollar price for the anchor: skip, never guess
+    jobs.push({ pool: p, swaps, token: p.token, anchor: p.anchor, anchorPrice, tokenIsC0: p.c0 === p.token });
   }
 
   const cache = (store && store.get("lpSupply")) || {};
@@ -252,8 +278,29 @@ export async function priceLaunchpadTokens(pools, rank, anchorUsd, store, opts =
     const mcap = supply * tokenUsd;
     if (!isFinite(mcap) || mcap <= 0) continue;
 
+    /* What is actually standing behind the price, within 10% of spot. The swap log
+       already carries active liquidity and the sqrt price, so this costs nothing
+       extra -- and without it a market cap on a launchpad is close to meaningless.
+       A token with four thousand dollars of liquidity can print a thirty million
+       dollar cap, because one small buy against a thin book revalues the whole
+       supply. Understates when liquidity sits in a tighter band than 10%, so read
+       it as an order of magnitude, which is all the question needs. */
+    const L = Number(sw.liquidity || 0);
+    const sqrtP = Number(sw.sqrtPriceX96) / 2 ** 96;
+    let backing = null;
+    if (L > 0 && sqrtP > 0) {
+      const a1 = L * sqrtP * (Math.sqrt(1.1) - 1);
+      const a0 = (L / sqrtP) * (1 - Math.sqrt(0.9));
+      const usd0 = (a0 / 10 ** d0) * (j.tokenIsC0 ? tokenUsd : j.anchorPrice);
+      const usd1 = (a1 / 10 ** d1) * (j.tokenIsC0 ? j.anchorPrice : tokenUsd);
+      const v = usd0 + usd1;
+      backing = isFinite(v) && v >= 0 ? Math.round(v) : null;
+    }
+
     rows.push({
       token: j.token, anchor: j.anchor, poolId: j.pool.id,
+      backingUsd: backing,
+      capToBacking: backing > 0 ? +(mcap / backing).toFixed(1) : null,
       symbol: opts.symbols?.get(j.token) ?? null,
       anchorSymbol: opts.symbols?.get(j.anchor) ?? null,
       mcapUsd: Math.round(mcap), priceUsd: +tokenUsd.toPrecision(6),
@@ -261,8 +308,9 @@ export async function priceLaunchpadTokens(pools, rank, anchorUsd, store, opts =
     });
   }
   rows.sort((a, b) => b.mcapUsd - a.mcapUsd);
+  const backed = rows.filter((r) => r.mcapUsd >= RUNNER_FLOOR && r.capToBacking != null && r.capToBacking <= 20).length;
   log(`  priced ${rows.length} of ${jobs.length} ranked launchpad tokens; ` +
-      `${rows.filter((r) => r.mcapUsd >= RUNNER_FLOOR).length} at or above $1M`);
+      `${rows.filter((r) => r.mcapUsd >= RUNNER_FLOOR).length} at or above $1M, ${backed} of those backed within 20x`);
   return rows;
 }
 
@@ -297,6 +345,8 @@ export function summariseLaunchpad(pools, priced, dayOf, prior) {
     aiPaired: pools.filter((p) => p.c0 === AI || p.c1 === AI).length,
     priced: priced.length,
     runners: priced.filter((r) => r.mcapUsd >= RUNNER_FLOOR).length,
+    runnersBacked: priced.filter((r) => r.mcapUsd >= RUNNER_FLOOR && r.capToBacking != null && r.capToBacking <= 20).length,
+    backedRatioCap: 20,
     buckets, launchesByDay, history,
     top: priced.slice(0, 30),
   };

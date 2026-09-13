@@ -38,6 +38,7 @@
     <button class="tab" role="tab" id="tab-flow"     aria-controls="p-flow"     aria-selected="false">Flow &amp; Burn</button>
     <button class="tab" role="tab" id="tab-float"    aria-controls="p-float"    aria-selected="false">Float &amp; Lockup</button>
     <button class="tab" role="tab" id="tab-bridges"  aria-controls="p-bridges"  aria-selected="false">Bridges &amp; Routing</button>
+    <button class="tab" role="tab" id="tab-launchpad" aria-controls="p-launchpad" aria-selected="false">Launchpad</button>
     <button class="tab" role="tab" id="tab-method"   aria-controls="p-method"   aria-selected="false">Method</button>
   </div>
 </nav>
@@ -144,6 +145,19 @@
         <div id="kpiKappa"></div>
         <div class="chart" id="cInvKappa"></div>
         <div id="takeKappa"></div>
+      </div>
+      <div class="card">
+        <h3>4b. AI as a base pair</h3>
+        <p class="sub">
+          The hub thesis says other tokens will come to quote themselves in AI the way they quote themselves in
+          ETH. That is a counting question and this counts it: across every pool the LONG launchpad has created,
+          how often is each token chosen as the anchor. Cross-routing (above) measures volume passing
+          <i>through</i> AI; this measures whether the platform is <i>adopting</i> AI as infrastructure, which is
+          the slower and more durable version of the same claim.
+        </p>
+        <div id="kpiAnchor"></div>
+        <div class="chart" id="cAnchor"></div>
+        <div id="takeAnchor"></div>
       </div>
     </div>
 
@@ -390,6 +404,49 @@
     </div>
   </section>
 
+
+  <!-- ───────────────────────── Launchpad ───────────────────────── -->
+  <section class="panel" id="p-launchpad" role="tabpanel" aria-labelledby="tab-launchpad" hidden>
+    <div class="card">
+      <h3>Tokens launched per day</h3>
+      <p class="sub">
+        Every pool carrying the LONG hook is a launchpad token, and the hook address is in the pool's own
+        <code>Initialize</code> log — so this is a census, not a selection. Counting a launch needs only that log,
+        which is why the cadence covers the whole population while the valuations further down cover a rationed
+        subset: pricing a token needs its supply and a live quote, and there are hundreds of them.
+      </p>
+      <div id="kpiLaunches"></div>
+      <div class="chart" id="cLaunches"></div>
+      <div id="takeLaunches"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>Cumulative tokens launched</h3>
+      <p class="sub">The same series, accumulated. A platform thesis wants this line to keep bending upward;
+        a single burst that flattens is a launch event rather than infrastructure.</p>
+      <div class="chart" id="cLaunchCum"></div>
+    </div>
+
+    <div style="height:14px"></div>
+    <div class="card">
+      <h3>How many tokens LONG has produced, by size</h3>
+      <p class="sub">
+        The platform thesis says long.xyz is infrastructure that keeps producing assets rather than a venue that
+        got lucky once. That is a counting question. Every pool carrying the LONG hook is a launchpad token and
+        the hook address sits in the pool's own <code>Initialize</code> log, so this population needs no curation
+        and cannot be cherry-picked.
+        <b>Read the market caps with the backing beside them.</b> Supply times the last pool price is the standard
+        construction, and for a token with a few thousand dollars of liquidity it is a number in the shape of a
+        fact — one small buy against a thin book revalues the entire supply. Every row shows what is actually
+        standing within ±10% of spot, and the ratio between the two.
+      </p>
+      <div id="kpiRunners"></div>
+      <div class="chart" id="cRunners"></div>
+      <div id="takeRunners"></div>
+      <div class="scroll"><table id="tRunners"></table></div>
+    </div>
+
+  </section>
   <!-- ───────────────────────── Method ───────────────────────── -->
   <section class="panel" id="p-method" role="tabpanel" aria-labelledby="tab-method" hidden>
     <div class="card">
