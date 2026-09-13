@@ -143,7 +143,9 @@ export async function buildRoutingIndex(all, active, latest, opts = {}) {
   const window = opts.window ?? 2_000_000;
   const seed = opts.seed;
   const seedFrom = opts.seedFrom ?? latest;
-  const from = Math.max(GENESIS_BLOCK, latest - window);
+  // An explicit start wins over the window: the caller aligns it to a day boundary
+  // or to a stored cursor, both of which a plain "latest minus N" cannot express.
+  const from = Math.max(GENESIS_BLOCK, opts.from ?? (latest - window));
 
   const txIndex = seed || new Map();
   // The seed already covers [seedFrom, latest]; only fetch what it is missing.

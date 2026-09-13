@@ -7,6 +7,12 @@ import {
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const STEP = 4 * 3600;          // snapshot cadence
 const WINDOW = 250_000;          // blocks per outer read; see the memory note below
+const WEEK = 7 * 86400;
+
+/* Bumped when the state gains fields a replay from genesis has to fill. A seed
+   with a newer schema is adopted over a cache that is merely further along,
+   because the cache cannot backfill what it never recorded. */
+export const HOLDER_STATE_SCHEMA = 2;
 
 /* Addresses that hold AI as machinery rather than as an owner. The pool manager
    holds every v4 pool's inventory, the vault holds the locked leg, the splitter
@@ -35,10 +41,24 @@ export const HOLDER_BUCKETS = [
   { key: "whale", label: "$10k and above",  lo: 1e4,  hi: Infinity },
 ];
 
+/* Concentration is reported at these ranks, as shares of what holders (not
+   machinery) hold between them. Top-10 is the "could five wallets dump this"
+   question; top-100 is the one that moves over weeks. */
+export const TOP_RANKS = [10, 50, 100];
+
+/* A transfer this size is a whale move: about $65k at the September price. Below
+   it the tape is noise; above it a reader can name the wallet and watch what it
+   does next. */
+export const WHALE_MIN_AI = 250_000;
+const WHALE_MIN = BigInt(WHALE_MIN_AI) * 10n ** 18n;
+const WHALE_KEEP = 400;          // in state
+const WHALE_PUBLISH = 200;       // in the artifact
+const TOP_HOLDERS_PUBLISH = 25;
+
 /**
  * Who holds AI, in dollars, every four hours since genesis.
  *
- * Built by replaying every AI Transfer ever emitted -- roughly four million of
+ * Built by replaying every AI Transfer ever emitted -- roughly six million of
  * them -- into a balance per address, and bucketing the balances by dollar value
  * at each four-hour boundary. Nothing is sampled: a holder count here is the
  * number of addresses with a non-zero balance at that moment.
@@ -48,7 +68,17 @@ export const HOLDER_BUCKETS = [
  * rising count of $1k+ holders at a flat price is accumulation; a falling one on
  * a rally is distribution into strength. Neither is visible in volume.
  *
- * Memory: getLogsRange accumulates everything it reads, and four million raw logs
+ * Three readings sit on top of the counts, all from the same replay and costing
+ * no extra request:
+ *   - concentration: what share of holder-owned AI the top 10 / 50 / 100 hold,
+ *     per snapshot, so distribution and accumulation by size are visible;
+ *   - churn: addresses that went from zero to funded and funded to zero between
+ *     snapshots, which is the gross behind the net holder count;
+ *   - a whale tape and a first-seen date per address, from which cohorts are
+ *     built -- of the wallets that first bought in a given week, how many still
+ *     hold, and how much.
+ *
+ * Memory: getLogsRange accumulates everything it reads, and six million raw logs
  * is gigabytes. So the range is read in 250k-block windows, each replayed and
  * dropped before the next -- about 60k logs held at the densest point.
  *
@@ -70,29 +100,69 @@ export async function indexHolders(latest, tm, opts = {}) {
   const snaps = prev.snaps ? prev.snaps.slice() : [];
   const startCursor = cursor;
 
+  /* First-seen times are only complete when the replay started at genesis. A state
+     that began life as a balances-only seed cannot recover them, so the flag says
+     whether the cohort figures below describe every holder or only the ones who
+     arrived after the seed. */
+  const firstSeen = new Map(Object.entries(prev.firstSeen || {}));
+  const firstSeenFromGenesis = prev.firstSeenFromGenesis === true || startCursor < GENESIS_BLOCK;
+  const whales = prev.whales ? prev.whales.slice() : [];
+  let newSince = prev.newSince || 0, exitSince = prev.exitSince || 0;
+
   const snapshot = (t) => {
     // The hour that ENDED at t, not the one starting there, so a row never reads a later price.
     const price = priceAt(t - 3600);
     const counts = HOLDER_BUCKETS.map(() => 0);
     const byAi = AI_THRESHOLDS.map(() => 0);
     let holders = 0;
+    const sizes = [];
     for (const [a, b] of balances) {
       if (b <= 0n || MACHINERY.has(a)) continue;
       holders++;
       const ai = Number(b / 10n ** 12n) / 1e6;
+      sizes.push(ai);
       for (let k = 0; k < AI_THRESHOLDS.length; k++) if (ai >= AI_THRESHOLDS[k]) byAi[k]++;
       if (price == null) continue;
       const usd = ai * price;
       const i = HOLDER_BUCKETS.findIndex((k) => usd >= k.lo && usd < k.hi);
       counts[i]++;
     }
+    /* Concentration, as shares of holder-owned supply. Machinery is excluded from
+       the denominator too, or a pool-manager balance that is a third of supply
+       would make every wallet look small. */
+    sizes.sort((a, b) => b - a);
+    let held = 0;
+    for (const v of sizes) held += v;
+    const top = TOP_RANKS.map((n) => {
+      let s = 0;
+      for (let i = 0; i < Math.min(n, sizes.length); i++) s += sizes[i];
+      return held > 0 ? +(s / held).toFixed(4) : null;
+    });
     snaps.push({
       t, holders,
       price: price == null ? null : +price.toPrecision(6),
       supply: +(Number(supply / 10n ** 12n) / 1e6).toFixed(2),
       buckets: price == null ? null : counts,
       aboveAi: byAi,
+      heldAi: Math.round(held),
+      top,
+      newHolders: newSince,
+      exits: exitSince,
     });
+    newSince = 0; exitSince = 0;
+  };
+
+  /* A large move, classified by which side of it is the pool. v4 settles a buy by
+     paying the recipient straight from the PoolManager and a sell by pulling into
+     it, so the pool manager on one side names the direction. Fee legs and mints are
+     left out: they are the splitter's mechanics, not anyone's decision. */
+  const whaleKind = (x) => {
+    if (x.from === BURN_ADDRESS || x.to === BURN_ADDRESS) return null;
+    if (x.from === FEE_SPLITTER || x.to === COMMUNITY_VAULT || x.to === FEE_SPLITTER) return null;
+    if (x.from === POOL_MANAGER) return "buy";
+    if (x.to === POOL_MANAGER) return "sell";
+    if (x.from === LONG_HOOK || x.to === LONG_HOOK) return "hook";
+    return "transfer";
   };
 
   let read = 0, partial = false;
@@ -114,15 +184,41 @@ export async function indexHolders(latest, tm, opts = {}) {
          carrying the same balances, so the series has no holes to misread. */
       while (bucket > lastT) { snapshot(lastT + STEP); lastT += STEP; }
 
+      const kind = x.value >= WHALE_MIN ? whaleKind(x) : null;
+      let toWasEmpty = false;
+
       if (x.from === BURN_ADDRESS) supply += x.value;
-      else balances.set(x.from, (balances.get(x.from) || 0n) - x.value);
+      else {
+        const before = balances.get(x.from) || 0n;
+        const after = before - x.value;
+        balances.set(x.from, after);
+        if (before > 0n && after <= 0n && !MACHINERY.has(x.from)) exitSince++;
+      }
       if (x.to === BURN_ADDRESS) supply -= x.value;
-      else balances.set(x.to, (balances.get(x.to) || 0n) + x.value);
+      else {
+        const before = balances.get(x.to) || 0n;
+        const after = before + x.value;
+        balances.set(x.to, after);
+        if (before <= 0n && after > 0n && !MACHINERY.has(x.to)) {
+          newSince++;
+          toWasEmpty = true;
+          if (!firstSeen.has(x.to)) firstSeen.set(x.to, ts);
+        }
+      }
+      if (kind) {
+        whales.push({
+          t: ts, block: x.block, kind, from: x.from, to: x.to,
+          ai: Math.round(Number(x.value / 10n ** 12n) / 1e6),
+          tx: x.tx, fresh: kind === "buy" && toWasEmpty,
+        });
+        if (whales.length > WHALE_KEEP * 2) whales.splice(0, whales.length - WHALE_KEEP);
+      }
     }
     read += logs.length;
     cursor = reached;
     if (logs.truncated || reached < hi) { partial = true; break; }
   }
+  if (whales.length > WHALE_KEEP) whales.splice(0, whales.length - WHALE_KEEP);
 
   /* Drop emptied addresses so the stored map tracks holders, not history. */
   for (const [a, b] of balances) if (b === 0n) balances.delete(a);
@@ -139,18 +235,57 @@ export async function indexHolders(latest, tm, opts = {}) {
       `; ${balances.size.toLocaleString()} funded addresses; ${snaps.length} snapshots` +
       (complete ? "" : " (partial, resumes next run)"));
 
+  /* Cohorts by first-seen week: of the wallets that first held AI in a week, how
+     many still do and how much they hold. Retention is the honest version of
+     "holders are up" -- a count can rise while every early buyer leaves. */
+  const cohorts = new Map();
+  for (const [a, t] of firstSeen) {
+    if (MACHINERY.has(a)) continue;
+    const w = Math.floor(t / WEEK) * WEEK;
+    let c = cohorts.get(w);
+    if (!c) cohorts.set(w, (c = { t: w, acquired: 0, holding: 0, ai: 0 }));
+    c.acquired++;
+    const b = balances.get(a);
+    if (b && b > 0n) { c.holding++; c.ai += Number(b / 10n ** 12n) / 1e6; }
+  }
+  const cohortRows = [...cohorts.values()].sort((a, b) => a.t - b.t)
+    .map((c) => ({ ...c, ai: Math.round(c.ai), retention: c.acquired ? +(c.holding / c.acquired).toFixed(4) : null }));
+
+  /* The largest wallets, named. Addresses are public by construction; what the
+     page adds is the balance, its share, and when the wallet first held AI. */
+  const topHolders = [...balances]
+    .filter(([a, b]) => b > 0n && !MACHINERY.has(a))
+    .sort((x, y) => (y[1] > x[1] ? 1 : y[1] < x[1] ? -1 : 0))
+    .slice(0, TOP_HOLDERS_PUBLISH)
+    .map(([a, b]) => ({
+      address: a,
+      ai: Math.round(Number(b / 10n ** 12n) / 1e6),
+      since: firstSeen.get(a) ?? null,
+    }));
+
   return {
     state: {
+      schema: HOLDER_STATE_SCHEMA,
       cursor, lastT, supply: supply.toString(), snaps,
       balances: Object.fromEntries([...balances].map(([a, b]) => [a, b.toString()])),
+      firstSeen: Object.fromEntries(firstSeen),
+      firstSeenFromGenesis,
+      whales,
+      newSince, exitSince,
     },
     artifact: {
       complete, cursor,
       aiThresholds: AI_THRESHOLDS,
+      topRanks: TOP_RANKS,
+      whaleMinAi: WHALE_MIN_AI,
       buckets: HOLDER_BUCKETS.map(({ key, label, lo, hi }) => ({ key, label, lo, hi: hi === Infinity ? null : hi })),
       machineryExcluded: [...MACHINERY],
       reconciliation: { residualAi: +residualAi.toFixed(6), negativeBalances: negative },
       snapshots: snaps,
+      firstSeenFromGenesis,
+      cohorts: cohortRows,
+      topHolders,
+      whales: whales.slice(-WHALE_PUBLISH).reverse(),
     },
   };
 }
@@ -192,6 +327,11 @@ export function usdPriceLookup(flowPools) {
  * finished replay is committed once as a compressed seed. A run adopts it only
  * when its own state is behind, and from then on the cache carries it forward;
  * the seed never overrides newer work.
+ *
+ * One exception: a seed with a NEWER SCHEMA wins even when the cache is further
+ * along, because the cache cannot backfill a field it never recorded. Without
+ * this, first-seen dates and the whale tape would exist locally and never reach
+ * the published site, since the runner's cache is always a few blocks ahead.
  */
 export async function pickHolderState(cached, seedPath) {
   const fs = await import("node:fs");
@@ -199,6 +339,8 @@ export async function pickHolderState(cached, seedPath) {
   let seed = null;
   try { seed = JSON.parse(zlib.gunzipSync(fs.readFileSync(seedPath)).toString("utf8")); } catch { seed = null; }
   if (!seed) return cached || null;
-  if (!cached || (seed.cursor ?? 0) > (cached.cursor ?? 0)) return seed;
+  if (!cached) return seed;
+  if ((seed.schema ?? 1) > (cached.schema ?? 1)) return seed;
+  if ((seed.cursor ?? 0) > (cached.cursor ?? 0)) return seed;
   return cached;
 }

@@ -8,11 +8,12 @@ import { loadTimeMap } from "./timemap.mjs";
 import { discoverPools, buildRoutingIndex } from "./tasks/pools.mjs";
 import { assertTokenMetadata, resolveTokens } from "./tokens.mjs";
 import { indexFlow, rollup } from "./tasks/flow.mjs";
-import { analyseRouting } from "./tasks/routing.mjs";
+import { analyseRouting, routingHoleDay } from "./tasks/routing.mjs";
 import { indexDepth } from "./tasks/depth.mjs";
 import { snapshotKpis } from "./tasks/kpis.mjs";
 import { censusLongPools, rankByActivity, classifyLaunches, anchorPrices, priceLaunchpadTokens, summariseLaunchpad } from "./tasks/launchpad.mjs";
 import { indexBurns } from "./tasks/burns.mjs";
+import { indexPrices } from "./tasks/prices.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
 
@@ -215,33 +216,64 @@ const flow = await indexFlow(selected, latest, tm, { prev });
    mode produced it. */
 step("Measuring cross-routing (κ)");
 const priorRouting = flag("rebuild") ? null : readData("routing.json");
-const routingScan = fast ? Math.round(DAY_BLOCKS / 8) : ROUTING_WINDOW;   // ~3h vs full
 const rankedPools = all.length ? all : (readData("pools.json")?.pools || []);
 const activeForRouting = active.length ? active : rankedPools.slice(0, 250);
+
+/* Where the scan starts, and whether it adds to the stored days or replaces them.
+
+   A full run rescans its window and REPLACES every day it touches, so it must
+   start on a day boundary or the first day is rebuilt from a fraction of itself.
+   A fast run resumes from the stored cursor and APPENDS: a transaction sits in one
+   block, so blocks never seen before add exactly to the days they fall in. The
+   old fast path replaced the current day with its last three hours on every
+   refresh, which is how a complete day came to read 0.0M routed against 101M of
+   flow. Either mode widens to repair a day that reads as a hole, so a corrupt
+   series heals itself on the next run instead of waiting for a person. */
+const dayStartBlock = (block) => tm.blockAt(tm.dayBucket(block)) ?? block;
+const repairDay = routingHoleDay(flow.perPool, priorRouting, tm.dayBucket(latest));
+const repairFrom = repairDay == null ? null : tm.blockAt(repairDay);
+const routingPlan = (() => {
+  if (!fast) {
+    const from = Math.min(dayStartBlock(latest - ROUTING_WINDOW), repairFrom ?? Infinity);
+    return { from, additive: false, why: "full window from a day boundary" };
+  }
+  if (repairFrom != null) return { from: repairFrom, additive: false, why: "repairing a day whose routing volume disagrees with flow" };
+  const cursor = priorRouting?.cursor;
+  if (cursor && latest - cursor <= DAY_BLOCKS * 2) return { from: cursor + 1, additive: true, why: `appending ${(latest - cursor).toLocaleString()} new blocks` };
+  return { from: dayStartBlock(latest), additive: false, why: cursor ? "cursor too old, rebuilding today" : "no cursor yet, building today" };
+})();
+if (repairFrom != null) console.log(`  a recent routing day disagrees with flow; scan widened to block ${repairFrom.toLocaleString()} to repair it`);
+console.log(`  routing scan: ${routingPlan.why}`);
 
 let routing = null, routingFrom = null;
 if (activeForRouting.length) {
   const built = await buildRoutingIndex(rankedPools, activeForRouting, latest, {
-    window: routingScan,
+    from: routingPlan.from,
     seed: seedTxIndex, seedFrom,
   });
   routingFrom = built.routingFrom;
   routing = analyseRouting(built.txIndex, rankedPools, tm, {
     priorDaily: priorRouting?.daily || [],
     rescanFromDay: tm.dayBucket(built.routingFrom),
+    additive: routingPlan.additive,
+    prior: priorRouting,
     windowDays: 3,
   });
   console.log(`  κ = ${(routing.measuredKappaRatio * 100).toFixed(2)}% of direct volume over ${routing.kappaWindowDays}d -> regime "${routing.impliedRegime}"`);
-  console.log(`  this scan: ${routing.transactions.crossRouting.toLocaleString()} cross-routing txs of ${routing.transactions.multiLeg.toLocaleString()} multi-leg`);
+  console.log(`  ${routing.transactions.crossRouting.toLocaleString()} cross-routing txs of ${routing.transactions.multiLeg.toLocaleString()} multi-leg (${routing.scanMode})`);
 } else {
   console.log("  no ranked pools available; leaving routing.json untouched");
 }
 
 step("Indexing burn / lock / vault ledger");
-const burns = await indexBurns(latest, tm, { prev: flag("rebuild") ? null : readData("burns.json") });
+const burns = await indexBurns(latest, tm, {
+  prev: flag("rebuild") ? null : readData("burns.json"),
+  flowPools: flow.perPool,    // the effective fee rate divides fees by measured sell volume
+});
 console.log(`  burned ${burns.burned.toLocaleString()} AI over ${burns.burnEvents} events`);
 console.log(`  vault holds ${burns.vault.aiBalance.toLocaleString()} AI + ${burns.vault.nvdaBalance.toLocaleString()} NVDA`);
 console.log(`  observed fee split burn:lock:platform = 1 : ${burns.observedSplit?.lock} : ${burns.observedSplit?.platform}`);
+console.log(`  effective fee rate ${burns.effectiveFeeRate ? (burns.effectiveFeeRate * 100).toFixed(3) + "%" : "n/a"} (${burns.feeRateBasis})`);
 console.log(`  supply reconciliation: ${burns.reconciles ? "PASS" : "FAIL"} (residual ${burns.reconcileResidual})`);
 
 step("Writing core data artifacts");
@@ -280,8 +312,20 @@ writeData("meta.json", {
 if (!fast) writeData("pools.json", { updatedAt: now, pools: active.slice(0, 250) });
 writeData("flow.json", { updatedAt: now, windows, pools: flowOut });
 writeData("burns.json", burns);
-if (routing) writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, ...routing });
+// cursor is what the next fast run appends from; windowFrom is where this scan began.
+if (routing) writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, cursor: latest, ...routing });
 writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape });
+
+/* NVDA in dollars, so the vault and AI's beta to its anchor can be stated in
+   money. Two or three small requests; the venues are cached after the first run. */
+step("Pricing NVDA in dollars");
+let prices = null;
+try {
+  prices = await indexPrices(latest, tm, { store, flowPools: flowOut, prior: readData("prices.json") });
+  writeData("prices.json", prices);
+} catch (e) {
+  softFail("prices", e, "the previous prices.json stays in place");
+}
 /* Liquidity depth. Runs on every mode including --fast, because it is cheap after
    the first pass (ModifyLiquidity is append-only and resumes from a cursor) and
    because it is the only forward-looking measure here -- a stale order book is
@@ -402,22 +446,6 @@ if (!fast && !flag("no-launchpad")) {
   }
 }
 
-/* An hourly panel of every rating input beside price, for the study of which of
-   them actually relate to price and how they should be weighted. Runs last, from
-   artifacts already on disk, so it cannot affect anything it measures. Inputs
-   only, never the score -- the weighting is the question, so storing today's
-   answer would make the exercise circular. */
-try {
-  const kpis = snapshotKpis({
-    flow: { pools: flowOut }, burns, routing, bridges: readData("bridges.json"), depth,
-    now: Math.floor(Date.now() / 1000), prior: readData("kpis.json"),
-  });
-  writeData("kpis.json", kpis);
-  console.log(`  kpi panel: ${kpis.rows.length} hourly rows`);
-} catch (e) {
-  softFail("kpi snapshot", e, "the panel keeps its previous rows");
-}
-
 /* Holder distribution. Runs on every mode: once backfilled, a fast refresh adds a
    few thousand transfers and costs seconds. The first pass replays roughly four
    million transfers and does not fit one run, so it is budgeted and resumes from
@@ -445,6 +473,23 @@ if (!flag("no-holders") && (store.get("holders") || fs.existsSync("seed/holders-
   } catch (e) {
     softFail("holders", e, "the previous holders.json stays in place");
   }
+}
+
+/* An hourly panel of every rating input beside price, for the study of which of
+   them actually relate to price and how they should be weighted. Runs after every
+   input it records is on disk, so it cannot affect anything it measures. Inputs
+   only, never the score -- the weighting is the question, so storing today's
+   answer would make the exercise circular. */
+try {
+  const kpis = snapshotKpis({
+    flow: { pools: flowOut }, burns, routing, bridges: readData("bridges.json"), depth,
+    holders: readData("holders.json"), prices: prices ?? readData("prices.json"),
+    now: Math.floor(Date.now() / 1000), prior: readData("kpis.json"),
+  });
+  writeData("kpis.json", kpis);
+  console.log(`  kpi panel: ${kpis.rows.length} hourly rows`);
+} catch (e) {
+  softFail("kpi snapshot", e, "the panel keeps its previous rows");
 }
 
 store.save();

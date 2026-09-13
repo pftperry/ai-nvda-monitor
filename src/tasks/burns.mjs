@@ -211,10 +211,37 @@ export async function indexBurns(latest, tm, opts = {}) {
   if (!reconciles) log(`  supply residual ${residual.toFixed(2)} AI exceeds what ${stateSkewBlocks} blocks of skew can explain (${skewAllowance.toFixed(2)} AI)`);
   else if (Math.abs(residual) > 1) log(`  supply residual ${residual.toFixed(2)} AI, within the ${skewAllowance.toFixed(2)} AI explained by ${stateSkewBlocks} blocks of read skew`);
 
-  // The AI-side fee legs sum to the total AI fee taken. At a 0.70% rate that implies
-  // the AI-denominated notional that crossed tolled pools.
+  /* The effective fee rate, divided out of the data rather than assumed.
+
+     The logs report 7000 pips on the tolled pool, but dividing measured fee income
+     by measured sell volume on the hooked venues gives roughly 0.60% over a
+     fortnight (0.27%-0.77% by day): part of the logged fee never reaches the
+     splitter, the hook runs on several pools at different tiers, and buys pay in
+     NVDA so the AI leg divides by sells alone. The page measured this for itself
+     while this ledger still divided by 0.70%, so the two disagreed on implied
+     notional by about a sixth. One measurement, made here, used everywhere. */
   const totalAIFee = feeBurn + feeLock + feePlatform;
-  const impliedAILegVolume = totalAIFee / 0.007;
+  let effectiveFeeRate = null, feeRateDays = 0;
+  if (opts.flowPools?.length) {
+    const today = tm.dayBucket(latest);
+    const sellByDay = new Map();
+    for (const p of opts.flowPools) {
+      if (!p.isLongHook) continue;
+      for (const h of p.hourly || []) {
+        const d = Math.floor(h.t / 86400) * 86400;
+        sellByDay.set(d, (sellByDay.get(d) || 0) + (h.aiSell || 0));
+      }
+    }
+    let fees = 0, sells = 0;
+    for (const d of series.filter((x) => x.t < today).slice(-14)) {
+      const v = sellByDay.get(d.t);
+      if (!v) continue;
+      fees += (d.burnAI || 0) + (d.lockAI || 0) + (d.platformAI || 0);
+      sells += v; feeRateDays++;
+    }
+    effectiveFeeRate = sells > 0 ? +(fees / sells).toPrecision(5) : null;
+  }
+  const impliedAILegVolume = totalAIFee / (effectiveFeeRate || 0.007);
 
   return {
     updatedAt: Math.floor(Date.now() / 1000),
@@ -251,6 +278,12 @@ export async function indexBurns(latest, tm, opts = {}) {
     hookAI: fmtUnits(hookAI),
     nvdaTotalSupply: fmtUnits(nvdaSupply),
     totalAIFee,
+    nominalFeeRate: 0.007,
+    effectiveFeeRate,
+    feeRateBasis: effectiveFeeRate
+      ? `fees ÷ sell volume on hooked venues over the last ${feeRateDays} complete days`
+      : "nominal 0.70% (no flow to divide by)",
+    // Sell-side notional through tolled pools: fees divided by the MEASURED rate.
     impliedAILegVolume,
     // Effective float: what is actually available to trade.
     permanentlyRemoved: totalBurn + fmtUnits(vaultAI),

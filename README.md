@@ -9,8 +9,11 @@ Live on-chain monitor for the **Artificial Inu (`AI`) / `NVDA`** Uniswap v4 pair
 3. **Routing** — how much volume passes *through* AI as a bridge between other tokens,
    which is the mechanism the liquidity-hub thesis rests on?
 
-Everything is read from chain logs over the public RPC. There is no backend, no API key,
-and no database: an indexer writes JSON into `web/data/`, and the page is static.
+Everything is read from chain logs. There is no backend and no database: an indexer writes
+JSON into `web/data/`, and the page is static. The indexer uses a dedicated RPC endpoint when
+`RPC_URL` is set in the environment (a GitHub Actions secret in CI) and the chain's public
+endpoint otherwise; the key never appears in a file or an artifact. The browser page reads
+live state from the public endpoint directly.
 
 ```
 npm run index      # full backfill (~59 days of history) into web/data/
@@ -142,13 +145,35 @@ src/
   tasks/
     pools.mjs       pool discovery and activity ranking
     flow.mjs        hourly buy/sell aggregation
-    burns.mjs       burn / lock / vault ledger
-    routing.mjs     measured cross-routing (κ)
+    burns.mjs       burn / lock / vault ledger, and the measured effective fee rate
+    routing.mjs     measured cross-routing (κ), incremental by day, self-repairing
+    depth.mjs       tick-ladder liquidity, near-spot bands
     bridges.mjs     AI-pair share per token
+    launchpad.mjs   LONG-hook census, launch cadence, token prices as a series
+    holders.mjs     balance replay: counts, concentration, churn, cohorts, whale tape
+    prices.mjs      NVDA in dollars from its own USDG pool (2-3 calls a run)
+    kpis.mjs        hourly panel of every dial input beside price, for the weighting study
+  verify.mjs        ~110 invariants; gates the deploy
+  audit.mjs         cross-derivations; reports only
+  smoke.mjs         offline tests of the pure task logic; gates CI before indexing
+tools/
+  backfill-holders.mjs   genesis replay of the holder state (--rebuild writes the seed)
+  cards.mjs              social cards from the artifacts
 web/
   index.html  style.css  app.js
   data/             generated JSON (committed, so Pages can serve it)
 ```
+
+## The two dials
+
+The Investor View opens with two dials instead of a rating word. **Structure** ranks the
+protocol's inputs (fee capture, toll leakage, hub conversion κ, AI's share of new LONG pools,
+NVDA accretion, fee run-rate trend); **Demand** ranks what holders are doing (net flow, wallets
+above a fixed AI balance, distinct buyers, near-spot book lean, launch cadence, the live tail).
+Each input is a trailing-7-day level ranked inside AI's own last 30 days, inputs are
+equal-weighted within a dial, and a reading is taken over the pair. `web/data/kpis.json`
+records every input hourly so the weights can be earned from evidence later. Neither dial is a
+price forecast, and the page says so.
 
 ## Deploying
 

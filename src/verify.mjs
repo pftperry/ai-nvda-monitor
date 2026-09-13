@@ -226,7 +226,65 @@ if (routing) {
   check("cross-routing txs do not exceed multi-leg txs",
     routing.transactions.crossRouting <= routing.transactions.multiLeg,
     `${routing.transactions.crossRouting} of ${routing.transactions.multiLeg}`);
+  /* The daily series against flow over the same days. Routing counts a transaction
+     once across every active venue and flow counts every leg on the indexed ones,
+     so a complete day agrees to within a small factor (measured 0.85-0.95). A day
+     far below that was rebuilt from a partial scan -- the fast path did exactly this
+     to every current day for a week, and a complete day read 0.0M against 101M --
+     and κ's own history, which the rating ranks it on, was mostly holes. The
+     indexer now repairs holes inside its horizon on the next run, so a hole there
+     fails; older ones cannot be repaired and only warn. */
+  if (routing.daily?.length) {
+    const today = Math.floor((meta.headTime || Date.now() / 1000) / 86400) * 86400;
+    const flowByDay = new Map();
+    for (const p of flow.pools) for (const h of p.hourly) {
+      const d = Math.floor(h.t / 86400) * 86400;
+      flowByDay.set(d, (flowByDay.get(d) || 0) + (h.aiBuy || 0) + (h.aiSell || 0));
+    }
+    const judge = (rows) => rows.filter((d) => {
+      const fv = flowByDay.get(d.t) || 0;
+      if (fv < 1e6) return false;
+      const rv = (d.direct || 0) + (d.cross || 0);
+      return rv < 0.1 * fv || rv > 5 * fv;
+    }).map((d) => `${new Date(d.t * 1000).toISOString().slice(0, 10)} ${((d.direct + d.cross) / 1e6).toFixed(1)}M vs ${((flowByDay.get(d.t) || 0) / 1e6).toFixed(1)}M`);
+    const near = routing.daily.filter((d) => d.t < today && d.t >= today - 3 * 86400);
+    const far = routing.daily.filter((d) => d.t < today - 3 * 86400 && d.t >= today - 14 * 86400);
+    const nearBad = judge(near), farBad = judge(far);
+    check("recent routing days agree with flow over the same days", !nearBad.length,
+      nearBad.length ? nearBad.join("; ") : `${near.length} complete day(s) within 0.1-5x of flow`);
+    warn("older routing days agree with flow", !farBad.length,
+      farBad.length ? `${farBad.join("; ")} — before the repair horizon; κ percentiles skip nothing, so treat them with care` : `${far.length} day(s)`);
+    warn("routing carries a resume cursor", routing.cursor > 0,
+      routing.cursor ? "" : "older artifact; the next fast run rebuilds today from its start rather than appending");
+  }
 } else check("routing.json present", false);
+
+console.log("\nFee rate");
+if (burns.effectiveFeeRate != null) {
+  check("the effective fee rate is a plausible fraction of the nominal 0.70%",
+    burns.effectiveFeeRate > 0.001 && burns.effectiveFeeRate < 0.012,
+    `${(burns.effectiveFeeRate * 100).toFixed(3)}% (${burns.feeRateBasis})`);
+  check("implied notional divides by the measured rate",
+    Math.abs(burns.impliedAILegVolume * burns.effectiveFeeRate - burns.totalAIFee) < 1,
+    `${burns.impliedAILegVolume.toExponential(3)} × rate = ${(burns.impliedAILegVolume * burns.effectiveFeeRate).toFixed(0)} vs fees ${burns.totalAIFee.toFixed(0)}`);
+} else console.log("  --  effective fee rate not measured in the run that wrote this artifact");
+
+console.log("\nPrices");
+{
+  const prices = readData("prices.json");
+  if (prices) {
+    check("NVDA has a positive dollar price", prices.nvdaUsd == null || (prices.nvdaUsd > 0 && isFinite(prices.nvdaUsd)),
+      prices.nvdaUsd == null ? "no direct print (implied only)" : `$${prices.nvdaUsd.toFixed(2)} from ${prices.nvdaVenues} NVDA/USDG venues`);
+    /* Two routes to one price: the stock token's own USDG pool, and AI-in-USDG
+       over AI-in-NVDA. A fee tier's worth of spread is expected; a factor is not. */
+    if (prices.nvdaUsd && prices.nvdaUsdImplied) {
+      const r = prices.nvdaUsd / prices.nvdaUsdImplied;
+      warn("NVDA's direct and implied dollar prices agree", r > 0.85 && r < 1.15,
+        `direct $${prices.nvdaUsd.toFixed(2)} vs implied $${prices.nvdaUsdImplied.toFixed(2)} (${((r - 1) * 100).toFixed(1)}% apart)`);
+    }
+    check("price history is ordered in time", (prices.history || []).every((h, i, a) => i === 0 || h.t > a[i - 1].t), `${(prices.history || []).length} hourly rows`);
+  } else console.log("  --  prices.json absent (optional)");
+}
 
 console.log("\nBridges");
 if (bridges && bridges.tokens) {
@@ -452,7 +510,62 @@ if (holders && holders.snapshots?.length) {
     `${last.supply.toFixed(0)} replayed vs ${burns.totalSupply.toFixed(0)} live`);
   warn("the holder replay has reached the head", holders.complete === true,
     holders.complete ? "" : "still resuming from its cursor; counts are as of an earlier block");
+
+  /* The readings layered on the counts, checked against each other. Concentration
+     shares must nest (the top 10 cannot hold more than the top 100) and sit inside
+     [0, 1]; churn counts are non-negative integers; a cohort cannot have more
+     wallets still holding than it ever acquired; the tape only carries moves at or
+     above its own stated floor. */
+  const withTop = snaps.filter((x) => Array.isArray(x.top));
+  if (withTop.length) {
+    check("concentration shares nest and stay within [0, 1]",
+      withTop.every((x) => x.top.every((v, i, a) => v == null || (v >= 0 && v <= 1 && (i === 0 || a[i - 1] == null || v >= a[i - 1] - 1e-9)))),
+      `${withTop.length} snapshot(s); latest top-10/50/100 = ${(last.top || []).map((v) => v == null ? "—" : (v * 100).toFixed(1) + "%").join(" / ")}`);
+    check("holder-owned supply never exceeds total supply",
+      withTop.every((x) => x.heldAi == null || x.heldAi <= x.supply + 1));
+  } else console.log("  --  concentration absent (older artifact)");
+  const withChurn = snaps.filter((x) => x.newHolders != null);
+  if (withChurn.length) {
+    check("churn counts are non-negative integers",
+      withChurn.every((x) => Number.isInteger(x.newHolders) && x.newHolders >= 0 && Number.isInteger(x.exits) && x.exits >= 0));
+    /* Net change in holders between snapshots equals new minus exits, exactly, on
+       a replay that began at genesis. On a seeded state the first row after the
+       seed is exempt, because its counters started mid-stream. */
+    const bad = [];
+    for (let i = 1; i < withChurn.length; i++) {
+      const a = withChurn[i - 1], b = withChurn[i];
+      if (b.t - a.t !== 14400) continue;
+      if (b.holders - a.holders !== b.newHolders - b.exits) bad.push(new Date(b.t * 1000).toISOString().slice(0, 16));
+    }
+    warn("holder count moves by exactly new minus exited", bad.length <= 1,
+      bad.length ? `${bad.length} snapshot(s) disagree, first ${bad[0]}` : `${withChurn.length - 1} transitions reconcile`);
+  } else console.log("  --  churn absent (older artifact)");
+  if (holders.cohorts?.length) {
+    check("no cohort has more wallets holding than it acquired",
+      holders.cohorts.every((c) => c.holding <= c.acquired && c.holding >= 0 && c.ai >= 0), `${holders.cohorts.length} weekly cohorts`);
+    warn("first-seen dates run from genesis", holders.firstSeenFromGenesis === true,
+      holders.firstSeenFromGenesis ? "" : "cohorts only cover wallets that arrived after the seed; a genesis replay fills them");
+  }
+  if (holders.whales?.length) {
+    check("every whale move is at or above the tape's floor",
+      holders.whales.every((w) => w.ai >= (holders.whaleMinAi || 0) && ["buy", "sell", "transfer", "hook"].includes(w.kind)),
+      `${holders.whales.length} moves ≥ ${(holders.whaleMinAi || 0).toLocaleString()} AI`);
+    check("the whale tape is newest first",
+      holders.whales.every((w, i, a) => i === 0 || w.t <= a[i - 1].t));
+  }
+  if (holders.topHolders?.length) {
+    check("top holders are sorted largest first and exclude machinery",
+      holders.topHolders.every((h, i, a) => (i === 0 || h.ai <= a[i - 1].ai) && !holders.machineryExcluded.includes(h.address)),
+      `largest ${holders.topHolders[0].ai.toLocaleString()} AI`);
+  }
 } else console.log("  --  holders.json absent (optional)");
+
+console.log("\nLaunchpad price history");
+if (launchpad?.priceHistory?.length) {
+  check("price history rows are ordered and carry positive prices",
+    launchpad.priceHistory.every((h, i, a) => (i === 0 || h.t > a[i - 1].t) && Object.values(h.p || {}).every((v) => v > 0 && isFinite(v))),
+    `${launchpad.priceHistory.length} row(s), ${Object.keys(launchpad.priceHistory.at(-1).p || {}).length} tokens in the latest`);
+} else console.log("  --  no price history yet (accrues on the slow path)");
 console.log(`
 ${checks - failures}/${checks} checks passed${warnings ? `, ${warnings} warning${warnings === 1 ? "" : "s"}` : ""}.`);
 if (failures) {

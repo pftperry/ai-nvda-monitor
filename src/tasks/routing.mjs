@@ -1,5 +1,46 @@
 const r6 = (x) => (x === 0 ? 0 : +x.toPrecision(6));
 
+/* How many recent complete days are checked for holes and repaired by widening
+   the scan. Three is what a full run's window already covers, so a repair never
+   costs more than a standard refresh. verify.mjs fails on a hole inside this
+   horizon and only warns beyond it, since nothing would fix an older one. */
+export const HOLE_HORIZON_DAYS = 3;
+export const HOLE_RATIO = 0.2;   // routing volume below this share of flow's is a hole, not a quiet day
+
+/**
+ * A routing day whose volume disagrees with flow over the same day is a hole.
+ *
+ * Flow sums the AI leg of every swap on the indexed venues; routing sums per
+ * transaction across every active venue. They measure overlapping populations, so
+ * across a complete day they agree to within a small factor -- measured 0.85-0.95.
+ * A day at a fifth of flow or less was rebuilt from a partial scan. Returns the
+ * earliest such day among the last HOLE_HORIZON_DAYS complete days, or null, so the
+ * caller can widen its scan to that day's start and rebuild it.
+ */
+export function routingHoleDay(perPool, prior, today) {
+  if (!prior?.daily?.length || today == null) return null;
+  const firstDay = prior.daily[0].t;
+  const flowByDay = new Map();
+  for (const p of perPool || []) {
+    for (const h of p.hourly || []) {
+      const d = Math.floor(h.t / 86400) * 86400;
+      flowByDay.set(d, (flowByDay.get(d) || 0) + (h.aiBuy || 0) + (h.aiSell || 0));
+    }
+  }
+  const byDay = new Map(prior.daily.map((d) => [d.t, d]));
+  let earliest = null;
+  for (let k = 1; k <= HOLE_HORIZON_DAYS; k++) {
+    const t = today - k * 86400;
+    if (t < firstDay) continue;                       // before the series began is not a hole
+    const fv = flowByDay.get(t) || 0;
+    if (fv < 1e6) continue;                            // a quiet day cannot be judged
+    const r = byDay.get(t);
+    const rv = r ? (r.direct || 0) + (r.cross || 0) : 0;
+    if (rv < HOLE_RATIO * fv) earliest = t;
+  }
+  return earliest;
+}
+
 /**
  * Measured cross-routing intensity -- the real κ.
  *
@@ -23,12 +64,35 @@ export function analyseRouting(txIndex, pools, tm, opts = {}) {
      runs instead of recomputed: only days touched by the new scan change. Without
      this, κ required re-reading a multi-day window every run, which is what kept a
      refresh at tens of minutes and made a short schedule impossible. */
+  /* Two ways to merge, and the difference is a bug that shipped.
+
+     RESET (a full rescan): every day the scan reaches is dropped and rebuilt from
+     the scan, so the scan must start on a day boundary or the first day is rebuilt
+     from a fraction of itself. The caller aligns it.
+
+     APPEND (a fast refresh): the scan covers only blocks after the stored cursor,
+     so its transactions are strictly new and are ADDED to the stored days. The old
+     code applied RESET to a three-hour scan, which rewrote the current day from its
+     last three hours on every refresh -- measured, a complete day read 0.0M routed
+     against 101M of flow -- and κ's own history, the scale the rating ranks it on,
+     was mostly holes. A transaction sits in one block, so appending is exact. */
   const priorDaily = opts.priorDaily || [];
   const rescanFrom = opts.rescanFromDay ?? -Infinity;
+  const additive = !!opts.additive;
   for (const d of priorDaily) {
-    // Days the new scan covers are recomputed; older ones carry forward untouched.
-    if (d.t >= rescanFrom) continue;
+    if (!additive && d.t >= rescanFrom) continue;
     daily.set(d.t, { t: d.t, direct: d.direct || 0, cross: d.cross || 0, crossTx: d.crossTx || 0, directTx: d.directTx || 0 });
+  }
+  /* The route and counterparty tables, and the scan's own counts, would otherwise
+     describe fifteen minutes on an appending run. They carry forward and the new
+     scan adds to them; a full rescan starts them over across its window. */
+  if (additive && opts.prior) {
+    for (const r of opts.prior.topRoutes || []) routes.set(r.route, (routes.get(r.route) || 0) + (r.ai || 0));
+    for (const c of opts.prior.topCounterparties || []) {
+      hubCounterparties.set(c.token || "unknown", { token: c.token || null, symbol: c.symbol || null, ai: c.ai || 0 });
+    }
+    const tx = opts.prior.transactions || {};
+    nDirectTx += tx.direct || 0; nMultiTx += tx.multiLeg || 0; nCrossTx += tx.crossRouting || 0;
   }
 
   // Each value is a flat array: [block, poolIdx, aiAmount, poolIdx, aiAmount, ...]
@@ -105,6 +169,7 @@ export function analyseRouting(txIndex, pools, tm, opts = {}) {
   return {
     measuredKappaRatio: +measured.toFixed(4),
     kappaWindowDays: windowDays,
+    scanMode: additive ? "append" : "reset",
     scenarios,
     impliedRegime: regime,
     directAI: r6(winDirect || directAI),

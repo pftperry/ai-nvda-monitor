@@ -81,6 +81,19 @@
       <div id="takePrice"></div>
     </div>
 
+    <div class="card" style="margin-bottom:14px">
+      <h3>In dollars</h3>
+      <p class="sub">
+        Volume, fees and the vault in money rather than AI, each hour priced at that hour's on-chain AI/USDG close.
+        NVDA's dollar price comes from the stock token's own USDG pool, cross-checked against the price AI's two pools
+        imply for it. Turnover is volume over market cap; fee yield is what the toll pays holders, annualised, as a share
+        of the cap. These are the figures a holder actually reasons in, and the ones the AI-denominated cards cannot show.
+      </p>
+      <div id="kpiDollars"></div>
+      <div class="chart" id="cDollars"></div>
+      <div id="takeDollars"></div>
+    </div>
+
     <h2 class="section-title">Liquidity depth</h2>
     <div class="card">
       <h3>What it costs to move the price</h3>
@@ -152,10 +165,13 @@
     <div class="grid g2">
       <div class="card">
         <h3>3. Net flow momentum</h3>
-        <p class="sub">Who is absorbing whom. Buy/sell imbalance turns before price does, because it is what moves it.</p>
+        <p class="sub">Who is absorbing whom. Buy/sell imbalance moves price mechanically; measured, it does not lead it, so read it as the present rather than the future.</p>
         <div id="kpiFlow"></div>
         <div class="chart" id="cInvFlow"></div>
         <div id="takeFlow"></div>
+        <h4 class="subhead">Distinct buying addresses per day</h4>
+        <p class="sub">Breadth of demand: how many addresses bought, summed per pool-hour, so it is an upper bound on people. Volume can be one wallet; this cannot.</p>
+        <div class="chart" id="cBuyers"></div>
       </div>
       <div class="card">
         <h3>4. Fee run-rate</h3>
@@ -163,6 +179,42 @@
         <div id="kpiFee"></div>
         <div class="chart" id="cInvFee"></div>
         <div id="takeFee"></div>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card">
+        <h3>3b. Holder breadth and whales</h3>
+        <div class="agenote" data-age="holders" hidden></div>
+        <p class="sub">
+          <b>Who is arriving, who is leaving, and what the large wallets are doing.</b> Wallets above a fixed AI
+          balance are the price-neutral count (a rally cannot manufacture one). Beneath it, the gross behind the net:
+          wallets funded from zero and emptied to zero each day, replayed from every transfer. Concentration says
+          whether size is spreading out or gathering in. The tape lists every move of 250,000 AI or more, classified
+          by which side of it was the pool, so a reader can watch a wallet rather than a statistic. The Float &amp; Lockup
+          tab has the full tape, the largest wallets and the weekly cohorts.
+        </p>
+        <div id="kpiBreadth"></div>
+        <div class="legend">
+          <span><i style="background:var(--buy)"></i>Wallets funded from zero</span>
+          <span><i style="background:var(--sell)"></i>Wallets emptied to zero</span>
+        </div>
+        <div class="chart" id="cBreadth"></div>
+        <div id="takeBreadth"></div>
+        <div class="scroll" style="margin-top:10px"><table id="tWhales"></table></div>
+      </div>
+      <div class="card">
+        <h3>3c. AI against its platform</h3>
+        <div class="agenote" data-age="launchpad" hidden></div>
+        <p class="sub">
+          Is AI leading or lagging the tokens launched around it? The census prices the platform's largest tokens on
+          every slow-path run and keeps those prices as a series, so AI's move can be read against its own cohort's
+          median rather than in isolation. A hub should lead when the ecosystem is bid; when the launches run ahead of
+          the base pair they settle against, the money is going to them, not to AI.
+        </p>
+        <div id="kpiPlatform"></div>
+        <div class="scroll"><table id="tPlatform"></table></div>
+        <div id="takePlatform"></div>
       </div>
     </div>
 
@@ -394,6 +446,19 @@
       <h4 class="subhead">Addresses holding a meaningful balance, in AI</h4>
       <div class="chart" id="cHoldersAi"></div>
       <div id="takeHolders"></div>
+      <h4 class="subhead">Concentration</h4>
+      <p class="sub">Share of wallet-held AI in the largest 10, 50 and 100 wallets, with the pool manager, vault, hook and splitter excluded from both sides. Falling concentration with a rising count is tokens spreading out; rising concentration is the large wallets absorbing what smaller ones sell.</p>
+      <div id="cConcentration"></div>
+      <div id="takeConcentration"></div>
+      <h4 class="subhead">The largest wallets</h4>
+      <p class="sub">Addresses are public by construction; the page adds the balance, its share, its dollar value at the current price and when the wallet first held AI. An exchange or a bridge is one address holding for many.</p>
+      <div class="scroll"><table id="tTopHolders"></table></div>
+      <h4 class="subhead">Cohorts by first week held</h4>
+      <p class="sub">Of the wallets that first held AI in a given week, how many still do and how much they hold now. Retention is the honest version of "holders are up": a count can rise while every early buyer leaves.</p>
+      <div class="scroll"><table id="tCohorts"></table></div>
+      <h4 class="subhead">Whale tape</h4>
+      <p class="sub">Every transfer of 250,000 AI or more, newest first. Bought and sold are moves against a pool; wallet-to-wallet moves are named as such because they are neither.</p>
+      <div class="scroll"><table id="tWhalesFull"></table></div>
     </div>
 
     <div class="grid g2" style="margin-top:14px">

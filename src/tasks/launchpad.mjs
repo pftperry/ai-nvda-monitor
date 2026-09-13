@@ -413,7 +413,26 @@ export function summariseLaunchpad(pools, priced, dayOf, prior, allPools = null,
   const runnerRows = priced.filter((r) => r.mcapUsd >= RUNNER_FLOOR);
   const stats = ratioStats(runnerRows);
 
+  /* Prices of the platform's biggest tokens, kept as a series so AI can be read
+     against its own cohort: is it leading the platform or lagging it. Only the
+     top twenty by cap plus AI itself, at most one row every three hours (the
+     census runs on the slow path), forty-five days deep -- small enough to ship
+     in this artifact, long enough for a 7-day comparison. Every price here is a
+     pool print, so the same thin-book caveat as the caps applies. */
+  const stamp = Math.floor(Date.now() / 1000);
+  const tracked = priced.slice(0, 20);
+  const aiRow = priced.find((r) => r.token === AI);
+  if (aiRow && !tracked.includes(aiRow)) tracked.push(aiRow);
+  const snap = {};
+  for (const r of tracked) if (r.priceUsd > 0) snap[r.token] = +r.priceUsd.toPrecision(5);
+  const priorPh = (prior?.priceHistory || []).filter((h) => stamp - h.t < 45 * 86400);
+  const lastPh = priorPh.at(-1);
+  const priceHistory = lastPh && stamp - lastPh.t < 2.5 * 3600 ? priorPh : [...priorPh, { t: stamp, p: snap }];
+  const priceSymbols = { ...(prior?.priceSymbols || {}) };
+  for (const r of tracked) if (r.symbol) priceSymbols[r.token] = r.symbol;
+
   return {
+    priceHistory, priceSymbols,
     runnerFloor: RUNNER_FLOOR,
     poolsTotal: pools.length,
     aiPaired: pools.filter((p) => p.c0 === AI || p.c1 === AI).length,

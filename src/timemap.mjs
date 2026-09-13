@@ -64,6 +64,37 @@ export class TimeMap {
 
   hourBucket(block) { const t = this.at(block); return t === null ? null : Math.floor(t / 3600) * 3600; }
   dayBucket(block)  { const t = this.at(block); return t === null ? null : Math.floor(t / 86400) * 86400; }
+
+  /**
+   * The block at a wall-clock time: at() run backwards.
+   *
+   * Needed so a scan can start on a DAY boundary. The routing series is kept per
+   * day and rebuilt for every day a rescan touches, so a scan that starts mid-day
+   * rebuilds that day from a fraction of it -- measured, a complete day read 0.0M
+   * routed against 101M of flow because a fast run had rewritten it from its last
+   * three hours. Anchors are 250k blocks apart and production is steady, so the
+   * interpolated block lands within seconds of the boundary, far inside a day.
+   */
+  blockAt(t) {
+    const a = this.anchors;
+    if (!a.length || t == null) return null;
+    if (t <= a[0][1]) return a[0][0];
+    const n = a.length;
+    if (t >= a[n - 1][1]) {
+      if (n < 2) return a[0][0];
+      const [b1, t1] = a[n - 2], [b2, t2] = a[n - 1];
+      const rate = (t2 - t1) / Math.max(1, b2 - b1);
+      return Math.round(b2 + (t - t2) / Math.max(1e-9, rate));
+    }
+    let lo = 0, hi = n - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (a[mid][1] <= t) lo = mid; else hi = mid;
+    }
+    const [b1, t1] = a[lo], [b2, t2] = a[hi];
+    if (t2 === t1) return b1;
+    return Math.round(b1 + ((t - t1) * (b2 - b1)) / (t2 - t1));
+  }
 }
 
 /**

@@ -483,7 +483,9 @@ function table(host, cols, rows) {
 }
 
 /* ── data ───────────────────────────────────────────────────────────────── */
-const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, poolIdx: 0, hours: 24 };
+const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, poolIdx: 0, hours: 24 };
+// Everything but meta/flow/burns may be absent or lag; the page renders without it.
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -504,13 +506,14 @@ async function refreshData() {
     const meta = await loadJSON("meta.json");
     if (!meta || meta.headBlock === S.meta?.headBlock) return;   // nothing newly indexed
     const [flow, burns] = await Promise.all(["flow.json", "burns.json"].map(loadJSON));
-    const [routing, bridges, tape, pools, depth, launchpad, holders] = await Promise.all(
-      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json"].map((f) => loadJSON(f).catch(() => null))
+    const [routing, bridges, tape, pools, depth, launchpad, holders, prices] = await Promise.all(
+      OPTIONAL_ARTIFACTS.map((f) => loadJSON(f).catch(() => null))
     );
     Object.assign(S, {
       meta, flow, burns,
       routing: routing ?? S.routing, bridges: bridges ?? S.bridges,
-      tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth, launchpad: launchpad ?? S.launchpad, holders: holders ?? S.holders,
+      tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth, launchpad: launchpad ?? S.launchpad,
+      holders: holders ?? S.holders, prices: prices ?? S.prices,
     });
     renderAll();
     refreshLiveTail();   // the live window starts at the new head, so re-scope it
@@ -714,7 +717,7 @@ function renderFlow() {
     { h: "Price Δ", f: (r) => `<span class="${r.priceChange >= 0 ? "up" : "down"}">${r.priceChange.toFixed(2)}%</span>` },
   ], p.rollups);
 
-  const names = S.tape.pools;
+  const names = S.tape?.pools || [];   // the tape is optional; a missing file must not blank the tab
   table($("#tTape"), [
     { h: "Time", f: (r) => tsFmt(r.t) },
     { h: "Pool", f: (r) => `AI / ${names[r.pool] || "?"}` },
@@ -722,7 +725,7 @@ function renderFlow() {
     { h: "AI", f: (r) => compact(r.ai) },
     { h: "Quote", f: (r) => compact(r.pair) },
     { h: "Price", f: (r) => sig(r.price, 5) },
-  ], S.tape.swaps.slice(0, 40));
+  ], (S.tape?.swaps || []).slice(0, 40));
 }
 
 function renderBurn() {
@@ -785,7 +788,7 @@ function renderHolders() {
   if (card) card.hidden = snaps.length < 2;
   if (snaps.length < 2) {
     $("#kpiHolders").innerHTML = `<p class="muted">Holder replay not published yet.</p>`;
-    for (const id of ["#cHolderBuckets", "#cHoldersAi", "#takeHolders"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    for (const id of ["#cHolderBuckets", "#cHoldersAi", "#takeHolders", "#cConcentration", "#tTopHolders", "#tCohorts", "#tWhalesFull", "#takeConcentration"]) { const e = $(id); if (e) e.innerHTML = ""; }
     return;
   }
   const last = snaps.at(-1);
@@ -853,6 +856,65 @@ function renderHolders() {
      that way. Protocol contracts (pool manager, vault, hook, fee splitter) are excluded from every count and kept
      in the supply reconciliation. An address is not a person: exchanges and bots hold for many, and one person
      can hold across many.</span>`);
+
+  /* Concentration, the largest wallets, cohorts and the whale tape: the detail
+     behind the Investor View's holder card, for the reader who wants names. */
+  const px = marketState().price || 0;
+  const ranks = h.topRanks || [10, 50, 100];
+  if (last.top && wk.top) {
+    $("#cConcentration").innerHTML = `<div class="bucketrow">${ranks.map((n, i) => {
+      const v = last.top[i], d = wk.top[i] == null || v == null ? null : v - wk.top[i];
+      return `<div class="bucket"><div class="bn">${pctLevel(v, 1)}</div><div class="bl">held by the top ${n}</div>
+        <div class="bl" style="color:${d == null ? "inherit" : d <= 0 ? "var(--buy)" : "var(--sell)"}">${d == null ? "—" : `${d >= 0 ? "+" : ""}${(d * 100).toFixed(1)}pt in 7d`}</div></div>`;
+    }).join("")}
+    <div class="bucket"><div class="bn">${compact(last.heldAi ?? 0)}</div><div class="bl">AI held by wallets</div><div class="bl">${pctLevel((last.heldAi ?? 0) / (last.supply || 1), 1)} of supply; the rest is pools, vault, hook</div></div></div>`;
+    const top100 = last.top[2], top100wk = wk.top[2];
+    const dTop = top100 != null && top100wk != null ? top100 - top100wk : null;
+    $("#takeConcentration").innerHTML = takeEl(dTop == null ? "neu" : dTop < -0.005 ? "pos" : dTop > 0.005 ? "warn" : "neu",
+      `The 100 largest wallets hold <b>${pctLevel(top100, 1)}</b> of all wallet-held AI${dTop == null ? "" : `, <b>${dTop >= 0 ? "+" : ""}${(dTop * 100).toFixed(1)} points</b> on the week`}.
+       ${dTop == null ? "" : dTop < -0.005 ? "Falling concentration with a rising holder count is tokens spreading into more hands, which is the healthier shape for a market this thin."
+         : dTop > 0.005 ? "Rising concentration means the large wallets are absorbing what smaller ones sell; that supports price while it lasts and is the supply overhang when it stops."
+         : "Concentration is where it was a week ago."}
+       <span class="muted">Shares are of what wallets hold, with the pool manager, vault, hook and splitter excluded from both sides. One entity can be many wallets, so this is a floor on concentration, not a ceiling.</span>`);
+  } else { $("#cConcentration").innerHTML = ""; $("#takeConcentration").innerHTML = ""; }
+
+  table($("#tTopHolders"), [
+    { h: "#", f: (r) => `${r.i + 1}` },
+    { h: "Wallet", f: (r) => `<span class="mono" title="${r.address}">${short(r.address)}</span>` },
+    { h: "AI", f: (r) => compact(r.ai) },
+    { h: "Share", f: (r) => pctLevel(r.ai / Math.max(1, last.heldAi || last.supply), 2) },
+    { h: "USD", f: (r) => (px ? `$${compact(r.ai * px)}` : "—") },
+    { h: "First held", f: (r) => (r.since ? dayFmt(r.since) : `<span class="muted">before the seed</span>`) },
+  ], (h.topHolders || []).map((r, i) => ({ ...r, i })));
+
+  const cohorts = (h.cohorts || []).slice().reverse();
+  table($("#tCohorts"), [
+    { h: "First held (week of)", f: (c) => dayFmt(c.t) },
+    { h: "Wallets", f: (c) => c.acquired.toLocaleString() },
+    { h: "Still holding", f: (c) => c.holding.toLocaleString() },
+    { h: "Retention", attrs: () => ({ class: "bar-cell" }), f: (c) => `<div class="fill" style="width:${(c.retention || 0) * 100}px"></div><span>${pctLevel(c.retention, 0)}</span>` },
+    { h: "AI held now", f: (c) => compact(c.ai) },
+  ], cohorts);
+  // Replace rather than append: this renders on every tab switch and refresh.
+  $("#cohortNote")?.remove();
+  if (!h.firstSeenFromGenesis && cohorts.length) {
+    $("#tCohorts").insertAdjacentHTML("afterend", `<div id="cohortNote" class="warnline">First-seen dates only cover wallets that arrived after the replay seed; earlier holders appear in no cohort until a genesis replay is published.</div>`);
+  }
+
+  table($("#tWhalesFull"), whaleCols(px), (h.whales || []).slice(0, 60));
+}
+
+/** Columns for a whale-move table, shared by the Investor View card and the Float tab. */
+function whaleCols(px) {
+  const kindBand = (k) => k === "buy" ? "bull" : k === "sell" ? "bear" : k === "hook" ? "na" : "base";
+  const kindWord = (k) => k === "buy" ? "bought from pool" : k === "sell" ? "sold into pool" : k === "hook" ? "hook / launch" : "wallet to wallet";
+  return [
+    { h: "When", f: (w) => tsFmt(w.t) },
+    { h: "Move", f: (w) => `<span class="band ${kindBand(w.kind)}">${kindWord(w.kind)}</span>${w.fresh ? ` <span class="muted" title="the receiving wallet held no AI before this">new wallet</span>` : ""}` },
+    { h: "AI", f: (w) => compact(w.ai) },
+    { h: "USD now", f: (w) => (px ? `$${compact(w.ai * px)}` : "—") },
+    { h: "Wallet", f: (w) => { const a = w.kind === "buy" ? w.to : w.kind === "sell" ? w.from : w.to; return `<span class="mono" title="${w.from} → ${w.to}">${short(a)}</span>`; } },
+  ];
 }
 
 function renderFloat() {
@@ -915,9 +977,11 @@ function renderFloat() {
     { k: "Vault-locked", v: b.lockedInVault },
     { k: "Platform fee", v: b.platformLeg },
   ], ["var(--series-1)", "var(--series-2)", "var(--series-3)"]);
+  const fr = measuredFeeRate();
   $("#splitNote").textContent =
     `Measured ratio burn : lock : platform = 1 : ${s.lock} : ${s.platform}. ` +
-    `Total AI fees taken: ${nf(b.totalAIFee, 0)} AI, implying ${compact(b.impliedAILegVolume)} AI of notional through tolled pools at the observed 0.70% rate.`;
+    `Total AI fees taken: ${nf(b.totalAIFee, 0)} AI, implying ${compact(b.totalAIFee / (fr || 0.007))} AI of sell-side notional through tolled pools ` +
+    (fr ? `at the measured ${pctLevel(fr, 2)} effective rate (the logs say 0.70%; the splitter receives less).` : "at the nominal 0.70% rate.");
 }
 
 /* ── tab 3: bridges & routing ───────────────────────────────────────────── */
@@ -1323,6 +1387,8 @@ function renderLiveStrip() {
  */
 function measuredFeeRate(days = 14) {
   const b = S.burns, f = S.flow;
+  // The indexer now makes the same measurement and ships it; one source, not two.
+  if (b?.effectiveFeeRate > 0) return b.effectiveFeeRate;
   if (!b?.daily?.length || !f?.pools?.length) return null;
   const hooked = f.pools.filter((p) => p.isLongHook);
   if (!hooked.length) return null;
@@ -1481,6 +1547,17 @@ function renderInvestor() {
      ${flipped ? "<b>Direction flipped</b> versus the previous week, which is the signal worth watching."
                : `Direction is unchanged week over week${Math.abs(net7) > Math.abs(net7p) ? " and intensifying" : " and easing"}.`}
      Sustained one-sided absorption is what moves price; a single day is noise.${liveNote}`);
+  /* Breadth of demand beside its volume: a day's net flow can be one wallet, a
+     day's buyer count cannot. Summed per pool-hour, so it is an upper bound. */
+  const buyersDaily = completeDays(dailyBuyers());
+  if ($("#cBuyers")) {
+    lineChart($("#cBuyers"), buyersDaily.slice(-30), {
+      xKey: "t", yKey: "buyers", zeroBase: true, area: true, color: "var(--series-3)", xFmt: dayFmt,
+      fmt: (v) => v.toFixed(0),
+      tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.buyers.toLocaleString()} buying addresses</div>
+        <div class="k">${d.sellers.toLocaleString()} selling addresses</div>`,
+    });
+  }
 
   /* ── 2. fee run-rate ──────────────────────────────────────────────── */
   const fee = (d) => (d.burnAI || 0) + (d.lockAI || 0) + (d.platformAI || 0);
@@ -1627,39 +1704,83 @@ function renderInvestor() {
   const leak = renderLeak();
   renderVenues();
   const mult = renderMultiple(feeSeries);
-  renderRating({
-    feeTrend, leakNow: leak ? leak.leakNow : null,
-    leakPrior: leak && leak.series && leak.series.length > 7 ? leak.series[leak.series.length - 8].leak : null,
-    kappa, sc,
-    multNow: mult ? mult.now : null, multMedian: mult ? mult.median : null,
-    nvdaPerDay: nv7 / 7, removedPace: rem7 / 7, net7, net7p,
-    /* Own-history distributions. Every level is scored against where it sits in
-       this asset's own measured range, so no outside assumption sets a threshold. */
-    hist: {
-      kappa: kd.map((d) => d.ratio),
-      leak: (leak?.comparable || []).map((d) => d.leak),
-      feeGrowth: feeSeries.length > 14
-        ? feeSeries.map((_, i) => {
-            if (i < 13) return null;
-            const a = feeSeries.slice(i - 6, i + 1).reduce((x, d) => x + d.fee, 0);
-            const b2 = feeSeries.slice(i - 13, i - 6).reduce((x, d) => x + d.fee, 0);
-            return b2 > 0 ? a / b2 - 1 : null;
-          }).filter((x) => x != null)
-        : [],
-      nvdaPerDay: bDaily.map((d) => d.nvdaIn),
-    },
-    organicShare: S.bridges?.byKind?.organic?.tokens
-      ? (S.bridges.byKind.organic.weightedShare
-         ?? S.bridges.byKind.organic.medianShare
-         ?? S.bridges.byKind.organic.aiPairShare) : null,
-    organicBasis: S.bridges?.byKind?.organic?.weightedShare != null ? "flow-weighted"
-      : S.bridges?.byKind?.organic?.medianShare != null ? "median" : "legacy",
-  });
+  try { renderDollars(feeSeries); } catch (e) { console.error("renderDollars", e); }
+  try { renderBreadth(); } catch (e) { console.error("renderBreadth", e); }
+  try { renderPlatform(); } catch (e) { console.error("renderPlatform", e); }
+
+  /* ── the two dials ────────────────────────────────────────────────────
+     Every input is a trailing-7-day level (or a week-over-week change) ranked
+     inside the asset's OWN last 30 days; see RATING and renderCockpit for why
+     that window and not the whole history. */
+  const H = (S.holders?.snapshots || []).filter((x) => x.holders > 0);
+  const capRoll = rolling(capComparable, 7, (w) => { const t = sumOf(w, (d) => d.total); return t > 0 ? sumOf(w, (d) => d.main) / t : null; });
+  const leakRoll = rolling(leak?.comparable || [], 7, (w) => { const t = sumOf(w, (d) => d.total); return t > 0 ? sumOf(w, (d) => d.hookless) / t : null; });
+  const nvRoll = rolling(bDaily, 7, (w) => sumOf(w, (d) => d.nvdaIn) / 7);
+  const feeRoll = rolling(feeSeries, 14, (w) => { const a = sumOf(w.slice(7), (d) => d.fee), p2 = sumOf(w.slice(0, 7), (d) => d.fee); return p2 > 0 ? a / p2 - 1 : null; });
+  const flowRoll = rolling(flows, 7, (w) => { const bb = sumOf(w, (d) => d.buy), ss = sumOf(w, (d) => d.sell); return bb + ss > 0 ? (bb - ss) / (bb + ss) : null; });
+  const buyersRoll = rolling(completeDays(dailyBuyers()), 7, (w) => sumOf(w, (d) => d.buyers) / 7);
+  const launchRoll = rolling(completeDays(S.launchpad?.launchesByDay || []), 7, (w) => sumOf(w, (d) => d.launched));
+  const adoptRoll = rolling(completeDays(S.launchpad?.anchorFlow || []), 7, (w) => { const a = sumOf(w, (d) => d.all); return a > 0 ? sumOf(w, (d) => d.ai) / a : null; });
+  const breadthRoll = H.map((x, i) => {
+    const p = H[i - 42];   // 42 four-hour rows = 7 days
+    const a = x.aboveAi?.[HOLDER_AI_INDEX], b0 = p?.aboveAi?.[HOLDER_AI_INDEX];
+    return b0 ? { t: x.t, v: a / b0 - 1 } : null;
+  }).filter(Boolean);
+  const nearHist = (S.depth?.history || []).filter((hh) => hh.nearBid != null && hh.nearBid + hh.nearAsk > 0)
+    .map((hh) => ({ t: hh.t, v: hh.nearBid / (hh.nearBid + hh.nearAsk) }));
+  const tightBand = S.depth?.near?.[0];
+  const bookShare = tightBand && tightBand.bidUsd + tightBand.askUsd > 0 ? tightBand.bidUsd / (tightBand.bidUsd + tightBand.askUsd) : null;
+  const L = S.live;
+  const cur = (roll) => (roll.length ? roll.at(-1).v : null);
+  const wk = (roll) => (roll.length > 7 ? roll.at(-1).v - roll[roll.length - 8].v : null);     // over the last 7 daily points
+  const wk4h = (roll) => (roll.length > 42 ? roll.at(-1).v - roll[roll.length - 43].v : null); // over the last 7 days of 4h points
+  const adoptNow = cur(adoptRoll), adoptPrior = adoptRoll.length > 7 ? adoptRoll[adoptRoll.length - 8].v : null;
+  const thr = S.holders?.aiThresholds?.[HOLDER_AI_INDEX] ?? 1e5;
+
+  const structure = [
+    { k: "Fee capture on AI/NVDA", v: pctLevel(cur(capRoll), 1), d: wk(capRoll), dFmt: pts,
+      s: levelScore(capRoll, cur(capRoll), +1),
+      why: "share of indexed volume crossing the tolled pool, trailing 7 days, on days with both venue kinds" },
+    { k: "Toll leakage", v: cur(leakRoll) == null ? "—" : pctLevel(cur(leakRoll), 1) + " pays nothing", d: wk(leakRoll), dFmt: pts, invert: true,
+      s: levelScore(leakRoll, cur(leakRoll), -1),
+      why: "share of indexed volume on pools that pay the vault nothing; high is bad, so its rank is inverted" },
+    { k: "Hub conversion κ", v: pctLevel(kappa, 1), d: k7pr > 0 ? k7r - k7pr : null, dFmt: pts,
+      s: levelScore(kd.map((d) => ({ t: d.t, v: d.ratio })), kappa, +1),
+      why: "cross-routed ÷ direct AI volume, trailing 3 days, ranked among its own daily values" },
+    { k: "AI's share of new LONG pools", v: pctLevel(adoptNow, 1), d: adoptPrior ? adoptNow / adoptPrior - 1 : null, dFmt: (x) => pct(x, 0),
+      s: adoptPrior ? clamp1((adoptNow / adoptPrior - 1) / 0.5) : null,
+      why: "scored on its week-over-week change, not a percentile: for most of the history the platform anchored nothing in AI, so there is no range to rank against" },
+    { k: "NVDA accretion", v: cur(nvRoll) == null ? "—" : `+${nf(cur(nvRoll), 1)}/day`, d: wk(nvRoll), dFmt: (x) => `${x >= 0 ? "+" : ""}${nf(x, 1)}/day`,
+      s: levelScore(nvRoll, cur(nvRoll), +1), why: "NVDA into the vault per day, trailing 7 days" },
+    { k: "Fee run-rate trend", v: feeTrend == null ? "—" : pct(feeTrend, 0) + " wk/wk", d: wk(feeRoll), dFmt: pts,
+      s: levelScore(feeRoll, feeTrend, +1), why: "this week's fees against last week's, ranked among its own weekly changes" },
+  ];
+  const demand = [
+    { k: "Net flow imbalance, 7d", v: pctLevel(Math.abs(imb7), 1) + (imb7 >= 0 ? " net buying" : " net selling"), d: wk(flowRoll), dFmt: pts,
+      s: levelScore(flowRoll, imb7, +1) ?? clamp1(imb7 * 4),
+      why: "(bought − sold) ÷ (bought + sold) across indexed venues, trailing 7 days" },
+    { k: `Holders with ${compact(thr, 0)}+ AI, 7d change`, v: cur(breadthRoll) == null ? "—" : pct(cur(breadthRoll), 1), d: wk4h(breadthRoll), dFmt: pts,
+      s: levelScore(breadthRoll, cur(breadthRoll), +1, 6),
+      why: "week-over-week change in addresses above a fixed AI balance, which a price move cannot manufacture" },
+    { k: "Distinct buyers per day, 7d", v: cur(buyersRoll) == null ? "—" : Math.round(cur(buyersRoll)).toLocaleString(), d: wk(buyersRoll), dFmt: (x) => `${x >= 0 ? "+" : ""}${Math.round(x)}`,
+      s: levelScore(buyersRoll, cur(buyersRoll), +1),
+      why: "buying addresses summed per pool-hour (an upper bound on people), trailing 7-day average" },
+    { k: "Near-spot book lean, ±2%", v: bookShare == null ? "—" : pctLevel(bookShare, 1) + " bids", d: nearHist.length > 24 ? bookShare - nearHist[nearHist.length - 25].v : null, dFmt: pts,
+      s: levelScore(nearHist, bookShare, +1, 24, 12) ?? (bookShare == null ? null : clamp1((bookShare - 0.5) * 8)),
+      why: "bids as a share of resting liquidity within 2% of spot; above half, it is cheaper to push the price up than down. Ranked once a day of history exists, a level until then" },
+    { k: "Launch cadence, 7d", v: cur(launchRoll) == null ? "—" : cur(launchRoll).toLocaleString() + " tokens", d: wk(launchRoll), dFmt: (x) => `${x >= 0 ? "+" : ""}${Math.round(x)}`,
+      s: levelScore(launchRoll, cur(launchRoll), +1),
+      why: "tokens the platform minted in the last 7 days: attention on the ecosystem AI anchors" },
+    { k: "Live tail", w: 0.5, v: L && L.swaps ? `${L.net >= 0 ? "net buying" : "net selling"} ${compact(Math.abs(L.net))} AI` : "—", d: null,
+      s: L && L.swaps >= 20 ? clamp1(L.imbalance * 4) : null,
+      why: `the last ${L ? fmtAge(L.minutes) : "window"}, read from the chain just now; half weight because it is minutes, not days` },
+  ];
+  const read = renderCockpit(structure, demand);
   renderRegime(kappa, sc, capNow, feeAnnual, impliedVol,
     { kappa: kd.map((d) => d.ratio), capture: capComparable.map((d) => d.share) });
   renderValuation(feeAnnual, impliedVol, vols);
   renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak, kd.map((d) => d.ratio));
-  renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kd.map((d) => d.ratio));
+  renderVerdict(read, net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kd.map((d) => d.ratio));
 
   /* Once per page load, not on the three-minute refresh: the comparison is against
      the last time a person looked, and re-snapshotting every cycle would reset the
@@ -1670,10 +1791,15 @@ function renderInvestor() {
       renderSinceLast({
         at: Math.floor(Date.now() / 1000),
         price: marketState().price, feeAnnual, leak: leak ? leak.leakNow : null,
-        kappa, nvda: b.vault.nvdaBalance, score: S.ratingScore, word: S.ratingWord,
+        kappa, nvda: b.vault.nvdaBalance,
+        structure: read.structure.score, demand: read.demand.score, word: read.title,
+        holders100k: H.at(-1)?.aboveAi?.[HOLDER_AI_INDEX] ?? null,
       });
     } catch { /* a convenience must never blank the tab */ }
   }
+  /* The cockpit is rewritten on every live tick, so long intros in this panel are
+     re-clamped here as well as in renderAll; already-clamped ones are left alone. */
+  collapseIntros($("#p-investor"));
 }
 
 /**
@@ -1973,7 +2099,10 @@ function renderLeak() {
     .slice(-DAYS);
 
   const last = series[series.length - 1];
-  const first = series[0];
+  /* The baseline is the first COMPARABLE day in the window, never a single-venue
+     day whose leakage is 0% by construction. The tile read "from 0.0% on Aug 15"
+     against exactly the artifact the comparable filter exists to remove. */
+  const first = series.find((d) => d.comparable) || null;
   const leakNow = last ? last.leak : 0;
 
   const liveLeak = S.live?.leak;
@@ -2186,124 +2315,520 @@ function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak, kappaHi
     </div>`).join("");
 }
 
-/**
- * The headline rating.
- *
- * It rates FUNDAMENTAL CONDITION, not price direction, and says so — because the
- * backtest in src/backtest.mjs does not support a price call. Across ~60 days of
- * hourly data, once t-statistics are deflated for overlapping windows, exactly
- * one predictor/horizon cell survives significance and it is NEGATIVE: six-hour
- * flow imbalance against the next hour, r = −0.10. Flow's apparently huge
- * relationship with price (r = 0.60) is contemporaneous and mechanical — in an
- * AMM price moves *because* of net flow — and it does not persist forward.
- *
- * Weights therefore follow evidence rather than intuition. Fee trend carries most
- * because it is the only measure with even suggestive forward signal (fee growth
- * vs next-day return: r = 0.27, 63% hit, and even that misses 5% significance at
- * n = 46). Structural measures come next, on the reasoning that they drive fees.
- * Net flow is deliberately near zero: the evidence says it is a coincident
- * indicator dressed as a leading one, and weighting it heavily would import a
- * mechanical correlation as though it were foresight.
- */
-function renderRating(parts) {
-  const { feeTrend, leakNow, leakPrior, kappa, multNow, multMedian, nvdaPerDay, removedPace, net7, net7p } = parts;
-  const clamp = (x) => Math.max(-1, Math.min(1, x));   // no single input dominates
-  const H = parts.hist || {};
+/* ── the two dials ───────────────────────────────────────────────────────
+   One large word used to sit here: a weighted sum of eight inputs snapped to
+   BULLISH / NEUTRAL / BEARISH at ±0.25. Three things were wrong with it.
 
-  /* Every level is scored against its OWN measured history, never against an
-     outside threshold. The thresholds that used to sit here -- cross-routing scored
-     against a "base case" of 23%, organic bridge share against 15% -- came from one
-     circulating valuation writeup. That writeup was a useful prompt, not a
-     benchmark, and wiring its assumptions into the headline meant the rating was
-     really reporting agreement with a stranger's spreadsheet. A percentile of this
-     asset's own distribution answers the question a level can actually support: is
-     this high or low for this thing, lately. Where no history exists yet, the input
-     is shown and left unscored rather than scored against a number someone guessed. */
-  const comps = [
-    { k: "Fee run-rate trend", w: 3.0,
-      s: pctlScore(H.feeGrowth || [], feeTrend),
-      v: feeTrend == null ? "—" : pct(feeTrend, 0) + " wk/wk",
-      why: "scored against its own 60-day range of weekly changes" },
-    { k: "Fee capture (toll leakage)", w: 2.5,
-      s: (() => { const p2 = pctlScore(H.leak || [], leakNow); return p2 == null
-        ? (leakNow == null || leakPrior == null ? null : clamp((leakPrior - leakNow) * 6))
-        : -p2; })(),
-      v: leakNow == null ? "—" : pctLevel(leakNow, 1) + " leaking",
-      why: "high leakage is bad, so its own percentile is inverted" },
-    { k: "Organic bridge share", w: 1.5, s: null,
-      v: parts.organicShare == null ? "—"
-        : `${pctLevel(parts.organicShare, 1)}${parts.organicBasis ? ` ${parts.organicBasis}` : ""}`,
-      why: "shown, not scored: measured once per rotation, so it has no trend to rank against" },
-    { k: "Hub conversion κ", w: 2.0,
-      s: pctlScore(H.kappa || [], kappa),
-      v: kappa == null ? "—" : pctLevel(kappa, 1),
-      why: "scored against its own daily range, not an assumed base case" },
-    { k: "Cash-flow multiple vs own median", w: 2.0,
-      s: multNow && multMedian ? clamp((multMedian - multNow) / multMedian) : null,
-      v: multNow ? `${multNow.toFixed(0)}×` : "—", why: "cheap or dear against its own history" },
-    { k: "NVDA reserve accretion", w: 1.0,
-      s: (() => { const p2 = pctlScore(H.nvdaPerDay || [], nvdaPerDay);
-        return p2 != null ? p2 : (nvdaPerDay == null ? null : nvdaPerDay > 0 ? 0.3 : -0.5); })(),
-      v: nvdaPerDay == null ? "—" : `+${nf(nvdaPerDay, 1)}/day`,
-      why: "scored against its own daily range of vault inflow" },
-    { k: "Float removal pace", w: 0.5, s: removedPace == null ? null : (removedPace > 0 ? 0.3 : -0.3),
-      v: removedPace == null ? "—" : `${compact(removedPace)} AI/day`, why: "real, but far too slow to be a catalyst" },
-    { k: "Net flow, 7d", w: 0.5,
-      s: net7 == null ? null : clamp(net7 / Math.max(1, Math.abs(net7p || net7) * 2)),
-      v: net7 == null ? "—" : `${net7 >= 0 ? "+" : ""}${compact(net7)} AI`,
-      why: "near-zero weight: measured coincident, not leading" },
+   It mixed two different questions. Whether the toll, the hub and the reserve are
+   improving is a question about the protocol and moves over weeks; whether money
+   is arriving or leaving is a question about the crowd and moves over hours. One
+   number averaged them, so "the business is deteriorating while buyers pile in"
+   and "the business is improving while holders leave" both came out NEUTRAL, and
+   those are the two situations a holder most needs told apart.
+
+   It ranked every level against the asset's WHOLE history. AI is two months old
+   and launched into its all-time peak of everything, so a full-history percentile
+   reads "lowest ever" for any input that has cooled since launch and will keep
+   reading that way for months whatever happens next. The last 30 days is the
+   range that says whether something is turning.
+
+   And it had a threshold, which is a false claim of precision: −0.24 and −0.26
+   are the same reading and the word flipped between them on a phone refresh.
+
+   So: two dials, each a plain average of its inputs (equal weights, stated; the
+   kpis.json panel exists to earn unequal ones), each input ranked inside its own
+   trailing 30 days with the week's direction beside it, and a reading matrix over
+   the pair instead of a word over a sum. The backtest's finding stands and is
+   printed under the dials: nothing here has yet been shown to LEAD the dollar
+   price; the Demand dial is the crowd's current behaviour, not a forecast of it. */
+const RATING = {
+  windowDays: 30,     // the asset's own trailing range each level is ranked inside
+  minHistory: 10,     // fewer points than this and the input is shown, not scored
+  flat: 0.15,         // |score| under this reads as "steady", not a direction
+};
+
+/** Trailing-window aggregates over a daily (or 4-hourly) series; each row keeps its own t. */
+function rolling(rows, n, agg) {
+  const out = [];
+  for (let i = n - 1; i < rows.length; i++) {
+    const v = agg(rows.slice(i - n + 1, i + 1));
+    if (v != null && isFinite(v)) out.push({ t: rows[i].t, v });
+  }
+  return out;
+}
+const sumOf = (w, pick) => w.reduce((s, d) => s + (pick(d) || 0), 0);
+const clamp1 = (x) => (x == null || !isFinite(x) ? null : Math.max(-1, Math.min(1, x)));
+const pts = (x) => `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}pt`;
+
+/**
+ * Where the latest value sits inside the asset's own trailing window, as -1..+1.
+ * `dir` is -1 for inputs where high is bad. `pointsPerDay` scales the window for
+ * series finer than daily. Null below the minimum sample, never a guess.
+ */
+function levelScore(roll, current, dir = 1, pointsPerDay = 1, minN = RATING.minHistory) {
+  const xs = roll.slice(-RATING.windowDays * pointsPerDay).map((r) => r.v);
+  const p = pctlScore(xs, current, minN);
+  return p == null ? null : p * dir;
+}
+
+/** Equal-weight average of the inputs that could be scored, with coverage. */
+function axis(inputs) {
+  const scored = inputs.filter((c) => c.s != null);
+  const weight = scored.reduce((s, c) => s + (c.w ?? 1), 0);
+  const allWeight = inputs.reduce((s, c) => s + (c.w ?? 1), 0);
+  return {
+    score: weight ? scored.reduce((s, c) => s + c.s * (c.w ?? 1), 0) / weight : null,
+    scored: scored.length, n: inputs.length, weight, allWeight, inputs,
+  };
+}
+const bandOf = (x) => (x == null ? "na" : x > RATING.flat ? "up" : x < -RATING.flat ? "down" : "flat");
+
+/* The reading over the pair. Titles are what the phone shows first, so each one is
+   a sentence a holder can act on, and the body says what would change it. */
+const READINGS = {
+  "up|up":     ["pos", "Compounding, with buyers behind it",
+    "The toll, the hub and the reserve are improving against their own recent range, and flow and holder breadth are confirming it. This is the combination the thesis needs, and the one to be positioned for; it ends when either dial rolls over."],
+  "up|flat":   ["pos", "Structure improving, crowd not here yet",
+    "The protocol is getting stronger while demand is balanced. If the structure keeps improving this is the quiet period before the crowd notices; if demand fades into selling it becomes the next reading down."],
+  "up|down":   ["neu", "Improving underneath, being sold",
+    "Fundamentals are strengthening while flow and breadth are net negative. Read it as the market disagreeing with the mechanics: an accumulation zone if the structure holds, a warning if the selling persists for more than a week."],
+  "flat|up":   ["neu", "Demand without a structural change",
+    "Buyers are arriving but the toll, the hub and the reserve are where they were. Momentum, not earnings. It can run, and it needs the Structure dial to follow within weeks or it is a trade rather than a position."],
+  "flat|flat": ["neu", "Steady on both dials",
+    "Nothing is moving against its own recent range. The next turn on either dial is the information."],
+  "flat|down": ["warn", "Being sold into an unchanged structure",
+    "Holders are leaving while nothing in the protocol has changed. Without a structural improvement to lean on, this is price finding the next buyer on its own."],
+  "down|up":   ["warn", "Demand without the fundamentals",
+    "Flow and breadth are improving while the business underneath deteriorates. A rally on this footing is sentiment; trade it as one and watch the Structure dial for the turn that would make it more."],
+  "down|flat": ["warn", "Deteriorating, quietly",
+    "The toll, the hub or the reserve are weakening against their own range and demand has not reacted yet. The crowd usually notices late; the dial noticed now."],
+  "down|down": ["neg", "Deteriorating on both dials",
+    "The fundamentals are weakening and holders are leaving. Nothing here says when it stops, and neither dial has to reverse before the other."],
+};
+function reading(s, d) {
+  const S1 = bandOf(s), D1 = bandOf(d);
+  if (S1 === "na" && D1 === "na") return { tone: "neu", title: "Not enough history to read yet", body: "Both dials need at least ten days of their own measurements to rank anything. They accrue with every refresh." };
+  if (S1 === "na") return { tone: D1 === "up" ? "pos" : D1 === "down" ? "warn" : "neu", title: `Demand ${D1 === "up" ? "buying" : D1 === "down" ? "selling" : "balanced"}; structure not yet rankable`, body: "The Structure inputs have too little history to place; the Demand reading stands on its own for now." };
+  if (D1 === "na") return { tone: S1 === "up" ? "pos" : S1 === "down" ? "warn" : "neu", title: `Structure ${S1 === "up" ? "improving" : S1 === "down" ? "deteriorating" : "steady"}; demand not yet rankable`, body: "The Demand inputs have too little history to place; the Structure reading stands on its own for now." };
+  const [tone, title, body] = READINGS[`${S1}|${D1}`];
+  return { tone, title, body };
+}
+
+/* Re-render a host without losing which <details> the reader had opened. The
+   cockpit is rewritten on every live tick; without this, "How this is scored"
+   snapped shut twenty seconds after being opened. */
+function rerender(host, html) {
+  const open = new Set([...host.querySelectorAll("details[data-k]")].filter((d) => d.open).map((d) => d.dataset.k));
+  host.innerHTML = html;
+  for (const d of host.querySelectorAll("details[data-k]")) if (open.has(d.dataset.k)) d.open = true;
+}
+
+/** Dollar figures the cockpit and the dollars card share. Null where an input is missing. */
+function dollarState() {
+  const M = marketState();
+  const px = M.price;
+  const b = S.burns;
+  const pool = usdPool();
+  const nvdaPool = S.flow?.pools.find((p) => p.poolId === S.meta?.contracts?.aiNvdaPool);
+  const aiNvda = [...(nvdaPool?.hourly || [])].reverse().find((h) => h.close > 0)?.close ?? null;
+  const impliedNvda = px && aiNvda ? px / aiNvda : null;
+  const fresh = S.prices && (Date.now() / 1000 - (S.prices.updatedAt || 0)) < 8 * 3600;
+  const nvdaUsd = (fresh && S.prices.nvdaUsd) || impliedNvda || (S.prices?.nvdaUsd ?? null);
+  const nvdaSource = fresh && S.prices?.nvdaUsd ? "NVDA's own USDG pool" : impliedNvda ? "AI/USDG ÷ AI/NVDA (implied)" : S.prices?.nvdaUsd ? "NVDA's own USDG pool (stale)" : null;
+  const closeAt = usdCloseAt();
+  const head = S.meta?.headTime || Math.floor(Date.now() / 1000);
+  let vol24 = 0, volAi24 = 0;
+  for (const p of S.flow?.pools || []) {
+    for (const h of p.hourly) {
+      if (h.t < head - 24 * 3600) continue;
+      const v = (h.aiBuy || 0) + (h.aiSell || 0);
+      const c = closeAt(h.t) ?? px;
+      if (c) { vol24 += v * c; volAi24 += v; }
+    }
+  }
+  const lastDay = completeDays(b?.daily || []).at(-1);
+  const fee = (d) => (d.burnAI || 0) + (d.lockAI || 0) + (d.platformAI || 0);
+  const feesAiDay = lastDay ? fee(lastDay) : null;
+  return {
+    px, mcap: M.mcap, nvdaUsd, nvdaSource, impliedNvda,
+    vaultUsd: nvdaUsd && b ? b.vault.nvdaBalance * nvdaUsd : null,
+    vol24: vol24 || null, volAi24,
+    feesUsdDay: feesAiDay != null && px ? feesAiDay * px : null,
+    feeYield: feesAiDay != null && px && M.mcap ? (feesAiDay * px * 365) / M.mcap : null,
+  };
+}
+
+function renderCockpit(structure, demand) {
+  const Sx = axis(structure), Dx = axis(demand);
+  const read = reading(Sx.score, Dx.score);
+  read.structure = Sx; read.demand = Dx;
+  S.ratingRead = read;
+
+  const M = marketState();
+  const D = dollarState();
+  const H = (S.holders?.snapshots || []).filter((x) => x.holders > 0);
+  const hNow = H.at(-1), hWk = H[Math.max(0, H.length - 1 - 42)];
+  const b100 = hNow?.aboveAi?.[HOLDER_AI_INDEX], b100w = hWk?.aboveAi?.[HOLDER_AI_INDEX];
+  const L = S.live;
+  const thr = S.holders?.aiThresholds?.[HOLDER_AI_INDEX] ?? 1e5;
+
+  const tiles = [
+    { lbl: "Live flow", val: L && L.swaps ? `${L.net >= 0 ? "+" : "−"}${compact(Math.abs(L.net))}` : "—",
+      cls: L && L.swaps ? (L.net >= 0 ? "up" : "down") : "",
+      note: L && L.swaps ? `AI net ${L.net >= 0 ? "bought" : "sold"} in the last ${fmtAge(L.minutes)} · ${L.swaps.toLocaleString()} trades` : "waiting on the chain" },
+    { lbl: `Holders, ${compact(thr, 0)}+ AI`, val: b100 == null ? "—" : b100.toLocaleString(),
+      cls: b100w ? (b100 >= b100w ? "up" : "down") : "",
+      note: b100w ? `${pct(b100 / b100w - 1, 1)} in 7d · ${hNow.holders.toLocaleString()} holders in all` : "replay pending" },
+    { lbl: "Vault, in dollars", val: D.vaultUsd ? `$${compact(D.vaultUsd)}` : "—",
+      note: D.vaultUsd && M.mcap ? `${pctLevel(D.vaultUsd / M.mcap, 2)} of market cap · not redeemable` : "NVDA price pending" },
+    { lbl: "Volume, last 24h", val: D.vol24 ? `$${compact(D.vol24)}` : "—",
+      note: D.vol24 && M.mcap ? `${pctLevel(D.vol24 / M.mcap, 1)} of market cap turned over · ${S.flow.pools.length} venues` : "indexed venues" },
   ];
 
-  const scored = comps.filter((c) => c.s != null);
-  const total = scored.reduce((s, c) => s + c.w, 0);
-  const allWeight = comps.reduce((s, c) => s + c.w, 0);
-  const unscored = comps.filter((c) => c.s == null);
-  const score = total ? scored.reduce((s, c) => s + c.s * c.w, 0) / total : 0;
-  const word = score >= 0.25 ? "BULLISH" : score <= -0.25 ? "BEARISH" : "NEUTRAL";
-  S.ratingScore = score; S.ratingWord = word;   // read by the since-you-last-looked strip
-  const cls = score >= 0.25 ? "bull" : score <= -0.25 ? "bear" : "neutral";
-  const pos = ((score + 1) / 2) * 100;
+  const dial = (name, ax, words) => {
+    const b = bandOf(ax.score);
+    const word = words[b];
+    const pos = ax.score == null ? 50 : ((ax.score + 1) / 2) * 100;
+    return `<div class="dial">
+      <div class="dial-hd"><span class="dial-name">${name}</span>
+        <b class="${b === "up" ? "up" : b === "down" ? "down" : ""}">${word}</b>
+        <span class="dial-score">${ax.score == null ? "n/a" : `${ax.score >= 0 ? "+" : ""}${ax.score.toFixed(2)}`}</span></div>
+      <div class="scale${ax.score == null ? " empty" : ""}"><div class="needle" style="left:calc(${pos.toFixed(1)}% - 1.5px)"></div></div>
+      <div class="scale-ends"><span>${words.down}</span><span>${ax.scored} of ${ax.n} inputs ranked</span><span>${words.up}</span></div>
+    </div>`;
+  };
+  const rows = (inputs) => inputs.map((c) => {
+    const band = c.s == null ? ["na", "no range yet"] : c.s > 0.6 ? ["xbull", "top of range"] : c.s > 0.2 ? ["bull", "high"] : c.s < -0.6 ? ["bear", "bottom of range"] : c.s < -0.2 ? ["bear", "low"] : ["base", "typical"];
+    const dTxt = c.d == null || !isFinite(c.d) ? "" : `<span class="${(c.invert ? -c.d : c.d) >= 0 ? "up" : "down"}">${(c.dFmt || pts)(c.d)}</span> <span class="muted">7d</span>`;
+    return `<div class="row">
+      <div><div>${c.k}</div><div class="muted why">${c.why}</div></div>
+      <div class="v">${c.v}<div class="d">${dTxt}</div></div>
+      <div class="w"><span class="band ${band[0]}">${band[1]}</span><br>${c.s == null ? "n/a" : `${c.s >= 0 ? "+" : ""}${c.s.toFixed(2)}`}${c.w != null && c.w !== 1 ? ` · w ${c.w}` : ""}</div>
+    </div>`;
+  }).join("");
 
-  $("#rating").innerHTML = `
+  rerender($("#rating"), `
     <div class="rating">
-      <div class="rating-top">
-        <div class="word ${cls}">${word}</div>
-        <div class="scope">
-          <b>On fundamentals, not price direction.</b> This scores whether the business behind AI is
-          improving — fees, toll capture, hub conversion and the reserve — and every input is ranked
-          against <b>its own measured history</b>, so nothing here is judged against an outside analyst's
-          assumed scenarios. Zero means "typical for this asset lately"; ±1 means at the edge of its own
-          60-day range. It is <b>not</b> a price forecast: tested against the <b>dollar</b> price over
-          52 days, no KPI here reliably leads it, and flow's strong-looking link to price is mechanical
-          rather than predictive. The Method tab shows the test.
-        </div>
+      <div class="cockpit">${tiles.map((t) => `<div class="ctile"><div class="lbl">${t.lbl}</div><div class="val ${t.cls || ""}">${t.val}</div><div class="note">${t.note}</div></div>`).join("")}</div>
+      <div class="dials">
+        ${dial("Structure", Sx, { up: "improving", flat: "steady", down: "deteriorating", na: "unranked" })}
+        ${dial("Demand", Dx, { up: "buying", flat: "balanced", down: "selling", na: "unranked" })}
       </div>
+      <div class="reading ${read.tone}"><b>${read.title}.</b> ${read.body}</div>
+      <details data-k="inputs"><summary>The ${Sx.n + Dx.n} inputs behind the dials</summary>
+        <div class="components">
+          <div class="grp">Structure — the protocol</div>${rows(structure)}
+          <div class="grp">Demand — the crowd</div>${rows(demand)}
+        </div>
+        <div class="coverage">Each input is a trailing-7-day level ranked inside AI's own last ${RATING.windowDays} days: 0 is typical for this
+          asset lately, ±1 is the edge of that range. Inputs are equal-weighted within a dial (the live tail at half) until the
+          hourly panel in kpis.json has enough history to justify anything else. Inputs with under ${RATING.minHistory} points are
+          shown and left unranked rather than scored against a guess.</div>
+      </details>
       <div class="attribution">
-        <b>Methodology credit — not the site owner’s view.</b> The framework this rating scores comes from
+        <b>Methodology credit — not the site owner’s view.</b> The Structure dial scores the inputs identified in
         <a href="https://x.com/okay_lets_ride/status/2098082744899190788" target="_blank" rel="noopener noreferrer">Coulou’s
         “AI – Valuation Report”</a> (@okay_lets_ride, 10 Sep 2026): protocol fee revenue, main-pool fee capture,
         AI-pair share, cross-routing κ and the NVDA vault, with the 5–7.5% capitalisation rates used in the valuation
         frame below. <b>Two things differ from the report:</b> each input is ranked against AI’s own measured history
-        rather than its bear/base/bull scenario values, and the weights are this site’s. So a
-        <b>${word}</b> reading means the inputs the report identifies are ${score >= 0.25 ? "improving" : score <= -0.25 ? "deteriorating" : "near typical"}
-        against their own recent range. It is not the report’s conclusion — a probability-weighted valuation well above
-        today’s market cap — and it is not investment advice.
+        rather than its bear/base/bull scenario values, and the weights are this site’s. The Demand dial is this site’s
+        addition and is not in the report. Neither is the report’s conclusion — a probability-weighted valuation well
+        above today’s market cap — and neither is investment advice.
       </div>
-      <div class="scale"><div class="needle" style="left:calc(${pos.toFixed(1)}% - 1.5px)"></div></div>
-      <div class="scale-ends"><span>deteriorating</span><span>score ${score >= 0 ? "+" : ""}${score.toFixed(2)}</span><span>improving</span></div>
-      <div class="coverage">${scored.length} of ${comps.length} inputs scored
-        (${total.toFixed(1)} of ${allWeight.toFixed(1)} weight)${unscored.length === 0 ? "" :
-        ` — ${unscored.map((c) => c.k).join(" and ")} ${unscored.length === 1 ? "has" : "have"} too little
-        measured history to rank, so ${unscored.length === 1 ? "it is" : "they are"} shown rather than scored`}.</div>
-      <div class="components">
-        ${comps.map((c) => `
-          <div class="row">
-            <div>${c.k} <span class="muted">— ${c.why}</span></div>
-            <div class="v ${c.s == null ? "" : c.s > 0.1 ? "up" : c.s < -0.1 ? "down" : ""}">${c.v}</div>
-            <div class="w">w ${c.w.toFixed(1)}${c.s == null ? " · n/a" : ` · ${c.s >= 0 ? "+" : ""}${c.s.toFixed(2)}`}</div>
-          </div>`).join("")}
-      </div>
-    </div>`;
+      <details data-k="how"><summary>How this is scored, and what it is not</summary>
+        <p class="scope">
+          <b>Structure</b> asks whether the business behind AI is improving: fee capture, toll leakage, hub conversion,
+          how often new launches choose AI as a base pair, NVDA accreting to the vault, and the fee run-rate’s trend.
+          <b>Demand</b> asks what holders are doing right now: net flow, the count of wallets above a fixed AI balance
+          (which a price move cannot manufacture), distinct buyers per day, which side of the near-spot book is heavier,
+          how fast the platform is minting, and the live tail. Every level is ranked inside the asset’s own trailing
+          ${RATING.windowDays} days rather than its whole history, because a two-month-old token that launched into its
+          peak reads “lowest ever” on everything forever; the last month is the range that says whether something is
+          turning. <b>Neither dial is a price forecast.</b> Tested against the dollar price over the asset’s life, no
+          input here has yet been shown to lead it (the Method tab shows the test); Demand describes the crowd’s current
+          behaviour, and Structure describes the protocol’s. The hourly panel in <code>kpis.json</code> records every input
+          beside price so the weights can be earned rather than assumed.
+        </p>
+      </details>
+    </div>`);
+  return read;
+}
+
+/* ── dollars ─────────────────────────────────────────────────────────────
+   Most of the site is denominated in AI because that is what the chain measures.
+   A holder's question is in dollars. Each figure below multiplies an AI quantity
+   by the on-chain USDG price of the hour it happened in, so a price move inside a
+   day is not averaged away. */
+
+/** AI's dollar close for any hour, from the stitched USDG series (nearest earlier hour within a day). */
+function usdCloseAt() {
+  const hrs = usdSeries().hrs;
+  const m = new Map(hrs.map((h) => [h.t, h.close]));
+  const ts = hrs.map((h) => h.t);
+  return (t) => {
+    if (m.has(t)) return m.get(t);
+    let lo = 0, hi = ts.length - 1, best = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (ts[mid] <= t) { best = mid; lo = mid + 1; } else hi = mid - 1; }
+    return best >= 0 && t - ts[best] <= 86400 ? m.get(ts[best]) : null;
+  };
+}
+
+/** Distinct buying addresses per day, summed across indexed pools and hours (an upper bound on people). */
+function dailyBuyers() {
+  const m = new Map();
+  for (const p of S.flow.pools) {
+    for (const h of p.hourly) {
+      const d = Math.floor(h.t / DAY) * DAY;
+      const r = m.get(d) || { t: d, buyers: 0, sellers: 0 };
+      r.buyers += h.buyers || 0; r.sellers += h.sellers || 0;
+      m.set(d, r);
+    }
+  }
+  return [...m.values()].sort((a, b) => a.t - b.t);
+}
+
+/** Per-day AI volume and fees in dollars, priced hour by hour. */
+function dailyDollars(feeSeries) {
+  const closeAt = usdCloseAt();
+  const m = new Map();
+  for (const p of S.flow.pools) {
+    for (const h of p.hourly) {
+      const c = closeAt(h.t);
+      if (!c) continue;
+      const d = Math.floor(h.t / DAY) * DAY;
+      const r = m.get(d) || { t: d, volUsd: 0, volAi: 0, pxSum: 0, pxN: 0 };
+      const v = (h.aiBuy || 0) + (h.aiSell || 0);
+      r.volUsd += v * c; r.volAi += v; r.pxSum += c; r.pxN++;
+      m.set(d, r);
+    }
+  }
+  const feeByDay = new Map((feeSeries || []).map((d) => [d.t, d.fee]));
+  return [...m.values()].sort((a, b) => a.t - b.t).map((r) => {
+    const avgPx = r.pxN ? r.pxSum / r.pxN : null;
+    const feeAi = feeByDay.get(r.t);
+    return { ...r, avgPx, feeUsd: feeAi != null && avgPx ? feeAi * avgPx : null };
+  });
+}
+
+/**
+ * NVDA in dollars, hour by hour. The direct series (NVDA's own USDG pool) is
+ * preferred once it is a week deep; until then the implied one -- AI in USDG over
+ * AI in NVDA -- stands in, labelled. Both exist so AI's beta to the stock it is
+ * anchored to can be measured instead of assumed.
+ */
+function nvdaHistory() {
+  const direct = (S.prices?.history || []).filter((h) => h.nvdaUsd > 0).map((h) => ({ t: h.t, v: h.nvdaUsd }));
+  if (direct.length >= 168 && direct.at(-1).t - direct[0].t >= 7 * 86400) return { rows: direct, source: "NVDA's own USDG pool" };
+  const nvdaPool = S.flow.pools.find((p) => p.poolId === S.meta.contracts.aiNvdaPool);
+  const closeAt = usdCloseAt();
+  const rows = [];
+  for (const h of nvdaPool?.hourly || []) {
+    if (!(h.close > 0)) continue;
+    const usd = closeAt(h.t);
+    if (usd) rows.push({ t: h.t, v: usd / h.close });
+  }
+  return { rows, source: "implied from AI/USDG ÷ AI/NVDA" };
+}
+
+/** Slope and correlation of AI's hourly log returns on NVDA's, over aligned hours. */
+function betaTo(aiRows, nvRows, hours = 24 * 30) {
+  const nv = new Map(nvRows.map((r) => [r.t, r.v]));
+  const xs = [], ys = [];
+  const recent = aiRows.slice(-hours - 1);
+  for (let i = 1; i < recent.length; i++) {
+    const a0 = recent[i - 1], a1 = recent[i];
+    const n0 = nv.get(a0.t), n1 = nv.get(a1.t);
+    if (!(a0.close > 0 && a1.close > 0 && n0 > 0 && n1 > 0) || a1.t - a0.t !== 3600) continue;
+    xs.push(Math.log(n1 / n0)); ys.push(Math.log(a1.close / a0.close));
+  }
+  const n = xs.length;
+  if (n < 48) return null;
+  const mx = xs.reduce((s, v) => s + v, 0) / n, my = ys.reduce((s, v) => s + v, 0) / n;
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < n; i++) { const dx = xs[i] - mx, dy = ys[i] - my; sxy += dx * dy; sxx += dx * dx; syy += dy * dy; }
+  return { beta: sxx ? sxy / sxx : null, r: sxx && syy ? sxy / Math.sqrt(sxx * syy) : null, n };
+}
+
+function renderDollars(feeSeries) {
+  const host = $("#kpiDollars");
+  if (!host) return;
+  const D = dollarState();
+  const days = completeDays(dailyDollars(feeSeries));
+  const last7 = days.slice(-7), prior7 = days.slice(-14, -7);
+  const avg = (rows, pick) => (rows.length ? rows.reduce((s, r) => s + (pick(r) || 0), 0) / rows.length : null);
+  const vol7 = avg(last7, (r) => r.volUsd), vol7p = avg(prior7, (r) => r.volUsd);
+  const fee7 = avg(last7.filter((r) => r.feeUsd != null), (r) => r.feeUsd);
+  const turnover = D.vol24 && D.mcap ? D.vol24 / D.mcap : null;
+
+  const tiles = [
+    { lbl: "Volume, last 24h", val: D.vol24 ? `$${compact(D.vol24)}` : "—",
+      note: vol7 ? `7d avg $${compact(vol7)}/day${vol7p ? ` · ${pct(vol7 / vol7p - 1, 0)} vs prior week` : ""}` : "indexed venues, priced hourly" },
+    { lbl: "Turnover", val: pctLevel(turnover, 1), note: "of market cap traded in 24h" },
+    { lbl: "Fees, per day", val: D.feesUsdDay != null ? `$${compact(D.feesUsdDay)}` : "—",
+      note: fee7 != null ? `7d avg $${compact(fee7)}/day${D.feeYield != null ? ` · ${pctLevel(D.feeYield, 2)} of cap, annualised` : ""}` : "last complete day, all three legs" },
+    { lbl: "Vault, in dollars", val: D.vaultUsd ? `$${compact(D.vaultUsd)}` : "—",
+      note: D.vaultUsd && D.mcap ? `${pctLevel(D.vaultUsd / D.mcap, 2)} of market cap · ${nf(S.burns.vault.nvdaBalance, 0)} NVDA at $${D.nvdaUsd ? D.nvdaUsd.toFixed(0) : "—"}` : "needs an NVDA dollar price" },
+  ];
+  host.innerHTML = `<div class="grid g4 tight">${tiles.map((t) => `<div class="tile"><div class="lbl">${t.lbl}</div><div class="val">${t.val}</div><div class="note">${t.note}</div></div>`).join("")}</div>`;
+
+  barChart($("#cDollars"), days.slice(-30), {
+    xKey: "t", yKey: "volUsd", color: "var(--series-1)", xFmt: dayFmt, fmt: (v) => `$${compact(v, 0)}`,
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>$${compact(d.volUsd)} traded</div>
+      <div class="k">${compact(d.volAi)} AI at an average $${d.avgPx ? d.avgPx.toFixed(4) : "—"}${d.feeUsd != null ? ` · fees $${compact(d.feeUsd)}` : ""}</div>`,
+  });
+
+  /* AI against the stock it is anchored to. */
+  const N = nvdaHistory();
+  const U = usdSeries().hrs;
+  const lastU = U.at(-1);
+  const atHours = (rows, back, pick) => { const t = rows.at(-1).t - back * 3600; let best = null; for (const r of rows) if (r.t <= t) best = r; return best ? pick(best) : null; };
+  const ai7 = U.length && lastU ? (() => { const p = atHours(U, 168, (r) => r.close); return p ? lastU.close / p - 1 : null; })() : null;
+  const nv7 = N.rows.length ? (() => { const p = atHours(N.rows, 168, (r) => r.v); return p ? N.rows.at(-1).v / p - 1 : null; })() : null;
+  const beta = N.rows.length ? betaTo(U, N.rows) : null;
+  const ratioNote = ai7 != null && nv7 != null
+    ? `Over 7 days AI moved <b>${pctOrMult(ai7, 1)}</b> in dollars while NVDA moved <b>${pct(nv7, 1)}</b>, so the AI/NVDA ratio itself ${ai7 > nv7 ? "rose" : "fell"}: ${ai7 > nv7 ? "AI outran its anchor" : "AI lagged its anchor"}.`
+    : "";
+  const betaNote = beta && beta.beta != null
+    ? ` Over the last ${Math.round(beta.n / 24)} days of hourly data AI's beta to NVDA is <b>${beta.beta.toFixed(2)}</b> (correlation ${beta.r.toFixed(2)}): ${Math.abs(beta.r) < 0.15 ? "essentially no relationship at the hourly grain, so NVDA's own moves are not what has been driving AI" : beta.beta > 1.2 ? "AI has amplified NVDA's moves" : beta.beta > 0.5 ? "AI has tracked a meaningful part of NVDA's moves" : "AI has largely ignored NVDA's moves"}.`
+    : "";
+
+  $("#takeDollars").innerHTML = takeEl(turnover == null ? "neu" : turnover > 0.25 ? "warn" : "neu",
+    `${D.vol24 ? `<b>$${compact(D.vol24)}</b> of AI traded across the indexed venues in the last 24 hours, <b>${pctLevel(turnover, 1)}</b> of the market cap${vol7 ? ` (a week's average is $${compact(vol7)} a day)` : ""}.` : "No dollar volume yet."}
+     ${D.feesUsdDay != null ? `Fees ran at <b>$${compact(D.feesUsdDay)}</b> on the last complete day${D.feeYield != null ? `, which annualises to <b>${pctLevel(D.feeYield, 2)}</b> of the market cap — the yield the toll pays holders in burned and locked AI` : ""}.` : ""}
+     ${D.vaultUsd ? `The vault's <b>${nf(S.burns.vault.nvdaBalance, 0)} NVDA</b> is worth <b>$${compact(D.vaultUsd)}</b> at $${D.nvdaUsd.toFixed(0)} a share, <b>${pctLevel(D.vaultUsd / D.mcap, 2)}</b> of the market cap: real, growing, and small next to the price. The reserve supports the story; it does not support the valuation.` : ""}
+     ${ratioNote}${betaNote}
+     <span class="muted">Dollar figures multiply each hour's AI volume by that hour's AI/USDG close. NVDA's dollar price is ${D.nvdaSource || "pending"}${N.source.startsWith("implied") ? "; its history is implied from AI's two prices until the direct series is a week deep" : ""}. Turnover above a quarter of the cap a day is a market being traded, not held.</span>`);
+}
+
+/* ── holder breadth and whales ─────────────────────────────────────────── */
+function renderBreadth() {
+  const host = $("#kpiBreadth");
+  if (!host) return;
+  const h = S.holders;
+  const snaps = (h?.snapshots || []).filter((x) => x.holders > 0);
+  if (snaps.length < 43) {
+    host.innerHTML = `<p class="muted">The holder replay needs a week of snapshots before this can say anything.</p>`;
+    for (const id of ["#cBreadth", "#tWhales", "#takeBreadth"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    return;
+  }
+  const last = snaps.at(-1), wk = snaps[snaps.length - 43];
+  const thr = h.aiThresholds?.[HOLDER_AI_INDEX];
+  const aNow = last.aboveAi?.[HOLDER_AI_INDEX], aWk = wk.aboveAi?.[HOLDER_AI_INDEX];
+  const dA = aWk ? aNow / aWk - 1 : null;
+  const t100 = last.top?.[2], t100w = wk.top?.[2];
+  const dT = t100 != null && t100w != null ? t100 - t100w : null;
+  const t10 = last.top?.[0];
+  const px = marketState().price || 0;
+
+  /* Churn per complete UTC day, from the four-hour rows. Only rows that carry the
+     counters are summed; a day with fewer than six such rows is not shown. */
+  const byDay = new Map();
+  for (const s of snaps) {
+    if (s.newHolders == null) continue;
+    const d = Math.floor((s.t - 1) / DAY) * DAY;   // the row at 00:00 closes the previous day
+    const r = byDay.get(d) || { t: d, n: 0, x: 0, rows: 0 };
+    r.n += s.newHolders; r.x += s.exits; r.rows++;
+    byDay.set(d, r);
+  }
+  const churn = completeDays([...byDay.values()].filter((r) => r.rows === 6).sort((a, b) => a.t - b.t));
+  const c7 = churn.slice(-7);
+  const new7 = sumOf(c7, (r) => r.n), exit7 = sumOf(c7, (r) => r.x);
+
+  host.innerHTML = kpiEl(aNow == null ? "—" : aNow.toLocaleString(),
+    dA == null ? "" : `${pct(dA, 1)} in 7d`, (dA ?? 0) >= 0 ? "up" : "down",
+    `wallets holding ${compact(thr, 0)}+ AI`)
+    + `<div class="livenote">${last.holders.toLocaleString()} holders in all (${last.holders - wk.holders >= 0 ? "+" : ""}${(last.holders - wk.holders).toLocaleString()} in 7d)
+       ${c7.length ? `· last 7 days: <b>${new7.toLocaleString()}</b> wallets funded, <b>${exit7.toLocaleString()}</b> emptied` : ""}
+       ${t100 != null ? `· top 100 hold <b>${pctLevel(t100, 1)}</b>${dT == null ? "" : ` (${pts(dT)} in 7d)`}` : ""}
+       ${t10 != null ? `· top 10 hold <b>${pctLevel(t10, 1)}</b>` : ""}</div>`;
+
+  if (churn.length) {
+    divergingBars($("#cBreadth"), churn.slice(-30), {
+      xKey: "t", posKey: "n", negKey: "x", height: 200, xFmt: dayFmt, fmt: (v) => Math.abs(v).toFixed(0),
+      tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div><span style="color:var(--buy)">▲</span> ${d.n.toLocaleString()} wallets funded</div>
+        <div><span style="color:var(--sell)">▼</span> ${d.x.toLocaleString()} emptied</div><div class="k">net ${d.n - d.x >= 0 ? "+" : ""}${(d.n - d.x).toLocaleString()}</div>`,
+    });
+  } else $("#cBreadth").innerHTML = `<p class="muted" style="padding:16px 0">Wallet churn accrues from the next replay; the count above is already live.</p>`;
+
+  table($("#tWhales"), whaleCols(px), (h.whales || []).slice(0, 8));
+
+  /* Breadth against concentration is the read: four combinations, each a sentence. */
+  const up = (x) => x != null && x > 0.01, down = (x) => x != null && x < -0.01;
+  const conc = dT == null ? null : dT > 0.005 ? "up" : dT < -0.005 ? "down" : "flat";
+  const [tone, verdict] =
+    up(dA) && conc === "down" ? ["pos", "spreading into more hands: more wallets hold size and the largest hold a smaller share, which is the healthiest shape a thin market can have"] :
+    up(dA) && conc === "up"   ? ["neu", "growing at both ends: more wallets hold size and the largest are also absorbing more, so both retail and whales are accumulating"] :
+    down(dA) && conc === "up" ? ["warn", "consolidating: fewer wallets hold size while the largest hold more, which is smaller holders selling to bigger ones and is the overhang if those turn"] :
+    down(dA) && conc === "down" ? ["warn", "thinning at both ends: fewer wallets hold size and the largest are also reducing, which is distribution"] :
+    up(dA) ? ["pos", "broadening, with concentration where it was"] :
+    down(dA) ? ["warn", "thinning, with concentration where it was"] :
+    ["neu", "steady on both counts"];
+  const fresh = (h.whales || []).filter((w) => w.kind === "buy" && w.fresh && w.t > last.t - 7 * 86400).length;
+  const wBuys = (h.whales || []).filter((w) => w.kind === "buy" && w.t > last.t - 7 * 86400);
+  const wSells = (h.whales || []).filter((w) => w.kind === "sell" && w.t > last.t - 7 * 86400);
+  $("#takeBreadth").innerHTML = takeEl(tone,
+    `<b>${aNow?.toLocaleString() ?? "—"}</b> wallets hold ${compact(thr, 0)} AI or more${dA == null ? "" : ` (<b>${pct(dA, 1)}</b> on the week)`}${t100 == null ? "" : `, and the largest 100 hold <b>${pctLevel(t100, 1)}</b> of wallet-held supply${dT == null ? "" : ` (${pts(dT)})`}`}.
+     The base is <b>${verdict}</b>.
+     ${wBuys.length || wSells.length ? `Moves of ${compact(h.whaleMinAi || 250000, 0)}+ AI this week: <b>${wBuys.length}</b> bought from pools (${compact(sumOf(wBuys, (w) => w.ai))} AI${fresh ? `, ${fresh} by wallets that held none before` : ""}) against <b>${wSells.length}</b> sold into them (${compact(sumOf(wSells, (w) => w.ai))} AI).` : ""}
+     <span class="muted">Counts are at a fixed AI balance so a price move cannot manufacture them. Wallet-to-wallet moves are not buys or sells; the tape names them so a reader can decide. One entity can be many wallets.</span>`);
+}
+
+/* ── AI against its platform ─────────────────────────────────────────────
+   The launchpad census prices the platform's biggest tokens every slow-path run,
+   and now keeps those prices as a series. Whether AI is leading or lagging its own
+   cohort is a different question from whether it is up or down. */
+function renderPlatform() {
+  const host = $("#kpiPlatform");
+  if (!host) return;
+  const lp = S.launchpad;
+  const ph = lp?.priceHistory || [];
+  if (ph.length < 2) {
+    host.innerHTML = `<p class="muted">Price history for the platform's tokens accrues from the census, one row every few hours; comparisons appear after a day.</p>`;
+    for (const id of ["#tPlatform", "#takePlatform"]) { const e = $(id); if (e) e.innerHTML = ""; }
+    return;
+  }
+  const last = ph.at(-1);
+  const near = (back) => {
+    const target = last.t - back;
+    let best = null;
+    for (const r of ph) if (Math.abs(r.t - target) <= 4 * 3600 && (!best || Math.abs(r.t - target) < Math.abs(best.t - target))) best = r;
+    return best;
+  };
+  const r24 = near(86400), r7 = near(7 * 86400);
+  const aiTok = S.meta.contracts.aiToken;
+  const capOf = new Map((lp.top || []).map((t) => [t.token, t.mcapUsd]));
+  const rows = Object.entries(last.p).map(([tok, p]) => ({
+    tok, p, isAi: tok === aiTok,
+    sym: lp.priceSymbols?.[tok] || short(tok),
+    mcap: capOf.get(tok) ?? null,
+    c24: r24?.p?.[tok] ? p / r24.p[tok] - 1 : null,
+    c7: r7?.p?.[tok] ? p / r7.p[tok] - 1 : null,
+  })).sort((a, b) => (b.mcap ?? 0) - (a.mcap ?? 0));
+  const ai = rows.find((r) => r.isAi);
+  const rank = (key) => {
+    const xs = rows.filter((r) => r[key] != null).sort((a, b) => b[key] - a[key]);
+    const i = xs.findIndex((r) => r.isAi);
+    return i >= 0 ? { i: i + 1, n: xs.length } : null;
+  };
+  const k7 = rank("c7"), k24 = rank("c24");
+  host.innerHTML = kpiEl(k7 ? `#${k7.i}` : k24 ? `#${k24.i}` : "—",
+    k7 ? `of ${k7.n} over 7 days` : k24 ? `of ${k24.n} over 24h` : "", ai && (ai.c7 ?? ai.c24 ?? 0) >= 0 ? "up" : "down",
+    "AI's rank by return among the platform's largest tokens")
+    + `<div class="livenote">${rows.length} tokens tracked · prices from each token's busiest pool, sampled ${ph.length} times since ${dayFmt(ph[0].t)}</div>`;
+  const chg = (x) => (x == null ? "—" : `<span class="${x >= 0 ? "up" : "down"}">${pctOrMult(x, 1)}</span>`);
+  table($("#tPlatform"), [
+    { h: "Token", f: (r) => (r.isAi ? `<b>${r.sym}</b>` : r.sym) },
+    { h: "Nominal cap", f: (r) => (r.mcap == null ? "—" : `$${compact(r.mcap)}`) },
+    { h: "24h", f: (r) => chg(r.c24) },
+    { h: "7d", f: (r) => chg(r.c7) },
+  ], rows);
+  const med = (key) => { const xs = rows.map((r) => r[key]).filter((x) => x != null).sort((a, b) => a - b); return xs.length ? xs[Math.floor(xs.length / 2)] : null; };
+  const m7 = med("c7"), m24 = med("c24");
+  $("#takePlatform").innerHTML = takeEl(!ai ? "neu" : (ai.c7 ?? ai.c24 ?? 0) >= (m7 ?? m24 ?? 0) ? "pos" : "warn",
+    !ai ? "AI is not among the tracked tokens in the latest census row."
+      : `${ai.c7 != null ? `Over 7 days AI is <b>${pctOrMult(ai.c7, 1)}</b> against a median of <b>${pct(m7, 1)}</b> across the platform's largest tokens, ranking <b>#${k7.i} of ${k7.n}</b>.` : ai.c24 != null ? `Over 24 hours AI is <b>${pct(ai.c24, 1)}</b> against a platform median of <b>${pct(m24, 1)}</b> (#${k24.i} of ${k24.n}); a week of history is still accruing.` : "Not enough history yet."}
+         ${ai.c7 != null && m7 != null ? (ai.c7 > m7 ? "AI is leading its own platform, which is what a hub should do when the ecosystem is bid; when it lags, the money is going to the launches rather than the base pair." : "AI is lagging its own platform: the launches are being bid ahead of the base pair they settle against, which is worth knowing before attributing a move to the hub thesis.") : ""}
+         <span class="muted">Every price is a pool print on a thin book, so single-token moves can be one trade. The median is the robust read.</span>`);
 }
 
 /**
@@ -2321,7 +2846,7 @@ function renderRating(parts) {
  * this hour, or storage that refuses to answer all render nothing at all -- the
  * strip appears only when it has something to say.
  */
-const SINCE_KEY = "ainvda.lastSeen.v1";
+const SINCE_KEY = "ainvda.lastSeen.v2";   // v2: two dial scores and a holder count instead of one word
 const MIN_GAP_MIN = 30;
 
 function readSnapshot() {
@@ -2362,11 +2887,15 @@ function renderSinceLast(now) {
   abs("toll leakage", prev.leak, now.leak, 0.02, (v) => pctLevel(v, 1));
   abs("cross-routing", prev.kappa, now.kappa, 0.02, (v) => pctLevel(v, 1));
   rel("NVDA in the vault", prev.nvda, now.nvda, 0.01, (v) => nf(v, 1) + " NVDA");
+  rel("holders with 100K+ AI", prev.holders100k, now.holders100k, 0.01, (v) => v.toLocaleString());
   if (prev.word && now.word && prev.word !== now.word) {
-    lines.push(`the rating moved from <b>${prev.word}</b> to <b>${now.word}</b>`);
-  } else if (prev.score != null && now.score != null && Math.abs(now.score - prev.score) >= 0.15) {
-    const d = now.score - prev.score;
-    lines.push(`<span class="${d >= 0 ? "up" : "down"}">${d >= 0 ? "+" : ""}${d.toFixed(2)}</span> on the rating score, now <b>${now.score.toFixed(2)}</b>`);
+    lines.push(`the reading moved from <b>${prev.word}</b> to <b>${now.word}</b>`);
+  } else {
+    for (const [key, label] of [["structure", "the Structure dial"], ["demand", "the Demand dial"]]) {
+      if (prev[key] == null || now[key] == null || Math.abs(now[key] - prev[key]) < 0.15) continue;
+      const d = now[key] - prev[key];
+      lines.push(`<span class="${d >= 0 ? "up" : "down"}">${d >= 0 ? "+" : ""}${d.toFixed(2)}</span> on ${label}, now <b>${now[key] >= 0 ? "+" : ""}${now[key].toFixed(2)}</b>`);
+    }
   }
 
   if (!lines.length) { host.hidden = true; return; }
@@ -2854,20 +3383,16 @@ function renderRunners() {
      their pool, which makes the cap-to-backing ratio the wrong lens for those specifically.</span>`);
 }
 
-function renderVerdict(net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kappaHist = []) {
+function renderVerdict(read, net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kappaHist = []) {
   const b = S.burns;
   const kMed = (() => {
     const xs = (kappaHist || []).filter((x) => x != null && isFinite(x)).sort((a, b) => a - b);
     return xs.length >= 10 ? xs[Math.floor(xs.length / 2)] : null;
   })();
-  const kappaOk = kMed == null ? kappa > 0 : kappa >= kMed;
-  const bullish = (net7 >= 0 ? 1 : 0) + (feeTrend >= 0 ? 1 : 0) + (kappaOk ? 1 : 0);
-  const tone = bullish >= 2 ? "pos" : bullish === 1 ? "" : "neg";
-  const lead = bullish >= 2
-    ? "The measurable parts of the thesis are holding up."
-    : bullish === 1
-      ? "Mixed: the structure is intact but the flow is not confirming it."
-      : "The measurable parts are deteriorating together.";
+  /* The lead is the cockpit's reading, so the summary can never say something the
+     dials above it do not. It used to count three coin-flips of its own. */
+  const tone = read.tone === "pos" ? "pos" : read.tone === "neg" ? "neg" : "";
+  const lead = read.title + ".";
 
   /* The summary must not silently contradict the live strip directly above it.
      The week and the last hour genuinely can point opposite ways, and when they
@@ -2918,13 +3443,31 @@ function renderMethod() {
   const m = S.meta, b = S.burns;
   $("#methodBody").innerHTML = `
     <div style="font-size:13px;line-height:1.65;color:var(--text-secondary)">
-      <p><b style="color:var(--text-primary)">Rating framework and credit.</b> The Investor View rating scores the inputs
-      identified in <a href="https://x.com/okay_lets_ride/status/2098082744899190788" target="_blank" rel="noopener noreferrer">Coulou’s
+      <p><b style="color:var(--text-primary)">The two dials, and their credit.</b> The Investor View opens with two
+      dials rather than one word. <b>Structure</b> scores the inputs identified in
+      <a href="https://x.com/okay_lets_ride/status/2098082744899190788" target="_blank" rel="noopener noreferrer">Coulou’s
       “AI – Valuation Report”</a> (@okay_lets_ride, 10 Sep 2026) — fee revenue, main-pool capture, AI-pair share,
-      cross-routing κ and the NVDA vault — and the valuation frame uses its 5–7.5% capitalisation rates. The site does
-      not use the report’s scenario values or weights: every input is ranked against AI’s own measured history, and the
-      weights are this site’s own. The resulting call is therefore neither the report’s conclusion nor the site owner’s
-      investment view.</p>
+      cross-routing κ and the NVDA vault — plus how often new launches choose AI as a base pair; the valuation frame
+      uses the report’s 5–7.5% capitalisation rates. <b>Demand</b> is this site’s addition: net flow, wallets above a
+      fixed AI balance, distinct buyers, the near-spot book, launch cadence and the live tail. Each input is a
+      trailing-7-day level ranked inside AI’s own <b>last 30 days</b> (not its whole history: a token that launched into
+      its peak reads “lowest ever” on everything forever), inputs are equal-weighted within a dial, and a reading is
+      taken over the pair rather than a threshold over a sum. The site does not use the report’s scenario values or
+      weights, and the result is neither the report’s conclusion nor the site owner’s investment view.</p>
+
+      <p><b style="color:var(--text-primary)">Holders.</b> Every AI transfer since genesis is replayed into a balance per
+      address and snapshotted every four hours; balances must sum to supply exactly before anything is published. On
+      top of the counts: concentration (the share of wallet-held AI in the top 10, 50 and 100, with the pool manager,
+      vault, hook and splitter excluded from both sides), churn (wallets funded from zero and emptied to zero between
+      snapshots), a tape of every move of 250,000 AI or more classified by which side of it was the pool, and a
+      first-seen date per wallet from which weekly cohorts and their retention are built. One entity can be many
+      wallets, so concentration is a floor and holder counts are a ceiling.</p>
+
+      <p><b style="color:var(--text-primary)">Dollars.</b> Volume and fees are multiplied by the AI/USDG close of the hour
+      they happened in. NVDA’s dollar price is read from the stock token’s own busiest USDG pool each run (two or
+      three requests, no history scanned) and cross-checked against the price implied by AI in USDG over AI in NVDA;
+      the page says when the two disagree. The vault is therefore stated in dollars and as a share of market cap, and
+      AI’s beta to NVDA is measured on hourly returns rather than assumed.</p>
 
       <p><b style="color:var(--text-primary)">Flow.</b> Every Uniswap v4 <code>Swap</code> log for the indexed AI pools is read from
       the singleton PoolManager and bucketed hourly. A trade is a <i>buy</i> when the swapper's
@@ -2944,7 +3487,11 @@ function renderMethod() {
       <code>Swap</code> logs under a single transaction hash: one where the trader receives AI and one
       where they spend it. AI is a pass-through hop exactly to the extent the two legs overlap,
       so <code>min(AI received, AI spent)</code> per transaction is routed volume and the remainder is
-      genuine directional demand. This makes κ an observed quantity rather than an assumption.</p>
+      genuine directional demand. This makes κ an observed quantity rather than an assumption. The daily series is
+      kept incrementally: a refresh appends only the blocks it has not seen, a full run rebuilds whole days from a
+      day boundary, and any day whose routing volume falls far below flow’s over the same day is treated as a hole
+      and rebuilt on the next run. (Until 13 September a refresh rebuilt the current day from its last three hours,
+      which hollowed out the series; the check that catches that now fails the build.)</p>
 
       <p><b style="color:var(--text-primary)">Timestamps.</b> Swap logs on this chain carry a zeroed
       <code>blockTimestamp</code>, so block times are sampled at 250,000-block
@@ -2952,15 +3499,16 @@ function renderMethod() {
       inside the one-hour buckets.</p>
 
       <p><b style="color:var(--text-primary)">What anything is scored against.</b> Every band, percentile and
-      rating component on this site is ranked against <b>the asset's own measured history</b>. That is a change: an
+      dial input on this site is ranked against <b>the asset's own measured history</b> — its last 30 days for the
+      dials, the full comparable series for the scorecard table. That is a change: an
       earlier version scored these inputs against the four scenarios in a circulating valuation writeup — a
       cross-routing "base case" of 23%, a fee-capture "bull case" of 12%, discount rates labelled bear and bull.
       Those are one author's assumptions about a token with two months of history, and scoring against them meant
       the headline was really measuring agreement with a spreadsheet. It also inverted readings: fee capture at
       22.7% counted as <i>extra-bull</i> on that scale while sitting near the bottom of its own range. The writeup
       is still quoted where it is useful, always labelled as someone's assumption. Where an input has too little
-      history to rank, it is shown and left unscored rather than scored against a guess, and the rating says how
-      much of its weight is actually live.</p>
+      history to rank, it is shown and left unscored rather than scored against a guess, and each dial says how
+      many of its inputs are actually ranked.</p>
 
       <p><b style="color:var(--text-primary)">Comparisons across time.</b> The indexed set grew from one pool to
       eight, so any share-of-indexed-volume figure has a break in it: before 3 September fee capture reads 100%
@@ -3046,7 +3594,8 @@ function renderMethod() {
  */
 const COLLAPSE_OVER = 180;
 function collapseIntros(root = document) {
-  for (const p of root.querySelectorAll(".card p.sub, .rating .scope")) {
+  // The cockpit's own explanation lives in a <details>, so it is not clamped here.
+  for (const p of root.querySelectorAll(".card p.sub")) {
     if (p.dataset.collapsible || p.textContent.replace(/\s+/g, " ").trim().length <= COLLAPSE_OVER) continue;
     p.dataset.collapsible = "1";
     p.classList.add("clamped");
@@ -3113,10 +3662,10 @@ async function boot() {
     const [meta, flow, burns] = await Promise.all(
       ["meta.json", "flow.json", "burns.json"].map(loadJSON)
     );
-    const [routing, bridges, tape, pools, depth, launchpad, holders] = await Promise.all(
-      ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json"].map((f) => loadJSON(f).catch(() => null))
+    const [routing, bridges, tape, pools, depth, launchpad, holders, prices] = await Promise.all(
+      OPTIONAL_ARTIFACTS.map((f) => loadJSON(f).catch(() => null))
     );
-    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad, holders });
+    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad, holders, prices });
   } catch (e) {
     $("#boot").remove();
     $("#bootErr").innerHTML = `<div class="err"><b>Could not load indexed data.</b><br>

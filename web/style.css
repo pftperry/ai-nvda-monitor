@@ -367,6 +367,53 @@ footer h4 { color: var(--text-secondary); font-size: 12px; margin: 16px 0 7px; t
 .attribution b { color: var(--text-primary); }
 .attribution a { color: var(--series-1); }
 
+/* ── the cockpit ──────────────────────────────────────────────────────────
+   Phone first: four tiles two-up, the dials stacked, the reading as one sentence.
+   The prose that used to sit above the score lives in <details> below it. */
+.cockpit { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+.ctile { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--surface-2); }
+.ctile .lbl { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
+.ctile .val { font: 650 21px/1.15 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; margin: 4px 0 3px; }
+.ctile .note { font-size: 11px; color: var(--text-secondary); line-height: 1.4; }
+.dials { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 22px; }
+.dial-hd { display: flex; align-items: baseline; gap: 10px; }
+.dial-name { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); font-weight: 620; }
+.dial-hd b { font: 700 22px/1 var(--sans); letter-spacing: -.02em; }
+.dial-score { margin-left: auto; font: 600 12px var(--mono); color: var(--text-muted); }
+.dial .scale { margin: 10px 0 5px; }
+.dial .scale.empty { opacity: .35; }
+.reading { margin: 14px 0 6px; padding: 11px 13px; border-radius: 8px; border-left: 4px solid var(--border-strong);
+  background: var(--surface-2); font-size: 13.5px; line-height: 1.55; color: var(--text-secondary); }
+.reading b { color: var(--text-primary); font-size: 15px; }
+.reading.pos { border-left-color: var(--buy); }
+.reading.neg { border-left-color: var(--sell); }
+.reading.warn { border-left-color: var(--warning); }
+.rating details { margin-top: 10px; }
+.rating summary { cursor: pointer; font-size: 12.5px; color: var(--series-1); padding: 5px 0; list-style: none; }
+.rating summary::-webkit-details-marker { display: none; }
+.rating summary::before { content: "▸ "; }
+.rating details[open] summary::before { content: "▾ "; }
+.rating .scope { margin: 6px 0 0; }
+.components .grp { margin: 12px 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); font-weight: 620; }
+.components .row .why { font-size: 11px; line-height: 1.4; margin-top: 1px; }
+.components .row .v .d { font: 500 11px var(--mono); margin-top: 2px; }
+.components .row .w { text-align: right; line-height: 1.6; }
+.grid.tight { margin-bottom: 12px; }
+@media (max-width: 620px) {
+  .cockpit { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+  .ctile { padding: 9px 10px; }
+  .ctile .val { font-size: 18px; }
+  .ctile .note { font-size: 10.5px; }
+  .dials { grid-template-columns: 1fr; gap: 12px; }
+  .dial-hd b { font-size: 19px; }
+  .reading { font-size: 12.5px; }
+  .reading b { font-size: 14px; }
+  .components .row { grid-template-columns: 1fr auto; }
+  .components .row .w { grid-column: 1 / -1; text-align: left; }
+  .components .row .w br { display: none; }
+  .components .row .w .band { margin-right: 8px; }
+}
+
 /* Long intros: two lines by default, full text on request. */
 .clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .howbtn { display: inline-block; margin: 2px 0 10px; padding: 4px 0; background: none; border: 0;
