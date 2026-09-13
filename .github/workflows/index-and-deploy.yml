@@ -127,9 +127,35 @@ jobs:
             MODE="fast"
             echo "push -> fast (code changed, chain data did not)"
           fi
+          # Standard is chosen by how old the deep artifacts are, not by the clock.
+          #
+          # This used to fire only when a scheduled run started in the first five
+          # minutes of 00/06/12/18 UTC. GitHub throttles a */5 cron to a run every
+          # two to five hours at an arbitrary minute, so that window was almost never
+          # hit: measured, ten scheduled runs in a row chose fast (one at 06:05,
+          # missing by a minute), and bridges.json went 25 hours without a refresh
+          # while every page on the site kept looking current.
+          #
+          # Age cannot be missed. The oldest of the three deep artifacts decides, and
+          # a separate attempt stamp in the resume cache stops a standard run that
+          # times out before writing from being retried on every tick and starving
+          # the fast path of the lock.
           if [ -z "$MODE" ] && [ "${{ github.event_name }}" = "schedule" ]; then
-            if [ "$(date -u +%M)" -lt 5 ] && [ "$(( $(date -u +%H) % 6 ))" -eq 0 ]
-              then MODE="standard"; else MODE="fast"; fi
+            NOW=$(date -u +%s)
+            OLDEST=$(node -e '
+              const fs = require("fs");
+              const ts = ["bridges", "launchpad", "pools"].map((f) => {
+                try { return JSON.parse(fs.readFileSync("web/data/" + f + ".json", "utf8")).updatedAt || 0; }
+                catch { return 0; }
+              });
+              console.log(Math.min(...ts));')
+            LAST_TRY=$(cat .cache/last-standard-attempt 2>/dev/null || echo 0)
+            AGE=$(( NOW - OLDEST )); SINCE_TRY=$(( NOW - LAST_TRY ))
+            echo "oldest deep artifact $(( AGE / 3600 ))h old; last standard attempt $(( SINCE_TRY / 3600 ))h ago"
+            if [ "$AGE" -gt 21600 ] && [ "$SINCE_TRY" -gt 10800 ]; then
+              MODE="standard"
+              mkdir -p .cache && echo "$NOW" > .cache/last-standard-attempt
+            else MODE="fast"; fi
             echo "scheduled run -> $MODE"
           fi
           # --top is how many pools get hourly depth, and it decides how much of the
