@@ -284,6 +284,7 @@ export async function indexHolders(latest, tm, opts = {}) {
       firstSeenFromGenesis,
       whales,
       prevHolders: [...prevHolders],
+      seedCursor: prev.seedCursor ?? null,   // which committed seed this state descends from
     },
     artifact: {
       complete, cursor,
@@ -351,11 +352,15 @@ export async function pickHolderState(cached, seedPath) {
   let seed = null;
   try { seed = JSON.parse(zlib.gunzipSync(fs.readFileSync(seedPath)).toString("utf8")); } catch { seed = null; }
   if (!seed) return cached || null;
+  /* Lineage decides. A state adopted from a seed remembers that seed's cursor and
+     carries it forward; a cache that descends from THIS seed is simply further
+     along and wins, while any other cache -- older seed, older schema, a fix that
+     needed a fresh replay -- yields to a seed replayed from genesis. Without this
+     the runner's cache, always a few blocks ahead, could never be replaced. */
+  seed.seedCursor = seed.cursor;
   if (!cached) return seed;
   if ((seed.schema ?? 1) > (cached.schema ?? 1)) return seed;
-  // A cache that grew out of a balances-only seed carries the new schema but not
-  // the history behind it; a seed replayed from genesis does, and wins.
-  if (seed.firstSeenFromGenesis === true && cached.firstSeenFromGenesis !== true) return seed;
+  if (seed.firstSeenFromGenesis === true && cached.seedCursor !== seed.cursor) return seed;
   if ((seed.cursor ?? 0) > (cached.cursor ?? 0)) return seed;
   return cached;
 }
