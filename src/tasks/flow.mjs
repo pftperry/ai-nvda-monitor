@@ -120,10 +120,17 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
   return { perPool, tape: tape.slice(0, 400) };
 }
 
-/** Rolling buy/sell imbalance over the trailing `hours` window. */
+/**
+ * Rolling buy/sell imbalance over the trailing `hours` COMPLETE hours.
+ *
+ * The hour still filling is excluded. It used to be the only hour in the 1-hour
+ * window, so a run at sixteen minutes past reported "0 buys, 2 sells" for an hour
+ * that had barely started -- a true count of a meaningless window.
+ */
 export function rollup(hourly, hours, nowSec) {
-  const cut = nowSec - hours * 3600;
-  const w = hourly.filter((h) => h.t >= cut);
+  const cur = Math.floor(nowSec / 3600) * 3600;
+  const lo = cur - hours * 3600;
+  const w = hourly.filter((h) => h.t >= lo && h.t < cur);
   const aiBuy = w.reduce((s, h) => s + h.aiBuy, 0);
   const aiSell = w.reduce((s, h) => s + h.aiSell, 0);
   const buys = w.reduce((s, h) => s + h.buys, 0);

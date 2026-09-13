@@ -561,8 +561,21 @@ if (holders && holders.snapshots?.length) {
   }
   if (holders.whales?.length) {
     check("every whale move is at or above the tape's floor",
-      holders.whales.every((w) => w.ai >= (holders.whaleMinAi || 0) && ["buy", "sell", "transfer", "hook"].includes(w.kind)),
+      holders.whales.every((w) => w.ai >= (holders.whaleMinAi || 0) && ["buy", "sell", "received", "sent", "transfer", "hook"].includes(w.kind)),
       `${holders.whales.length} moves ≥ ${(holders.whaleMinAi || 0).toLocaleString()} AI`);
+    /* Netting per transaction means a whale row names a wallet, and never machinery:
+       a router hop or the fee wallet showing up here is the old attribution back. */
+    const netted = holders.whales.filter((w) => w.wallet);
+    if (netted.length) {
+      check("whale moves name wallets, never machinery",
+        netted.every((w) => !holders.machineryExcluded.includes(w.wallet)), `${netted.length} netted rows`);
+    }
+    const withActors = snaps.filter((s) => s.buyers != null);
+    if (withActors.length) {
+      check("period buyers and sellers are non-negative integers no larger than the wallets that exist",
+        withActors.every((s) => Number.isInteger(s.buyers) && s.buyers >= 0 && Number.isInteger(s.sellers) && s.sellers >= 0 && s.buyers + s.sellers <= 2 * Math.max(1, s.holders)),
+        `latest period: ${withActors.at(-1).buyers} bought, ${withActors.at(-1).sellers} sold, of ${withActors.at(-1).holders} holders`);
+    }
     check("the whale tape is newest first",
       holders.whales.every((w, i, a) => i === 0 || w.t <= a[i - 1].t));
   }

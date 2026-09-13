@@ -50,7 +50,11 @@ const short = (a) => (a ? `${a.slice(0, 8)}…${a.slice(-6)}` : "—");
    chart look like a timezone bug -- which is exactly how this came up. */
 const TZ = "America/Chicago";
 const tsFmt = (t) => (t ? new Date(t * 1000).toLocaleString("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—");
-const dayFmt = (t) => (t ? new Date(t * 1000).toLocaleDateString("en-US", { timeZone: TZ, month: "short", day: "numeric" }) : "—");
+/* Daily buckets are UTC days, so a day is labelled with its UTC date. Rendering a
+   bucket's start instant in Central put "Sep 11" under the bar for 12 September on
+   every daily chart: midnight UTC is 7 pm the previous evening in Chicago. Hourly
+   points keep Central, because an hour is an instant and a day is a name. */
+const dayFmt = (t) => (t ? new Date(t * 1000).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" }) : "—");
 const hourFmt = (t) => (t ? new Date(t * 1000).toLocaleString("en-US", { timeZone: TZ, hour: "numeric", hour12: true }) : "—");
 const clockFmt = (t) => (t ? new Date(t * 1000).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }) + " CT" : "—");
 const ago = (t) => {
@@ -730,7 +734,7 @@ function renderFlow() {
   const tiles = [
     { lbl: `Net flow (${S.hours ? S.hours + "h" : "all"})`, val: compact(aiBuy - aiSell), note: `AI · ${aiBuy - aiSell >= 0 ? "net bought" : "net sold"}`, cls: aiBuy - aiSell >= 0 ? "up" : "down" },
     { lbl: "Flow imbalance", val: pctLevel(imb), note: `${compact(aiBuy)} bought / ${compact(aiSell)} sold`, cls: imb >= 0 ? "up" : "down" },
-    { lbl: "Trade count", val: `${buys + sells}`, note: `${buys} buys · ${sells} sells` },
+    { lbl: "Swaps", val: `${(buys + sells).toLocaleString()}`, note: `${buys.toLocaleString()} buy · ${sells.toLocaleString()} sell · pool events, not people` },
     { lbl: `Price change (${S.hours ? S.hours + "h" : "all"})`,
       val: Math.abs(chg) > 10 ? `${(1 + chg).toFixed(1)}×` : pct(chg, 2),
       note: `${q} per AI`, cls: chg >= 0 ? "up" : "down" },
@@ -743,8 +747,8 @@ function renderFlow() {
   divergingBars($("#cFlow"), rows, {
     xKey: "t", posKey: "aiBuy", negKey: "aiSell", height: 250,
     tip: (r) => `<div class="k">${tsFmt(r.t)}</div>
-      <div><span style="color:var(--buy)">▲</span> bought ${compact(r.aiBuy)} AI <span class="k">(${r.buys} tx, ${r.buyers} addr)</span></div>
-      <div><span style="color:var(--sell)">▼</span> sold ${compact(r.aiSell)} AI <span class="k">(${r.sells} tx, ${r.sellers} addr)</span></div>
+      <div><span style="color:var(--buy)">▲</span> bought ${compact(r.aiBuy)} AI <span class="k">(${r.buys} swaps)</span></div>
+      <div><span style="color:var(--sell)">▼</span> sold ${compact(r.aiSell)} AI <span class="k">(${r.sells} swaps)</span></div>
       <div class="k">net ${compact(r.aiBuy - r.aiSell)} AI · price ${sig(r.close, 5)}</div>`,
   });
 
@@ -760,16 +764,17 @@ function renderFlow() {
     tip: (r) => `<div class="k">${tsFmt(r.t)}</div><div>${sig(r.close, 6)} ${q} per AI</div>`,
   });
 
+  /* Swaps, not people: a v4 Swap's sender is the router, so the per-address
+     columns this table used to carry counted routers and are gone. Wallet-level
+     activity lives on the holders replay, netted per transaction. */
   table($("#tRollup"), [
-    { h: "Window", f: (r) => r.hours === 1 ? "1 hour" : `${r.hours} hours` },
-    { h: "Buys", f: (r) => r.buys.toLocaleString() },
-    { h: "Sells", f: (r) => r.sells.toLocaleString() },
+    { h: "Window", f: (r) => `last ${r.hours} complete hour${r.hours === 1 ? "" : "s"}` },
+    { h: "Buy swaps", f: (r) => r.buys.toLocaleString() },
+    { h: "Sell swaps", f: (r) => r.sells.toLocaleString() },
     { h: "AI bought", f: (r) => compact(r.aiBuy) },
     { h: "AI sold", f: (r) => compact(r.aiSell) },
     { h: "Net AI", f: (r) => `<span class="${r.netAI >= 0 ? "up" : "down"}">${compact(r.netAI)}</span>` },
     { h: "Imbalance", f: (r) => `<span class="${r.imbalance >= 0 ? "up" : "down"}">${pct(r.imbalance)}</span>` },
-    { h: "Buyers", f: (r) => r.buyers.toLocaleString() },
-    { h: "Sellers", f: (r) => r.sellers.toLocaleString() },
     { h: "Price Δ", f: (r) => `<span class="${r.priceChange >= 0 ? "up" : "down"}">${r.priceChange.toFixed(2)}%</span>` },
   ], p.rollups);
 
@@ -982,13 +987,16 @@ const addrCell = (a) => {
 /** Columns for a whale-move table, shared by the Investor View card and the Float tab. */
 function whaleCols(px) {
   const kindBand = (k) => k === "buy" ? "bull" : k === "sell" ? "bear" : k === "hook" ? "na" : "base";
-  const kindWord = (k) => k === "buy" ? "bought from pool" : k === "sell" ? "sold into pool" : k === "hook" ? "hook / launch" : "wallet to wallet";
+  const kindWord = (k) => k === "buy" ? "bought" : k === "sell" ? "sold" : k === "received" ? "received" : k === "sent" ? "sent" : k === "hook" ? "hook / launch" : "wallet to wallet";
+  /* Rows written before netting carry from/to instead of wallet; pick the side the
+     old classification pointed at, so an older artifact still renders. */
+  const walletOf = (w) => w.wallet || (w.kind === "sell" ? w.from : w.to);
   return [
     { h: "When", f: (w) => tsFmt(w.t) },
-    { h: "Move", f: (w) => `<span class="band ${kindBand(w.kind)}">${kindWord(w.kind)}</span>${w.fresh ? ` <span class="muted" title="the receiving wallet held no AI before this">new wallet</span>` : ""}` },
+    { h: "Move", f: (w) => `<span class="band ${kindBand(w.kind)}">${kindWord(w.kind)}</span>${w.fresh ? ` <span class="muted" title="the wallet held no AI before this transaction">new wallet</span>` : ""}` },
     { h: "AI", f: (w) => compact(w.ai) },
     { h: "USD now", f: (w) => (px ? `$${compact(w.ai * px)}` : "—") },
-    { h: "Wallet", f: (w) => { const a = w.kind === "buy" ? w.to : w.kind === "sell" ? w.from : w.to; return addrCell(a); } },
+    { h: "Wallet", f: (w) => addrCell(walletOf(w)) },
   ];
 }
 
@@ -1632,14 +1640,13 @@ function renderInvestor() {
   /* Breadth of demand beside its volume: a day's net flow can be one wallet, a
      day's buyer count cannot. Summed per pool-hour, so it is an upper bound. */
   const buyersDaily = completeDays(dailyBuyers());
-  if ($("#cBuyers")) {
-    lineChart($("#cBuyers"), buyersDaily.slice(-30), {
-      xKey: "t", yKey: "buyers", zeroBase: true, area: true, color: "var(--series-3)", xFmt: dayFmt,
-      fmt: (v) => v.toFixed(0),
-      tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.buyers.toLocaleString()} buying addresses</div>
-        <div class="k">${d.sellers.toLocaleString()} selling addresses</div>`,
+  if (buyersDaily.length) {
+    divergingBars($("#cBuyers"), buyersDaily.slice(-30), {
+      xKey: "t", posKey: "buyers", negKey: "sellers", height: 200, xFmt: dayFmt, fmt: (v) => Math.abs(v).toFixed(0),
+      tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div><span style="color:var(--buy)">▲</span> ${d.buyers.toLocaleString()} wallets net bought</div>
+        <div><span style="color:var(--sell)">▼</span> ${d.sellers.toLocaleString()} wallets net sold</div>`,
     });
-  }
+  } else $("#cBuyers").innerHTML = `<p class="muted" style="padding:16px 0">Wallet-level buyers accrue from the next holder replay.</p>`;
 
   /* ── 2. fee run-rate ──────────────────────────────────────────────── */
   const fee = (d) => (d.burnAI || 0) + (d.lockAI || 0) + (d.platformAI || 0);
@@ -1846,9 +1853,9 @@ function renderInvestor() {
     { k: `Holders with ${compact(thr, 0)}+ AI, 7d change`, v: cur(breadthRoll) == null ? "—" : pct(cur(breadthRoll), 1), d: wk4h(breadthRoll), dFmt: pts,
       s: levelScore(breadthRoll, cur(breadthRoll), +1, 6),
       why: "week-over-week change in addresses above a fixed AI balance, which a price move cannot manufacture" },
-    { k: "Distinct buyers per day, 7d", v: cur(buyersRoll) == null ? "—" : Math.round(cur(buyersRoll)).toLocaleString(), d: wk(buyersRoll), dFmt: (x) => `${x >= 0 ? "+" : ""}${Math.round(x)}`,
+    { k: "Wallets net buying per day, 7d", v: cur(buyersRoll) == null ? "—" : Math.round(cur(buyersRoll)).toLocaleString(), d: wk(buyersRoll), dFmt: (x) => `${x >= 0 ? "+" : ""}${Math.round(x)}`,
       s: levelScore(buyersRoll, cur(buyersRoll), +1),
-      why: "buying addresses summed per pool-hour (an upper bound on people), trailing 7-day average" },
+      why: "wallets whose AI balance rose through a pool, netted per transaction so routers cancel out; trailing 7-day average" },
     { k: "Near-spot book lean, ±2%", v: bookShare == null ? "—" : pctLevel(bookShare, 1) + " bids", d: nearHist.length > 24 ? bookShare - nearHist[nearHist.length - 25].v : null, dFmt: pts,
       s: levelScore(nearHist, bookShare, +1, 24, 12) ?? (bookShare == null ? null : clamp1((bookShare - 0.5) * 8)),
       why: "bids as a share of resting liquidity within 2% of spot; above half, it is cheaper to push the price up than down. Ranked once a day of history exists, a level until then" },
@@ -2650,18 +2657,26 @@ function usdCloseAt() {
   };
 }
 
-/** Distinct buying addresses per day, summed across indexed pools and hours (an upper bound on people). */
+/**
+ * Wallets that net-bought and net-sold AI per UTC day.
+ *
+ * From the holder replay, which nets every transfer in a transaction per address
+ * so routers cancel out and the wallet whose balance changed is the trader. The
+ * flow index's per-hour "buyers" were v4 Swap senders, which are routers: the
+ * busiest hour on AI/NVDA showed 5,019 swaps from 18 of them. Summed over the six
+ * four-hour periods of a day, so a wallet active in two periods counts twice; an
+ * upper bound on people, and a real one.
+ */
 function dailyBuyers() {
-  const m = new Map();
-  for (const p of S.flow.pools) {
-    for (const h of p.hourly) {
-      const d = Math.floor(h.t / DAY) * DAY;
-      const r = m.get(d) || { t: d, buyers: 0, sellers: 0 };
-      r.buyers += h.buyers || 0; r.sellers += h.sellers || 0;
-      m.set(d, r);
-    }
+  const byDay = new Map();
+  for (const s of S.holders?.snapshots || []) {
+    if (s.buyers == null) continue;
+    const d = Math.floor((s.t - 1) / DAY) * DAY;   // the row at 00:00 closes the previous day
+    const r = byDay.get(d) || { t: d, buyers: 0, sellers: 0, rows: 0 };
+    r.buyers += s.buyers; r.sellers += s.sellers || 0; r.rows++;
+    byDay.set(d, r);
   }
-  return [...m.values()].sort((a, b) => a.t - b.t);
+  return [...byDay.values()].filter((r) => r.rows === 6).sort((a, b) => a.t - b.t);
 }
 
 /** Per-day AI volume and fees in dollars, priced hour by hour. */
@@ -2847,7 +2862,7 @@ function renderBreadth() {
     `<b>${aNow?.toLocaleString() ?? "—"}</b> wallets hold ${compact(thr, 0)} AI or more${dA == null ? "" : ` (<b>${pct(dA, 1)}</b> on the week)`}${t100 == null ? "" : `, and the largest 100 hold <b>${pctLevel(t100, 1)}</b> of wallet-held supply${dT == null ? "" : ` (${pts(dT)})`}`}.
      The base is <b>${verdict}</b>.
      ${wBuys.length || wSells.length ? `Moves of ${compact(h.whaleMinAi || 250000, 0)}+ AI this week: <b>${wBuys.length}</b> bought from pools (${compact(sumOf(wBuys, (w) => w.ai))} AI${fresh ? `, ${fresh} by wallets that held none before` : ""}) against <b>${wSells.length}</b> sold into them (${compact(sumOf(wSells, (w) => w.ai))} AI).` : ""}
-     <span class="muted">Counts are at a fixed AI balance so a price move cannot manufacture them. Wallet-to-wallet moves are not buys or sells; the tape names them so a reader can decide. One entity can be many wallets.</span>`);
+     <span class="muted">Counts are at a fixed AI balance so a price move cannot manufacture them. Every move is netted per transaction, so the wallet shown is the one whose balance changed, not the router it went through; "received" and "sent" are moves that touched no pool. One entity can be many wallets.</span>`);
 }
 
 /* ── AI against its platform ─────────────────────────────────────────────

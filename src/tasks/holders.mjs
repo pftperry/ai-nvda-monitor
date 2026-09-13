@@ -1,7 +1,7 @@
 import { getLogsRange } from "../rpc.mjs";
 import { decodeTransfer } from "../decode.mjs";
 import {
-  AI, GENESIS_BLOCK, POOL_MANAGER, LONG_HOOK, COMMUNITY_VAULT, FEE_SPLITTER, BURN_ADDRESS,
+  AI, GENESIS_BLOCK, POOL_MANAGER, LONG_HOOK, COMMUNITY_VAULT, FEE_SPLITTER, BURN_ADDRESS, PLATFORM_FEE_RECIPIENT,
 } from "../config.mjs";
 
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -12,14 +12,18 @@ const WEEK = 7 * 86400;
 /* Bumped when the state gains fields a replay from genesis has to fill. A seed
    with a newer schema is adopted over a cache that is merely further along,
    because the cache cannot backfill what it never recorded. */
-export const HOLDER_STATE_SCHEMA = 3;   // 3: churn by set difference between snapshots
+export const HOLDER_STATE_SCHEMA = 4;   // 4: actors netted per transaction (buyers, sellers, whale wallets)
 
 /* Addresses that hold AI as machinery rather than as an owner. The pool manager
    holds every v4 pool's inventory, the vault holds the locked leg, the splitter
    passes fees through and the hook holds launch reserves. Counting any of them as
    "a holder" would put one address with tens of millions of AI in the top bucket
    and call it a whale. They are still in the supply reconciliation below. */
-const MACHINERY = new Set([BURN_ADDRESS, POOL_MANAGER, LONG_HOOK, COMMUNITY_VAULT, FEE_SPLITTER]);
+/* The platform fee wallet is machinery too: it forwards everything it receives in
+   the same breath (balance measured at zero, 947 transfers in and 662 out), so it
+   is a pipe, not a holder, and netting a swap's transfers would otherwise call it
+   a buyer on every trade. */
+const MACHINERY = new Set([BURN_ADDRESS, POOL_MANAGER, LONG_HOOK, COMMUNITY_VAULT, FEE_SPLITTER, PLATFORM_FEE_RECIPIENT]);
 
 /* Dollar buckets, matching the convention holder dashboards use, so a reader can
    check the count against one. The top bucket is split at $10k because "share of
@@ -168,20 +172,51 @@ export async function indexHolders(latest, tm, opts = {}) {
       heldAi: Math.round(held),
       top,
       newHolders, exits,
+      // wallets that netted AI in, or out, through a pool during the period
+      buyers: periodBuyers.size, sellers: periodSellers.size,
     });
+    periodBuyers = new Set(); periodSellers = new Set();
   };
 
-  /* A large move, classified by which side of it is the pool. v4 settles a buy by
-     paying the recipient straight from the PoolManager and a sell by pulling into
-     it, so the pool manager on one side names the direction. Fee legs and mints are
-     left out: they are the splitter's mechanics, not anyone's decision. */
-  const whaleKind = (x) => {
-    if (x.from === BURN_ADDRESS || x.to === BURN_ADDRESS) return null;
-    if (x.from === FEE_SPLITTER || x.to === COMMUNITY_VAULT || x.to === FEE_SPLITTER) return null;
-    if (x.from === POOL_MANAGER) return "buy";
-    if (x.to === POOL_MANAGER) return "sell";
-    if (x.from === LONG_HOOK || x.to === LONG_HOOK) return "hook";
-    return "transfer";
+  /* Actors, not addresses.
+
+     A v4 trade passes through a router, so the transfer that touches the
+     PoolManager names the router and the person is one hop away; measured, the
+     busiest hour on AI/NVDA had 5,019 swaps from 18 "senders". Netting every
+     transfer in a transaction per address dissolves the hops: routers net to zero,
+     and the wallet whose balance actually changed is the trader -- a buyer if it
+     netted AI in through a transaction that touched a pool, a seller if it netted
+     AI out. Transfers arrive in log order, so a transaction's rows are contiguous
+     and a transaction sits in one block, so netting never straddles a snapshot. The
+     same netting names whale moves by the wallet rather than by a router hop. */
+  let periodBuyers = new Set(prev.periodBuyers || []), periodSellers = new Set(prev.periodSellers || []);
+  const txFresh = new Set();
+  let txRows = [], txHash = null;
+  const flushTx = () => {
+    if (!txRows.length) return;
+    const delta = new Map();
+    let pool = false;
+    for (const x of txRows) {
+      if (x.from === POOL_MANAGER || x.to === POOL_MANAGER) pool = true;
+      if (x.from !== BURN_ADDRESS) delta.set(x.from, (delta.get(x.from) || 0n) - x.value);
+      if (x.to !== BURN_ADDRESS) delta.set(x.to, (delta.get(x.to) || 0n) + x.value);
+    }
+    const first = txRows[0];
+    for (const [a, d] of delta) {
+      if (d === 0n || MACHINERY.has(a)) continue;
+      if (pool) { if (d > 0n) periodBuyers.add(a); else periodSellers.add(a); }
+      const mag = d < 0n ? -d : d;
+      if (mag >= WHALE_MIN) {
+        whales.push({
+          t: first.ts, block: first.block,
+          kind: pool ? (d > 0n ? "buy" : "sell") : (d > 0n ? "received" : "sent"),
+          wallet: a, ai: Math.round(Number(mag / 10n ** 12n) / 1e6), tx: first.tx,
+          fresh: d > 0n && txFresh.has(a),
+        });
+        if (whales.length > WHALE_KEEP * 2) whales.splice(0, whales.length - WHALE_KEEP);
+      }
+    }
+    txRows = []; txFresh.clear();
   };
 
   let read = 0, partial = false;
@@ -196,15 +231,16 @@ export async function indexHolders(latest, tm, opts = {}) {
       const x = decodeTransfer(raw);
       const ts = tm.at(x.block);
       if (ts == null) continue;
+      x.ts = ts;
+      if (x.tx !== txHash) { flushTx(); txHash = x.tx; }
       const bucket = Math.floor(ts / STEP) * STEP;
       if (lastT == null) lastT = bucket;
       /* Emit the state as it stood at the END of every four-hour period this
          transfer steps past, before applying it. Quiet periods still get a row,
-         carrying the same balances, so the series has no holes to misread. */
+         carrying the same balances, so the series has no holes to misread. The
+         previous transaction was netted above, so its actors land in their own
+         period. */
       while (bucket > lastT) { snapshot(lastT + STEP); lastT += STEP; }
-
-      const kind = x.value >= WHALE_MIN ? whaleKind(x) : null;
-      let toWasEmpty = false;
 
       if (x.from === BURN_ADDRESS) supply += x.value;
       else balances.set(x.from, (balances.get(x.from) || 0n) - x.value);
@@ -213,19 +249,13 @@ export async function indexHolders(latest, tm, opts = {}) {
         const before = balances.get(x.to) || 0n;
         balances.set(x.to, before + x.value);
         if (before <= 0n && x.value > 0n && !MACHINERY.has(x.to)) {
-          toWasEmpty = true;
+          txFresh.add(x.to);
           if (!firstSeen.has(x.to)) firstSeen.set(x.to, ts);
         }
       }
-      if (kind) {
-        whales.push({
-          t: ts, block: x.block, kind, from: x.from, to: x.to,
-          ai: Math.round(Number(x.value / 10n ** 12n) / 1e6),
-          tx: x.tx, fresh: kind === "buy" && toWasEmpty,
-        });
-        if (whales.length > WHALE_KEEP * 2) whales.splice(0, whales.length - WHALE_KEEP);
-      }
+      txRows.push(x);
     }
+    flushTx();
     read += logs.length;
     cursor = reached;
     if (logs.truncated || reached < hi) { partial = true; break; }
@@ -284,6 +314,7 @@ export async function indexHolders(latest, tm, opts = {}) {
       firstSeenFromGenesis,
       whales,
       prevHolders: [...prevHolders],
+      periodBuyers: [...periodBuyers], periodSellers: [...periodSellers],   // the period still open at the cursor
       seedCursor: prev.seedCursor ?? null,   // which committed seed this state descends from
     },
     artifact: {

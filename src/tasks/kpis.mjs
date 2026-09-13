@@ -100,15 +100,18 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, holders, pr
   const snaps = (holders?.snapshots || []).filter((s) => s.holders > 0);
   const hs = snaps.at(-1) || null;
   const dayRows = snaps.slice(-6);
+  /* Wallets that net-bought per day, from the replay's per-transaction netting.
+     The flow index's per-hour "buyers" are v4 Swap senders, which are routers. */
   const buyers = new Map();
-  for (const p of flow.pools || []) {
-    for (const h of p.hourly || []) {
-      const d = Math.floor(h.t / DAY) * DAY;
-      buyers.set(d, (buyers.get(d) || 0) + (h.buyers || 0));
-    }
+  for (const s of snaps) {
+    if (s.buyers == null) continue;
+    const d = Math.floor((s.t - 1) / DAY) * DAY;
+    const r = buyers.get(d) || { n: 0, rows: 0 };
+    r.n += s.buyers; r.rows++;
+    buyers.set(d, r);
   }
-  const bd = [...buyers.entries()].filter(([t]) => t < Math.floor(now / DAY) * DAY).sort((a, b) => a[0] - b[0]);
-  const buyers7 = bd.slice(-7).reduce((s, [, v]) => s + v, 0) / Math.max(1, Math.min(7, bd.length));
+  const bd = [...buyers.entries()].filter(([t, r]) => r.rows === 6 && t < Math.floor(now / DAY) * DAY).sort((a, b) => a[0] - b[0]);
+  const buyers7 = bd.slice(-7).reduce((s, [, r]) => s + r.n, 0) / Math.max(1, Math.min(7, bd.length));
 
   /* Dollar volume over the last complete day, priced hour by hour from the busiest
      USDG venue, so a price move inside the day is not averaged away. */
@@ -180,7 +183,7 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, holders, pr
     holders100k: "addresses holding at least 100,000 AI at that snapshot (price-neutral breadth)",
     top10Share: "share of holder-owned AI held by the 10 largest wallets", top100Share: "same, 100 largest",
     newHolders24h: "addresses funded from zero over the last six snapshots (24h)", exits24h: "addresses emptied to zero over the same window",
-    buyers7d: "distinct buying addresses per day, summed per pool-hour, trailing 7 complete days average (an upper bound)",
+    buyers7d: "wallets that net-bought AI through a pool per day (netted per transaction, summed over six 4h periods), trailing 7 complete days average",
     volumeUsd24h: "AI volume on indexed venues over the last complete day, priced hour by hour in USDG",
     nvdaUsd: "NVDA in dollars from its busiest USDG venue; null when prices.json is over 8h old",
   };
