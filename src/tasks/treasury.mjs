@@ -315,8 +315,9 @@ export async function indexTreasury(latest, tm, opts = {}) {
      transaction is counted once per wallet; the token's own net in that
      transaction decides which bucket it lands in. */
   const uses = (w) => {
-    const u = {}; for (const s of Object.keys(TRACK)) u[s] = { sold: 0, bought: 0, lpAdded: 0, lpRemoved: 0, sentOn: 0, internal: 0, bridged: 0, received: 0, pools: {}, via: {}, wentTo: {}, bridgedTo: {} };
+    const u = {}; for (const s of Object.keys(TRACK)) u[s] = { sold: 0, bought: 0, lpAdded: 0, lpRemoved: 0, sentOn: 0, internal: 0, bridged: 0, received: 0, pools: {}, via: {}, wentTo: {}, sentOnTo: {}, bridgedTo: {} };
     const seen = new Set();
+    const endLabel = (to) => to === POOL_MANAGER ? "v4 pools" : NAMES[to] ? NAMES[to] : wallets.has(to) ? `treasury wallet ${to}` : to;
     for (const L of Object.values(state.wallets[w])) for (const p of L.txs) {
       if (seen.has(p.tx)) continue; seen.add(p.tx);
       const k = state.txKinds[`${p.tx}:${w}`];
@@ -335,14 +336,19 @@ export async function indexTreasury(latest, tm, opts = {}) {
             const dest = r && !r.unknown ? `${r.chain} · ${r.recipient || "?"}` : "destination not resolved";
             u[s].bridgedTo[dest] = (u[s].bridgedTo[dest] || 0) + v;
           } else if (wallets.has(p.cp)) u[s].internal += v;
-          else u[s].sentOn += v;
+          else {
+            u[s].sentOn += v;
+            /* A plain send is not a destination: a hand-off to a router that sold
+               into a pool in the same transaction is a sale. Record where the AI
+               ended up so the page can fold "moved elsewhere" into its end state. */
+            if (s === "AI" && k.aiTo) { const l = endLabel(k.aiTo); u[s].sentOnTo[l] = (u[s].sentOnTo[l] || 0) + v; }
+          }
         }
         else if (k.kind === "in") u[s].received += v;
         /* Who ended up with the AI, for anything that left: a sale's far side, or a
            hand-off's recipient. Named where the page can name it. */
         if (s === "AI" && outFlow && (k.kind === "swap" || k.kind === "out" || k.kind === "lp+") && k.aiTo) {
-          const to = k.aiTo;
-          const label = to === POOL_MANAGER ? "v4 pools" : NAMES[to] ? NAMES[to] : wallets.has(to) ? `treasury wallet ${to}` : to;
+          const label = endLabel(k.aiTo);
           u[s].wentTo[label] = (u[s].wentTo[label] || 0) + v;
         }
       }

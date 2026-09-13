@@ -963,6 +963,18 @@ function renderHolders() {
   }
 
   table($("#tWhalesFull"), whaleCols(px), (h.whales || []).slice(0, 60));
+  whaleStamp($("#tWhalesFull"), "whaleStampFull");
+}
+
+/* A quiet tape looks like a stuck one. Under each whale table, say how far the
+   replay has read and how long ago the last move of tape size happened, so a
+   newest row from hours back reads as "nothing that big since", not "stale". */
+function whaleStamp(afterEl, id) {
+  const h = S.holders; if (!h || !afterEl?.parentNode) return;
+  $(`#${id}`)?.remove();   // replace, not append: this renders on every tab switch and refresh
+  const newest = h.whales?.[0]?.t, readTo = h.updatedAt || h.snapshots?.at(-1)?.t;
+  afterEl.insertAdjacentHTML("afterend", `<div class="livenote" id="${id}">Tape read to block <b>${h.cursor ? h.cursor.toLocaleString() : "—"}</b>${readTo ? ` (${ago(readTo)})` : ""};
+    the last move of ${compact(h.whaleMinAi || 250000, 0)}+ AI was <b>${newest ? ago(newest) : "—"}</b>. Newer rows mean newer moves of that size, not a newer read.</div>`);
 }
 
 /* Addresses the page can name. Anything else is shown short, with the full
@@ -2846,6 +2858,7 @@ function renderBreadth() {
   } else $("#cBreadth").innerHTML = `<p class="muted" style="padding:16px 0">Wallet churn accrues from the next replay; the count above is already live.</p>`;
 
   table($("#tWhales"), whaleCols(px), (h.whales || []).slice(0, 8));
+  whaleStamp($("#tWhales"), "whaleStamp");
 
   /* Breadth against concentration is the read: four combinations, each a sentence. */
   const up = (x) => x != null && x > 0.01, down = (x) => x != null && x < -0.01;
@@ -2962,10 +2975,28 @@ function renderTreasury() {
       for (const [name, v] of Object.entries(u.via || {})) via[name] = (via[name] || 0) + usdOf(sym, v);
     }
     const aiU = L.AI?.uses || {};
-    return { a: w.address, L, agg, via, aiU, ai: L.AI || {}, nv: L.NVDA || {}, ug: L.USDG || {} };
+    /* "Sent on" is a first hop, not an end state. Split each wallet's plain AI
+       sends by where the AI sat when the transaction ended: in a pool or a router
+       (a sale through a hand-off), in a wallet outside the operator's set (paid
+       out), or unresolved. Older artifacts without sentOnTo keep the one bucket. */
+    const so = aiU.sentOnTo;
+    const split = { handoffSold: 0, paidOut: 0, other: 0 };
+    if (so) {
+      for (const [label, v] of Object.entries(so)) {
+        if (label === "v4 pools" || /Uniswap v3|Algebra|Settler|router|Router|Permit2|hook/.test(label)) split.handoffSold += v;
+        else if (label.startsWith("0x")) split.paidOut += v;
+        else split.other += v;
+      }
+      split.other += Math.max(0, (aiU.sentOn || 0) - split.handoffSold - split.paidOut - split.other);
+    } else split.other = aiU.sentOn || 0;
+    agg.handoffSold = usdOf("AI", split.handoffSold); agg.paidOut = usdOf("AI", split.paidOut);
+    agg.movedOther = agg.sentOn - agg.handoffSold - agg.paidOut;   // non-AI sends plus unresolved AI
+    return { a: w.address, L, agg, via, aiU, split, ai: L.AI || {}, nv: L.NVDA || {}, ug: L.USDG || {} };
   });
   const sum = (k) => W.reduce((s, w) => s + w.agg[k], 0);
   const held = sum("held"), sold = sum("sold"), lp = sum("lpAdded"), bought = sum("bought"), sentOn = sum("sentOn"), bridged = sum("bridged");
+  const handoffSold = sum("handoffSold"), paidOut = sum("paidOut"), movedOther = sum("movedOther");
+  const soldAll = sold + handoffSold;
   const recycled = lp + bought, out = sold + sentOn + bridged;
   const recycleShare = recycled + out > 0 ? recycled / (recycled + out) : null;
   const viaAll = {};
@@ -2985,10 +3016,15 @@ function renderTreasury() {
   const rSold = sumOf(wk, (r) => r.sold), rBought = sumOf(wk, (r) => r.bought), rLp = sumOf(wk, (r) => r.lpAdded), rMoved = sumOf(wk, (r) => r.sentOn), rBridged = sumOf(wk, (r) => r.bridged || 0);
   const rOut = rSold + rMoved + rBridged, rIn = rBought + rLp;
   const recentTone = rOut > rIn * 2 ? "warn" : rIn > rOut ? "pos" : "neu";
+  /* The paragraph reads from the same end-state view as the table below it: where
+     the AI sat when each transaction ENDED, not which address it was first handed
+     to. By counterparty, a hand-off to a router that sold into a pool in the same
+     transaction read as "moved to an address this page cannot name"; it is a sale. */
+  const paidOutN = new Set(W.flatMap((w) => Object.keys(w.aiU.sentOnTo || {}).filter((l) => l.startsWith("0x")))).size;
   $("#readTreasury").innerHTML = takeEl(recentTone,
-    `Over the treasury's life, <b>$${compact(sold)}</b> was sold${viaRows.length ? ` (${viaRows.map(([n, v]) => `$${compact(v)} via ${n}`).join(", ")})` : ""},
-     <b>$${compact(bridged)}</b> was bridged off the chain and <b>$${compact(sentOn)}</b> moved to addresses this page cannot name,
-     against <b>$${compact(lp)}</b> seeded as liquidity and <b>$${compact(bought)}</b> spent buying; <b>$${compact(held)}</b> is still held, at today's prices.
+    `Over the treasury's life, about <b>$${compact(soldAll)}</b> was sold${viaRows.length ? ` ($${compact(sold)} in swaps the wallets signed themselves: ${viaRows.map(([n, v]) => `$${compact(v)} via ${n}`).join(", ")}; $${compact(handoffSold)} more handed to a router or pool that sold it in the same transaction)` : ""},
+     <b>$${compact(paidOut)}</b> was paid to <b>${paidOutN}</b> wallets outside the operator's set, <b>$${compact(bridged)}</b> was bridged off the chain${movedOther > 0 ? `, <b>$${compact(movedOther)}</b> moved to unresolved addresses` : ""},
+     <b>$${compact(lp)}</b> was seeded as liquidity and <b>$${compact(bought)}</b> spent buying; <b>$${compact(held)}</b> is still held in the operator's accounts, at today's prices.
      Over the last four weeks in AI: sold <b>${compact(rSold)}</b>, bought <b>${compact(rBought)}</b>, seeded <b>${compact(rLp)}</b>, bridged <b>${compact(rBridged)}</b>, moved <b>${compact(rMoved)}</b>.
      ${recentTone === "pos" ? "Recently the treasury has put more back into AI and its pools than it has taken out: a flywheel, while it lasts."
        : recentTone === "warn" ? "Recently the treasury has been a net source of supply: selling, bridging or moving fee income out faster than it recycles it. That is the overhang to price in."
@@ -3057,9 +3093,10 @@ function renderTreasury() {
     { id: "held", label: "Still held", v: held, color: "var(--buy)" },
     { id: "lp", label: "Seeded as liquidity", v: lp, color: "var(--series-2)" },
     { id: "bought", label: "Bought", v: bought, color: "var(--buy)" },
-    { id: "sold", label: "Sold", v: sold, color: "var(--sell)" },
+    { id: "sold", label: "Sold", v: soldAll, color: "var(--sell)" },
+    { id: "paid", label: "Paid to outside wallets", v: paidOut, color: "var(--warning)" },
     { id: "bridged", label: "Bridged off chain", v: bridged, color: "var(--sell)" },
-    { id: "moved", label: "Moved elsewhere", v: sentOn, color: "var(--text-muted)" },
+    { id: "moved", label: "Moved, unresolved", v: movedOther, color: "var(--text-muted)" },
   ].filter((n) => n.v > 0);
   const feeIn = usdOf("AI", aiFees) + usdOf("NVDA", nvFees), hookIn = usdOf("AI", aiHook) + usdOf("NVDA", nvHook);
   const sources = [
@@ -3073,8 +3110,8 @@ function renderTreasury() {
     ...wallets.map((w) => ({ s: "fw", t: w.id, v: w.v, color: "var(--series-3)", label: w.label })),
   ];
   W.forEach((w, i) => {
-    const a = w.agg;
-    for (const [k, id, color] of [["held", "held", "var(--buy)"], ["lpAdded", "lp", "var(--series-2)"], ["bought", "bought", "var(--buy)"], ["sold", "sold", "var(--sell)"], ["bridged", "bridged", "var(--sell)"], ["sentOn", "moved", "var(--text-muted)"]]) {
+    const a = { ...w.agg, soldAll: w.agg.sold + w.agg.handoffSold };
+    for (const [k, id, color] of [["held", "held", "var(--buy)"], ["lpAdded", "lp", "var(--series-2)"], ["bought", "bought", "var(--buy)"], ["soldAll", "sold", "var(--sell)"], ["paidOut", "paid", "var(--warning)"], ["bridged", "bridged", "var(--sell)"], ["movedOther", "moved", "var(--text-muted)"]]) {
       if (a[k] > 0 && usesCol.some((n) => n.id === id)) links.push({ s: `w${i}`, t: id, v: a[k], color, label: `${wallets[i].label} → ${id}` });
     }
   });
@@ -3096,19 +3133,20 @@ function renderTreasury() {
     { h: "Wallet", f: (r) => addrCell(r.a) },
     { h: "AI received", f: (r) => compact(r.ai.in || 0) },
     { h: "Held now", f: (r) => compact(r.ai.balance ?? 0) },
-    { h: "Sold", f: (r) => `<span class="down">${compact(r.aiU.sold || 0)}</span>` },
+    { h: "Sold", f: (r) => `<span class="down">${compact((r.aiU.sold || 0) + r.split.handoffSold)}</span>` },
     { h: "Bought", f: (r) => `<span class="up">${compact(r.aiU.bought || 0)}</span>` },
     { h: "Seeded as LP", f: (r) => compact(r.aiU.lpAdded || 0) },
     { h: "Bridged out", f: (r) => compact(r.aiU.bridged || 0) },
     { h: "To another treasury wallet", f: (r) => compact(r.aiU.internal || 0) },
-    { h: "Moved elsewhere", f: (r) => compact(r.aiU.sentOn || 0) },
+    { h: "Paid to outside wallets", f: (r) => compact(r.split.paidOut) },
+    { h: "Moved, unresolved", f: (r) => compact(r.split.other) },
     { h: "NVDA held", f: (r) => nf(r.nv.balance ?? 0, 0) },
     { h: "USDG held", f: (r) => `$${compact(r.ug.balance ?? 0)}` },
   ], W);
   const pools = {};
   for (const w of W) for (const [k, v] of Object.entries(w.aiU.pools || {})) pools[k] = (pools[k] || 0) + v;
   const poolRows = Object.entries(pools).sort((a, b) => b[1] - a[1]);
-  /* Where "moved elsewhere" went: the treasury wallets' largest AI destinations
+  /* Where the paid-out AI went: the treasury wallets' largest AI destinations
      that are neither pools nor other treasury wallets. The next hop, named so a
      reader can look them up; this page stops following there. */
   const onward = {};
@@ -3123,7 +3161,7 @@ function renderTreasury() {
       ? `<div class="livenote">Liquidity seeded, by pool: ${poolRows.map(([k, v]) => `<b>${k}</b> ${compact(v)} AI`).join(" · ")}.</div>`
       : `<div class="livenote">No liquidity seeded by the treasury wallets has been observed.</div>`)
     + (onwardRows.length
-      ? `<div class="livenote">Largest onward destinations of AI moved elsewhere: ${onwardRows.map(([a, v]) => `${addrCell(a)} <b>${compact(v)}</b>`).join(" · ")}. This page does not follow further; a wallet that then sells would show in the tape as a whale sale by that address.</div>`
+      ? `<div class="livenote">Largest outside wallets paid in AI: ${onwardRows.map(([a, v]) => `${addrCell(a)} <b>${compact(v)}</b>`).join(" · ")}. This page does not follow further; a wallet that then sells would show in the tape as a whale sale by that address.</div>`
       : "");
 
   /* Symbols are attacker-controlled: two tokens calling themselves USDG have paid
