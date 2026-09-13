@@ -2293,6 +2293,14 @@ function renderSinceLast(now) {
  * per-day cap can only be built from the 300 priced tokens and most days hold one
  * or two of those.
  */
+/**
+ * 1. Tokens launched per day.
+ *
+ * A census, not a sample: every pool carrying the LONG hook is a launchpad token and
+ * the hook address is in the pool’s own Initialize log, so the cadence covers the
+ * whole population. The cap figures beside it do not -- they come from the ~300
+ * priced tokens -- and are labelled as the ceiling they are.
+ */
 function renderLaunchRate() {
   const r = S.launchpad;
   const rows = completeDays(r?.launchesByDay || []);
@@ -2305,9 +2313,6 @@ function renderLaunchRate() {
   const prior7 = trailing(rows, 7, (d) => d.launched, 7);
   const trend = prior7 > 0 ? last7 / prior7 - 1 : null;
   const total = rows.at(-1).cumulative;
-  const live = !!r.activeMeasured;
-  const act7 = live ? trailing(rows, 7, (d) => d.active) : null;
-  const actShare = live && last7 ? act7 / last7 : null;
   const capNow = r.history?.at(-1)?.totalMcapUsd ?? null;
 
   $("#kpiLaunchRate").innerHTML = kpiEl(last7.toLocaleString(),
@@ -2317,40 +2322,28 @@ function renderLaunchRate() {
       ? `<div class="warnline">The census has not finished walking back to genesis, so every count here is a <b>floor</b>.</div>`
       : "")
     + `<div class="livenote"><b>${total.toLocaleString()}</b> launched across <b>${rows.length}</b> days
-       ${actShare == null ? "" : `\u00b7 <b>${pctLevel(actShare, 1)}</b> of the last 7 days\u2019 launches traded in the last 2 hours`}
-       \u00b7 combined nominal cap of the <b>${r.priced ?? 0}</b> priced <b>$${compact(capNow ?? 0)}</b>,
+       · busiest day <b>${maxOf(rows.map((d) => d.launched)).toLocaleString()}</b>
+       · combined nominal cap of the <b>${r.priced ?? 0}</b> priced <b>$${compact(capNow ?? 0)}</b>,
        <b>${r.runners ?? 0}</b> of them above $${compact(r.runnerFloor || 1e6, 0)}</div>`;
 
-  const win = rows.slice(-45);
-  barChart($("#cLaunchRate"), win, {
+  barChart($("#cLaunchRate"), rows.slice(-45), {
     xKey: "t", yKey: "launched", color: "var(--series-3)", xFmt: dayFmt, fmt: (v) => v.toFixed(0),
     tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.launched.toLocaleString()} launched</div>
-      ${d.active == null ? "" : `<div class="k">${d.active.toLocaleString()} still trading
-        (${pctLevel(d.launched ? d.active / d.launched : 0, 1)})</div>`}
       <div class="k">${d.cumulative.toLocaleString()} cumulative</div>`,
   });
 
-  const newest = rows.at(-1);
-  const older = rows.slice(-30, -7);
-  const oldAct = older.reduce((n, d) => n + (d.active || 0), 0);
-  const oldAll = older.reduce((n, d) => n + d.launched, 0);
-
-  $("#takeLaunchRate").innerHTML = takeEl(
-    (trend ?? 0) >= 0 ? "pos" : "warn",
+  $("#takeLaunchRate").innerHTML = takeEl((trend ?? 0) >= 0 ? "pos" : "warn",
     `<b>${last7.toLocaleString()}</b> tokens launched in the last 7 complete days${trend == null ? "" :
       `, ${trend >= 0 ? "up" : "down"} <b>${pctLevel(Math.abs(trend), 0)}</b> on the week before`},
-     bringing the total to <b>${total.toLocaleString()}</b>.
-     ${!live ? "" : `Of those, <b>${(act7 ?? 0).toLocaleString()}</b> traded in the last two hours
-       (<b>${pctLevel(actShare, 1)}</b>)${oldAll ? `, against <b>${pctLevel(oldAct / oldAll, 1)}</b> of the
-       cohorts launched one to four weeks ago` : ""}. On ${dayFmt(newest.t)} alone,
-       <b>${newest.launched.toLocaleString()}</b> were created and
-       <b>${(newest.active ?? 0).toLocaleString()}</b> are trading.`}
-     <span class="muted">Cadence is a statement about the mint; the survival figure is the one about the
-     ecosystem, and the distance between them is what separates a launchpad from a treadmill. Two hours is a
-     strict test, so read older cohorts as survival and the newest day as launch-day interest. The cap
-     figures beside the count cover only the ${r.priced ?? 0} priced tokens, which are the most actively traded, so they
-     are a ceiling on value and a floor on how many launches exist.</span>`);
+     bringing the total to <b>${total.toLocaleString()}</b> across ${rows.length} days.
+     ${capNow == null ? "" : `The <b>${r.priced ?? 0}</b> priced tokens carry <b>$${compact(capNow)}</b> of
+       nominal cap between them, <b>${r.runners ?? 0}</b> of it above $${compact(r.runnerFloor || 1e6, 0)}.`}
+     <span class="muted">Counted from every pool carrying the LONG hook, so the cadence is the whole
+     population and cannot be cherry-picked. The cap figures are not: they cover only the ${r.priced ?? 0}
+     priced tokens, which are the most actively traded, so read them as a ceiling on value and the launch
+     count as the floor on how many exist. Cadence is a statement about the mint.</span>`);
 }
+
 function renderAdoption() {
   const rows = completeDays(S.launchpad?.anchorFlow || []);
   if (rows.length < 3) {
