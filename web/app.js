@@ -2968,7 +2968,7 @@ function renderTreasury() {
   host.innerHTML = `<div class="kpis">
     <div>${kpiEl(`$${compact(usdOf("AI", aiFees) + usdOf("NVDA", nvFees))}`, `${compact(aiFees)} AI + ${nf(nvFees, 0)} NVDA`, "", "fees from AI trading, today's prices")}</div>
     <div>${kpiEl(`$${compact(usdOf("AI", aiHook) + usdOf("NVDA", nvHook))}`, `${compact(aiHook)} AI + ${nf(nvHook, 0)} NVDA`, "", "launch allocation from the hook, not fees")}</div>
-    <div>${kpiEl(recycleShare == null ? "—" : pctLevel(recycleShare, 0), recycleShare == null ? "" : recycleShare >= 0.5 ? "recycled" : "sold or moved", recycleShare == null ? "" : recycleShare >= 0.5 ? "up" : "down", "of what left the treasury went back into AI or liquidity")}</div>
+    <div>${kpiEl(recycleShare == null ? "—" : pctLevel(recycleShare, 1), recycleShare == null ? "" : "recycled", recycleShare == null ? "" : recycleShare >= 0.5 ? "up" : "down", "of what left the treasury went back into AI or its liquidity; the rest was sold or moved out")}</div>
   </div>
   <div class="livenote">The fee wallet forwards everything: ${(fw.AI?.transfersIn || 0).toLocaleString()} transfers in, ${(fw.AI?.transfersOut || 0).toLocaleString()} out, balance <b>${compact(fw.AI?.balance ?? 0)} AI</b>.
     Across the whole launchpad <b>${(pf.tokenCount || 0).toLocaleString()}</b> tokens have paid it; the ${(pf.tokens || []).length} most active are worth <b>$${compact(pf.pricedUsd || 0)}</b> today${pf.unpriced ? ` (${pf.unpriced} unpriced)` : ""}.</div>`;
@@ -3033,6 +3033,7 @@ function renderTreasury() {
     { h: "Sold", f: (r) => `<span class="down">${compact(r.aiU.sold || 0)}</span>` },
     { h: "Bought", f: (r) => `<span class="up">${compact(r.aiU.bought || 0)}</span>` },
     { h: "Seeded as LP", f: (r) => compact(r.aiU.lpAdded || 0) },
+    { h: "To another treasury wallet", f: (r) => compact(r.aiU.internal || 0) },
     { h: "Moved elsewhere", f: (r) => compact(r.aiU.sentOn || 0) },
     { h: "NVDA held", f: (r) => nf(r.nv.balance ?? 0, 0) },
     { h: "USDG held", f: (r) => `$${compact(r.ug.balance ?? 0)}` },
@@ -3040,12 +3041,33 @@ function renderTreasury() {
   const pools = {};
   for (const w of W) for (const [k, v] of Object.entries(w.aiU.pools || {})) pools[k] = (pools[k] || 0) + v;
   const poolRows = Object.entries(pools).sort((a, b) => b[1] - a[1]);
-  $("#tTreasuryPools").innerHTML = poolRows.length
-    ? `<div class="livenote">Liquidity seeded, by pool: ${poolRows.map(([k, v]) => `<b>${k}</b> ${compact(v)} AI`).join(" · ")}</div>`
-    : `<div class="livenote">No liquidity seeded by the treasury wallets has been observed.</div>`;
+  /* Where "moved elsewhere" went: the treasury wallets' largest AI destinations
+     that are neither pools nor other treasury wallets. The next hop, named so a
+     reader can look them up; this page stops following there. */
+  const onward = {};
+  const treasurySet = new Set(W.map((w) => w.a));
+  for (const w of W) for (const d of w.ai.topDests || []) {
+    if (d.name || treasurySet.has(d.address) || d.address === POOL_MANAGER.toLowerCase()) continue;
+    onward[d.address] = (onward[d.address] || 0) + d.v;
+  }
+  const onwardRows = Object.entries(onward).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  $("#tTreasuryPools").innerHTML =
+    (poolRows.length
+      ? `<div class="livenote">Liquidity seeded, by pool: ${poolRows.map(([k, v]) => `<b>${k}</b> ${compact(v)} AI`).join(" · ")}.</div>`
+      : `<div class="livenote">No liquidity seeded by the treasury wallets has been observed.</div>`)
+    + (onwardRows.length
+      ? `<div class="livenote">Largest onward destinations of AI moved elsewhere: ${onwardRows.map(([a, v]) => `${addrCell(a)} <b>${compact(v)}</b>`).join(" · ")}. This page does not follow further; a wallet that then sells would show in the tape as a whale sale by that address.</div>`
+      : "");
 
+  /* Symbols are attacker-controlled: two tokens calling themselves USDG have paid
+     the fee wallet. Anything sharing a name with a known token but not its
+     address is shown with its address. */
+  const canon = new Map(Object.entries(S.meta.contracts).map(([k, v]) => [v.toLowerCase(), k]));
+  const symCount = {};
+  for (const t of pf.tokens || []) symCount[t.symbol] = (symCount[t.symbol] || 0) + 1;
+  const tokenLabel = (t) => (symCount[t.symbol] > 1 && !canon.has(t.token)) ? `${t.symbol} <span class="muted" title="${t.token}">${t.token.slice(0, 8)}… (not the real one)</span>` : t.symbol;
   table($("#tPlatformFees"), [
-    { h: "Token", f: (t) => t.symbol },
+    { h: "Token", f: (t) => tokenLabel(t) },
     { h: "Transfers", f: (t) => t.transfers.toLocaleString() },
     { h: "Amount", f: (t) => compact(t.amount) },
     { h: "USD today", f: (t) => (t.usd == null ? `<span class="muted">unpriced</span>` : `$${compact(t.usd)}`) },
