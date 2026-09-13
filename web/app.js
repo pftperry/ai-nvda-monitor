@@ -2503,12 +2503,20 @@ function dollarState() {
   const lastDay = completeDays(b?.daily || []).at(-1);
   const fee = (d) => (d.burnAI || 0) + (d.lockAI || 0) + (d.platformAI || 0);
   const feesAiDay = lastDay ? fee(lastDay) : null;
+  /* Priced at that day's own average close, the same way the dollars chart prices
+     it, so the tile and the bar for the same day cannot disagree. */
+  let dayPx = null;
+  if (lastDay) {
+    const cl = usdSeries().hrs.filter((h) => h.t >= lastDay.t && h.t < lastDay.t + DAY).map((h) => h.close);
+    dayPx = cl.length ? cl.reduce((s, v) => s + v, 0) / cl.length : px;
+  }
   return {
     px, mcap: M.mcap, nvdaUsd, nvdaSource, impliedNvda,
     vaultUsd: nvdaUsd && b ? b.vault.nvdaBalance * nvdaUsd : null,
     vol24: vol24 || null, volAi24,
-    feesUsdDay: feesAiDay != null && px ? feesAiDay * px : null,
-    feeYield: feesAiDay != null && px && M.mcap ? (feesAiDay * px * 365) / M.mcap : null,
+    feesUsdDay: feesAiDay != null && dayPx ? feesAiDay * dayPx : null,
+    // Fees are earned in AI, so the yield on the cap is price-invariant: AI fees × 365 ÷ supply.
+    feeYield: feesAiDay != null && M.supply ? (feesAiDay * 365) / M.supply : null,
   };
 }
 
