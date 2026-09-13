@@ -283,6 +283,15 @@ jobs:
           # Only a total absence of data is fatal -- there would be nothing to serve.
           test -f web/data/meta.json || { echo "::error::No indexed data exists yet."; exit 1; }
 
+      - name: Stamp the page's assets
+        # Pages caches app.js and style.css for ten minutes. A phone that reloads
+        # after a deploy would otherwise run last deploy's script against this
+        # deploy's HTML; a commit-keyed query string makes the pair change together.
+        run: |
+          v="${GITHUB_SHA::8}"
+          sed -i "s#href=\"style.css\"#href=\"style.css?v=$v\"#; s#src=\"app.js\"#src=\"app.js?v=$v\"#" web/index.html
+          test "$(grep -c "?v=$v" web/index.html)" = "2"
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
