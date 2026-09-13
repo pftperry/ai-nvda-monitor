@@ -117,6 +117,12 @@ export async function indexHolders(latest, tm, opts = {}) {
      The previous boundary's holder set rides in the state so the definition
      survives a resume. */
   let prevHolders = new Set(prev.prevHolders || []);
+  /* A state written before the set was kept resumes with the wallets funded at the
+     cursor standing in for the last boundary's set. One row of churn is then
+     approximate rather than every current holder reading as new. */
+  if (!prev.prevHolders && prev.snaps?.length) {
+    for (const [a, b] of balances) if (b > 0n && !MACHINERY.has(a)) prevHolders.add(a);
+  }
 
   const snapshot = (t) => {
     // The hour that ENDED at t, not the one starting there, so a row never reads a later price.

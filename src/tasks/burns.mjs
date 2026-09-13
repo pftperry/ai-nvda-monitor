@@ -285,10 +285,14 @@ export async function indexBurns(latest, tm, opts = {}) {
       : "nominal 0.70% (no flow to divide by)",
     // Sell-side notional through tolled pools: fees divided by the MEASURED rate.
     impliedAILegVolume,
-    // Effective float: what is actually available to trade.
+    /* Effective float: what is actually available to trade. The hook's balance is
+       launch reserves the protocol holds to seed new pools, not tokens anyone can
+       sell; counting them as float overstated it by 3.8M AI. Burned AI is outside
+       totalSupply already, so it does not appear in this partition at all. */
     permanentlyRemoved: totalBurn + fmtUnits(vaultAI),
     lockedAsPoolInventory: fmtUnits(pmAI),
-    effectiveFloat: totalSupply - fmtUnits(vaultAI) - fmtUnits(pmAI),
+    heldByHook: fmtUnits(hookAI),
+    effectiveFloat: totalSupply - fmtUnits(vaultAI) - fmtUnits(pmAI) - fmtUnits(hookAI),
     daily: series,
   };
 }

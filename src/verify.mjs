@@ -86,10 +86,18 @@ check("effective float is positive and below total supply",
    size only because the fee splits them 1:1, which makes the pair look like one
    quantity counted twice. This partition proves they are not: the live supply
    divides exactly into vault + pool inventory + float, with burned outside it. */
-const partition = burns.vault.aiBalance + burns.poolManagerAI + burns.effectiveFloat;
-check("live supply partitions exactly into vault + pool inventory + float",
+// heldByHook exists only on artifacts whose float already excludes it; older ones partition without it.
+const partition = burns.vault.aiBalance + burns.poolManagerAI + (burns.heldByHook ?? 0) + burns.effectiveFloat;
+check("live supply partitions exactly into vault + pool inventory + hook reserves + float",
   Math.abs(partition - burns.totalSupply) < 1,
   `${partition.toFixed(2)} vs totalSupply ${burns.totalSupply.toFixed(2)}`);
+/* Burned and vault-locked are two different sets of tokens that happen to be the
+   same size: the splitter sends one AI to 0x0 for every AI it sends to the vault.
+   Assert the equality, so the page can state it as a fact of the mechanism rather
+   than leave two identical numbers looking like one counted twice. */
+check("burned equals vault-locked, because the splitter pays them 1:1",
+  Math.abs(burns.feeLegs.burn - burns.feeLegs.lock) <= Math.max(1, burns.feeLegs.burn * 0.001),
+  `${burns.feeLegs.burn.toFixed(0)} burned vs ${burns.feeLegs.lock.toFixed(0)} locked, by the splitter`);
 /* One assertion, one tolerance.
 
    The vault balance and the sum of its inbound transfers were checked twice: once

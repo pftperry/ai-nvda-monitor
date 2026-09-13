@@ -54,7 +54,7 @@ const dayFmt = (t) => (t ? new Date(t * 1000).toLocaleDateString("en-US", { time
 const hourFmt = (t) => (t ? new Date(t * 1000).toLocaleString("en-US", { timeZone: TZ, hour: "numeric", hour12: true }) : "—");
 const clockFmt = (t) => (t ? new Date(t * 1000).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }) + " CT" : "—");
 const ago = (t) => {
-  const s = Math.floor(Date.now() / 1000) - t;
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - t);
   if (s < 90) return `${s}s ago`;
   if (s < 5400) return `${Math.round(s / 60)}m ago`;
   return `${Math.round(s / 3600)}h ago`;
@@ -590,6 +590,8 @@ function paintHeaderMarket() {
   const chHtml = ch == null ? "" : `<span class="${ch >= 0 ? "up" : "down"}">${pct(ch, 1)}</span>`;
   $("#hUsd").innerHTML = `${moneyPx(M.price)} <span style="font-size:12px">${chHtml}</span>`;
   $("#hUsd").title = `price source: ${M.source}`;
+  // When the print was read, so a reader can see it is moving.
+  $("#hUsdLbl").textContent = S.livePriceAt ? `AI · USD · ${ago(S.livePriceAt)}` : "AI · USD";
   if (M.mcap) {
     $("#hMcap").textContent = "$" + compact(M.mcap);
     $("#hMcapLbl").textContent = `Cap · ${compact(M.supply, 1)} supply`;
@@ -629,20 +631,36 @@ async function refreshLive() {
     $("#hBlock").textContent = bn.toLocaleString();
     const supply = Number(BigInt(supplyHex)) / 1e18;
     S.liveSupply = supply;
-    paintHeaderMarket();
 
-    // latest pool price straight from the most recent Swap log
+    /* The latest print on the flagship AND on the dollar venue, in one request:
+       pool id is topic1 and topics accept an OR-list. The dollar print is what the
+       header price and market cap are painted from, so it is read here on the fast
+       timer rather than waiting for the live tail's slower sweep. */
+    const usd = S.flow ? usdPool() : null;
+    const ids = usd ? [AI_NVDA_POOL, usd.poolId] : [AI_NVDA_POOL];
     const logs = await rpcCall("eth_getLogs", [{
-      address: POOL_MANAGER, topics: [SWAP_TOPIC, AI_NVDA_POOL],
+      address: POOL_MANAGER, topics: [SWAP_TOPIC, ids],
       fromBlock: "0x" + (bn - 40000).toString(16), toBlock: "latest",
     }]);
-    if (logs.length) {
-      const d = logs[logs.length - 1].data;
-      const sq = BigInt("0x" + d.slice(2 + 128, 2 + 192));
+    const lastFor = (id) => { let l = null; for (const x of logs) if ((x.topics[1] || "").toLowerCase() === id.toLowerCase()) l = x; return l; };
+    const nv = lastFor(AI_NVDA_POOL);
+    if (nv) {
+      const sq = BigInt("0x" + nv.data.slice(2 + 128, 2 + 192));
       const x = Number(sq) / 2 ** 96;
-      const price = x * x;
-      $("#hPrice").textContent = sig(price, 5);
+      $("#hPrice").textContent = sig(x * x, 5);
     }
+    if (usd) {
+      const l = lastFor(usd.poolId);
+      if (l) {
+        const s = decodeLiveSwap(l, usd);
+        if (s.price > 0) {
+          S.live = S.live || { priceByPool: {} };
+          S.live.priceByPool = { ...(S.live.priceByPool || {}), [usd.poolId]: s.price };
+          S.livePriceAt = Math.floor(Date.now() / 1000);
+        }
+      }
+    }
+    paintHeaderMarket();
     $("#liveDot").classList.remove("stale");
     $("#liveDot").title = `live · block ${bn.toLocaleString()}`;
     setLiveLabel(null);
@@ -918,7 +936,7 @@ function renderHolders() {
 
   table($("#tTopHolders"), [
     { h: "#", f: (r) => `${r.i + 1}` },
-    { h: "Wallet", f: (r) => `<span class="mono" title="${r.address}">${short(r.address)}</span>` },
+    { h: "Wallet", f: (r) => addrCell(r.address) },
     { h: "AI", f: (r) => compact(r.ai) },
     { h: "Share", f: (r) => pctLevel(r.ai / Math.max(1, last.heldAi || last.supply), 2) },
     { h: "USD", f: (r) => (px ? `$${compact(r.ai * px)}` : "—") },
@@ -942,6 +960,25 @@ function renderHolders() {
   table($("#tWhalesFull"), whaleCols(px), (h.whales || []).slice(0, 60));
 }
 
+/* Addresses the page can name. Anything else is shown short, with the full
+   address in the title. The platform's fee wallet is the one that would otherwise
+   sit unnamed near the top of the holder table. */
+function knownName(a) {
+  const c = S.meta?.contracts || {};
+  const k = {
+    [c.platformFeeRecipient || ""]: "LONG platform fee wallet",
+    [c.communityVault || ""]: "community vault",
+    [c.longHook || ""]: "LONG hook",
+    [c.poolManager || ""]: "v4 pool manager",
+    [c.feeSplitter || ""]: "fee splitter",
+  };
+  return k[(a || "").toLowerCase()] || null;
+}
+const addrCell = (a) => {
+  const name = knownName(a);
+  return `<span class="mono" title="${a}">${name ? `<b>${name}</b> ` : ""}${short(a)}</span>`;
+};
+
 /** Columns for a whale-move table, shared by the Investor View card and the Float tab. */
 function whaleCols(px) {
   const kindBand = (k) => k === "buy" ? "bull" : k === "sell" ? "bear" : k === "hook" ? "na" : "base";
@@ -951,13 +988,14 @@ function whaleCols(px) {
     { h: "Move", f: (w) => `<span class="band ${kindBand(w.kind)}">${kindWord(w.kind)}</span>${w.fresh ? ` <span class="muted" title="the receiving wallet held no AI before this">new wallet</span>` : ""}` },
     { h: "AI", f: (w) => compact(w.ai) },
     { h: "USD now", f: (w) => (px ? `$${compact(w.ai * px)}` : "—") },
-    { h: "Wallet", f: (w) => { const a = w.kind === "buy" ? w.to : w.kind === "sell" ? w.from : w.to; return `<span class="mono" title="${w.from} → ${w.to}">${short(a)}</span>`; } },
+    { h: "Wallet", f: (w) => { const a = w.kind === "buy" ? w.to : w.kind === "sell" ? w.from : w.to; return addrCell(a); } },
   ];
 }
 
 function renderFloat() {
   const b = S.burns;
   const removed = b.burned + b.vault.aiBalance;
+  const hook = b.heldByHook ?? b.hookAI ?? 0;
   $("#floatTiles").innerHTML = [
     /* Two denominators live on this tab and they are not interchangeable.
        Removal is measured against the GENESIS mint, because burned AI has already
@@ -967,34 +1005,40 @@ function renderFloat() {
        float of 96.7% beside a chart segment reading 95.8%. So each note names its
        base. */
     { lbl: "Permanently removed", val: compact(removed),
-      note: `${pctLevel(removed / b.genesisSupply, 2)} of the ${compact(b.genesisSupply)} genesis mint — burned + vault-locked` },
-    { lbl: "Locked as pool inventory", val: compact(b.poolManagerAI),
+      note: `${pctLevel(removed / b.genesisSupply, 2)} of the ${compact(b.genesisSupply)} genesis mint: ${compact(b.burned)} burned + ${compact(b.vault.aiBalance)} vault-locked, equal by construction` },
+    { lbl: "Pool inventory", val: compact(b.poolManagerAI),
       note: `${pctLevel(b.poolManagerAI / b.totalSupply, 2)} of current supply, sitting in v4 pools` },
+    { lbl: "Hook reserves", val: compact(hook),
+      note: `${pctLevel(hook / b.totalSupply, 2)} of current supply, held by the LONG hook to seed launches` },
     { lbl: "Effective float", val: compact(b.effectiveFloat),
-      note: "current supply less vault and pool inventory" },
-    { lbl: "Float / supply", val: pctLevel(b.effectiveFloat / b.totalSupply, 1),
-      note: `of the ${compact(b.totalSupply)} in existence — what can change hands` },
+      note: `${pctLevel(b.effectiveFloat / b.totalSupply, 1)} of the ${compact(b.totalSupply)} in existence — what can change hands` },
   ].map((t) => `<div class="tile"><div class="lbl">${t.lbl}</div><div class="val">${t.val}</div><div class="note">${t.note}</div></div>`).join("");
 
   shareBars($("#cWaterfall"), [
-    { k: "Burned to 0x0 (gone)", v: b.burned },
-    { k: "Locked in community vault", v: b.vault.aiBalance },
+    { k: "Burned to 0x0 — destroyed", v: b.burned },
+    { k: "Locked in the vault — still exists, never moves", v: b.vault.aiBalance },
     { k: "Held as v4 pool inventory", v: b.poolManagerAI },
+    { k: "Held by the LONG hook — launch reserves", v: hook },
     { k: "Free float", v: b.effectiveFloat },
-  ], ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--mid)"]);
+  ], ["var(--sell)", "var(--series-2)", "var(--series-3)", "var(--text-muted)", "var(--mid)"]);
 
+  /* Burned and locked are two different sets of tokens of the same size, and the
+     table says why, because two identical numbers side by side read as one counted
+     twice. Burned AI is outside total supply; vault AI is inside it. */
   table($("#tSupply"), [
     { h: "Component", f: (r) => r.k },
     { h: "AI", f: (r) => nf(r.v, 0) },
     { h: "Share of genesis", f: (r) => pctLevel(r.v / b.genesisSupply, 3) },
+    { h: "In total supply?", f: (r) => r.inSupply },
     { h: "Reversible?", f: (r) => r.rev },
   ], [
-    { k: "Genesis supply (single mint)", v: b.genesisSupply, rev: "—" },
-    { k: "Burned to 0x0", v: b.burned, rev: "No" },
-    { k: "Locked in community vault", v: b.vault.aiBalance, rev: "No (no observed outflow)" },
-    { k: "Held as v4 pool inventory", v: b.poolManagerAI, rev: "Yes, if LPs withdraw" },
-    { k: "Current total supply", v: b.totalSupply, rev: "—" },
-    { k: "Effective float", v: b.effectiveFloat, rev: "—" },
+    { k: "Genesis supply (single mint)", v: b.genesisSupply, inSupply: "—", rev: "—" },
+    { k: "Burned to 0x0 — destroyed", v: b.burned, inSupply: "No, gone", rev: "No" },
+    { k: "Locked in community vault — the other half of every fee split", v: b.vault.aiBalance, inSupply: "Yes", rev: "No (no observed outflow)" },
+    { k: "Held as v4 pool inventory", v: b.poolManagerAI, inSupply: "Yes", rev: "Yes, if LPs withdraw" },
+    { k: "Held by the LONG hook (launch reserves)", v: hook, inSupply: "Yes", rev: "Yes, as launches are seeded" },
+    { k: "Effective float", v: b.effectiveFloat, inSupply: "Yes", rev: "—" },
+    { k: "Current total supply = vault + pools + hook + float", v: b.totalSupply, inSupply: "—", rev: "—" },
   ]);
 
   multiLine($("#cRemoval"), b.daily, {
@@ -1717,7 +1761,9 @@ function renderInvestor() {
   const rem7 = trailing(bDaily, 7, (d) => (d.burnAI || 0) + (d.lockAI || 0));
   const yrs = rem7 > 0 ? (b.effectiveFloat / (rem7 / 7 * 365)) : Infinity;
   $("#kpiFloat").innerHTML = kpiEl(compact(removed),
-    `${pctLevel(removed / b.genesisSupply, 2)} of genesis`, "up", "AI destroyed or locked");
+    `${pctLevel(removed / b.genesisSupply, 2)} of genesis`, "up", "AI destroyed or locked")
+    + `<div class="livenote">${compact(b.burned)} burned + ${compact(b.vault.aiBalance)} locked. Two different sets of tokens, the same size
+       because every fee is split 1:1; burned AI is gone from supply, vault AI still exists and has never moved.</div>`;
   multiLine($("#cInvFloat"), b.daily.slice(-45), {
     xKey: "t", zeroBase: true, area: true, xFmt: dayFmt,
     series: [{ key: "cumBurnAI", color: "var(--series-1)" }, { key: "cumLockAI", color: "var(--series-2)" }],
@@ -1919,13 +1965,16 @@ function marketState() {
     ? [...pool.hourly].reverse().find((h) => h.close > 0)?.close ?? null : null;
   const agg = S.usdPrice || null;
 
-  let price = livePx || indexedPx || agg || null;
-  let source = livePx ? "live on-chain AI/USDG"
+  /* The chain price is authoritative. This used to hand the display to the
+     aggregator whenever the two disagreed by a quarter, which made the header
+     jump between sources with nothing on screen to say why. The disagreement is
+     still measured and the price card says so; the number shown never switches. */
+  const price = livePx || indexedPx || agg || null;
+  const source = livePx ? "live on-chain AI/USDG"
     : indexedPx ? "indexed on-chain AI/USDG"
-    : agg ? "aggregator" : "none";
+    : agg ? "aggregator (no on-chain print)" : "none";
   const chainPx = livePx || indexedPx;
   const disagrees = !!(chainPx && agg && (chainPx / agg > 1.25 || agg / chainPx > 1.25));
-  if (disagrees && agg) { price = agg; source = "aggregator (on-chain price rejected)"; }
 
   const supply = S.liveSupply || b?.totalSupply || null;
   return {
@@ -1944,11 +1993,13 @@ function renderPrice(feeSeries) {
   const hrs = U.hrs;
   if (!hrs.length) { $("#kpiPrice").innerHTML = `<p class="muted">No priced hours yet.</p>`; return null; }
   const last = hrs[hrs.length - 1];
+  /* Anchored to the clock: the price compared against is the live one, so "24h
+     ago" has to mean 24 hours before now, not before the last indexed hour. */
   const at = (hoursAgo) => {
-    const t = last.t - hoursAgo * 3600;
+    const t = Math.floor(Date.now() / 1000) - hoursAgo * 3600;
     let best = null;
     for (const h of hrs) if (h.t <= t) best = h;
-    return best ? best.close : null;
+    return best && t - best.t <= 6 * 3600 ? best.close : null;
   };
   const M = marketState();
   const px = M.price || last.close;
@@ -3654,7 +3705,7 @@ async function boot() {
   renderAll();
   paintHeaderMarket();
   refreshLive();
-  setInterval(refreshLive, 20000);
+  setInterval(refreshLive, 15000);
   // The live tail is the real-time layer: it makes the top line independent of
   // how often the indexer runs.
   refreshLiveTail();
