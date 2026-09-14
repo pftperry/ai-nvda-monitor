@@ -37,7 +37,7 @@ function amountsFor(L, sqrtA, sqrtB, sqrtP) {
  * Resumes from a cursor: positions are append-only deltas, so a later scan only
  * has to add to the ladder rather than rebuild it.
  */
-export const LADDER_VERSION = 2;   // v2 keeps the hook's own positions apart; older ladders are rebuilt once
+export const LADDER_VERSION = 3;   // v2 kept the hook's positions apart; v3 also keeps each LP's net liquidity
 export async function poolTickLadder(poolId, latest, prior = null, opts = {}) {
   const usable = prior && prior.v === LADDER_VERSION ? prior : null;
   const from = usable?.cursor ? Math.max(GENESIS_BLOCK, usable.cursor + 1) : GENESIS_BLOCK;
@@ -48,6 +48,11 @@ export async function poolTickLadder(poolId, latest, prior = null, opts = {}) {
   const net = new Map(), hookNet = new Map();
   for (const [t, v] of Object.entries(usable?.net || {})) net.set(Number(t), BigInt(v));
   for (const [t, v] of Object.entries(usable?.hook?.net || {})) hookNet.set(Number(t), BigInt(v));
+  /* Net liquidity per provider, in liquidity units. Who else is in the pool
+     besides the protocol, and how concentrated they are, is a question about the
+     durability of the book that the tick ladder alone cannot answer. */
+  const lps = new Map();
+  for (const [a, v] of Object.entries(usable?.lps || {})) lps.set(a, BigInt(v));
   /* The hook's own liquidity changes, by day and by tick range. The protocol seeds
      a launch's liquidity and, since its second week, folds the pool's fees back into
      it on every swap; this is the tape of that compounding. Ranges are kept so the
@@ -58,6 +63,7 @@ export async function poolTickLadder(poolId, latest, prior = null, opts = {}) {
     const m = decodeModifyLiquidity(l);
     net.set(m.tickLower, (net.get(m.tickLower) ?? 0n) + m.liquidityDelta);
     net.set(m.tickUpper, (net.get(m.tickUpper) ?? 0n) - m.liquidityDelta);
+    lps.set(m.sender, (lps.get(m.sender) ?? 0n) + m.liquidityDelta);
     if (m.sender === LONG_HOOK) {
       hookNet.set(m.tickLower, (hookNet.get(m.tickLower) ?? 0n) + m.liquidityDelta);
       hookNet.set(m.tickUpper, (hookNet.get(m.tickUpper) ?? 0n) - m.liquidityDelta);
@@ -77,6 +83,21 @@ export async function poolTickLadder(poolId, latest, prior = null, opts = {}) {
     events: (usable?.events || 0) + logs.length,
     net: asObj(net),
     hook: { net: asObj(hookNet), days: hookDays },
+    lps: Object.fromEntries([...lps].filter(([, v]) => v > 0n).map(([a, v]) => [a, v.toString()])),
+  };
+}
+
+/** The provider base of one pool: how many, and how much of the liquidity units the biggest outsiders hold. */
+export function lpBase(ladder) {
+  const rows = Object.entries(ladder.lps || {}).map(([a, v]) => ({ a, L: Number(BigInt(v)) })).filter((r) => r.L > 0);
+  const total = rows.reduce((s, r) => s + r.L, 0);
+  const external = rows.filter((r) => r.a !== LONG_HOOK).sort((x, y) => y.L - x.L);
+  const ext = external.reduce((s, r) => s + r.L, 0);
+  return {
+    providers: rows.length, external: external.length,
+    hookShare: total > 0 ? +(1 - ext / total).toFixed(4) : null,
+    topExternalShare: total > 0 && external.length ? +(external[0].L / total).toFixed(4) : null,
+    top5ExternalShare: total > 0 ? +(external.slice(0, 5).reduce((s, r) => s + r.L, 0) / total).toFixed(4) : null,
   };
 }
 
@@ -383,6 +404,7 @@ export async function indexDepth(pools, latest, aiUsd, opts = {}) {
     d.hookShare = all.usd > 0 ? +(own.usd / all.usd).toFixed(4) : null;
     d.hookActiveShare = all.active > 0 ? +(own.active / all.active).toFixed(4) : null;
     d.hookDays = hookByDay(ladder, p, aiUsd);
+    d.lps = lpBase(ladder);
     out.push(d);
     complete.push({ pool: p, ladder });
   }
@@ -397,6 +419,9 @@ export async function indexDepth(pools, latest, aiUsd, opts = {}) {
     compounding.set(r.t, row);
   }
   const hookTvlUsd = out.reduce((s, d) => s + (d.hookTvlUsd || 0), 0);
+  /* Distinct outside providers across every venue: one address in three pools is one provider. */
+  const externalLps = new Set();
+  for (const { ladder } of complete) for (const [a, v] of Object.entries(ladder.lps || {})) if (a !== LONG_HOOK && BigInt(v) > 0n) externalLps.add(a);
   if (opts.io?.write) opts.io.write("ladders.json", { updatedAt: Math.floor(Date.now() / 1000), ladders });
 
   out.sort((a, b) => b.tvlUsd - a.tvlUsd);
@@ -467,6 +492,7 @@ export async function indexDepth(pools, latest, aiUsd, opts = {}) {
     imbalanceUsd: Math.round(bidUsd - askUsd),
     tvlUsd: out.reduce((s, d) => s + d.tvlUsd, 0),
     hookTvlUsd: Math.round(hookTvlUsd),
+    externalLps: externalLps.size,
     impactSizes: IMPACT_SIZES,
     impact,
     compounding: [...compounding.values()].sort((a, b) => a.t - b.t)

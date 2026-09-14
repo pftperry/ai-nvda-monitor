@@ -271,11 +271,14 @@ ok("aggregate3 calldata has the ABI shape and its result decodes back to per-cal
 });
 
 console.log("\nStock-token classifier");
-ok("Robinhood's proxy bytecode is recognised by length and prefix, nothing else", () => {
-  const good = "0x6080604052600a600c565b" + "00".repeat(283 - 11);
+ok("Robinhood's proxy bytecode is recognised by length, prefix and beacon, nothing else", () => {
+  const beacon = "e10b6f6b275de231345c20d14ab812db62151b00";
+  const body = ("7f000000000000000000000000" + beacon).padEnd((283 - 11) * 2, "0");
+  const good = "0x6080604052600a600c565b" + body;
   assert(isStockCode(good), "the template matches");
   assert(!isStockCode(good + "00"), "one byte longer is a different contract");
-  assert(!isStockCode("0x6080604052366100135761" + "00".repeat(283 - 11)), "same length, different prefix");
+  assert(!isStockCode("0x6080604052366100135761" + body), "same length, different prefix");
+  assert(!isStockCode("0x6080604052600a600c565b" + body.replace(beacon, "0".repeat(40))), "same template pointed at a different beacon is not one of Robinhood's");
   assert(!isStockCode(null) && !isStockCode("0x"), "no code is not a stock");
 });
 

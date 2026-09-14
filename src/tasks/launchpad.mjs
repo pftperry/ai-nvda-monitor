@@ -92,16 +92,24 @@ export async function censusLongPools(latest, prior, opts = {}) {
 export async function rankByActivity(latest, windowBlocks, opts = {}) {
   const counts = new Map();
   const last = new Map();
+  const volume = new Map();              // poolId → [|amount0| sum, |amount1| sum] as bigint, raw units
   const logs = await getLogsRange(
     { address: POOL_MANAGER, topics: [TOPICS.SWAP] },
     Math.max(GENESIS_BLOCK, latest - windowBlocks), latest,
     { chunk: opts.chunk ?? 20_000, deadline: opts.deadline });
+  const abs = (v) => (v < 0n ? -v : v);
   for (const l of logs) {
     const id = l.topics[1];
     counts.set(id, (counts.get(id) || 0) + 1);
     last.set(id, l);                       // most recent wins: the tape is in order
+    /* Gross notional per side, so a caller who knows which side is the stock can
+       value the window's stock trading without a second scan. */
+    const s = decodeSwap(l);
+    const v = volume.get(id) || [0n, 0n];
+    v[0] += abs(s.amount0); v[1] += abs(s.amount1);
+    volume.set(id, v);
   }
-  return { counts, last, swaps: logs.length, truncated: !!logs.truncated };
+  return { counts, last, volume, swaps: logs.length, truncated: !!logs.truncated };
 }
 
 /**

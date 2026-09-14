@@ -431,6 +431,16 @@ if (rwa && rwa.tokens?.length) {
       (rwa.swapShare.chainSwaps == null || rwa.swapShare.stockSwaps <= rwa.swapShare.chainSwaps),
       `${rwa.swapShare.longSwaps} LONG of ${rwa.swapShare.stockSwaps} stock swaps of ${rwa.swapShare.chainSwaps} on chain`);
     warn("the swap window was scanned to completion", !rwa.swapShare.truncated, "budget cut the day short; the share is of what was read");
+    check("LONG's stock dollar volume is a subset of all stock dollar volume",
+      rwa.swapShare.usdLong == null || (rwa.swapShare.usdLong >= 0 && rwa.swapShare.usdLong <= rwa.swapShare.usdAll * 1.000001),
+      `$${rwa.swapShare.usdLong} of $${rwa.swapShare.usdAll}`);
+  }
+  if (rwa.universe) {
+    check("every listed active stock is an active stock",
+      rwa.totals.activeListed <= rwa.totals.activeStocks && rwa.totals.activeStocks <= rwa.totals.stocks,
+      `${rwa.totals.activeListed} listed of ${rwa.totals.activeStocks} active of ${rwa.totals.stocks} stock tokens`);
+    warn("the stock-event sample covers at least an hour of the trailing day", rwa.universe.blocksSampled >= 30_000,
+      `${rwa.universe.blocksSampled.toLocaleString()} blocks over ${rwa.universe.samples} sample(s)`);
   }
   check("capture history is ordered", rwa.history.every((h, i, a) => i === 0 || h.t > a[i - 1].t));
   for (const [tok, rows] of Object.entries(rwa.daily || {})) {

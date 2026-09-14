@@ -207,11 +207,16 @@ export async function getLogsRange(filter, from, to, opts = {}) {
      discarding the work. Partial and honest about it beats complete and never
      finishing. */
   const deadline = opts.deadline || Infinity;
+  /* Streaming: with `onLogs`, each chunk is handed to the caller and dropped
+     rather than accumulated. A scan of every NVDA transfer into the pool manager
+     is millions of rows; held in one array it exhausted a 4 GB heap. */
+  const onLogs = opts.onLogs;
   const out = [];
   out.reachedBlock = to;
   out.truncated = false;
   let cursor = from;
   let size = chunk;
+  let seen = 0;
 
   /* The growth policy matters more than it looks. Doubling after every success
      makes the scan fail on roughly every other iteration, and a failure is not
@@ -231,8 +236,10 @@ export async function getLogsRange(filter, from, to, opts = {}) {
     const end = Math.min(cursor + size - 1, to);
     try {
       const logs = await rpc("eth_getLogs", [{ ...filter, fromBlock: hexBlock(cursor), toBlock: hexBlock(end) }]);
-      for (const l of logs) out.push(l);   // not push(...logs): spreading 10k args risks the stack
-      if (onProgress) onProgress(end, to, out.length);
+      seen += logs.length;
+      if (onLogs) onLogs(logs);
+      else for (const l of logs) out.push(l);   // not push(...logs): spreading 10k args risks the stack
+      if (onProgress) onProgress(end, to, seen);
       cursor = end + 1;
       wins++;
       /* Grow on a success streak, and let the failure memory DECAY as we advance.
