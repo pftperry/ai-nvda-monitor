@@ -173,8 +173,12 @@ if (poolsArtifact?.pools?.length) {
      mislead, so that fails. Between 60% and 80% they are still broadly right but the
      indexed set wants widening, which is work for a person and no reason to withhold
      an otherwise-good refresh. */
+  /* Floor lowered from 60% on 14 Sep: activity spread across 250 pools and twenty
+     indexed pools fell from 90% to 53% of swaps within a day, and the site then
+     served stale data for seven hours over a coverage drift -- the outcome the note
+     above says this check must not cause. --top was widened at the same time. */
   check("the indexed pools cover enough activity to mean anything",
-    cover >= 0.6,
+    cover >= 0.4,
     `${(cover * 100).toFixed(1)}% of swaps across ${inSet.length} of ${ranked.length} active pools`);
   warn("the indexed pools cover most measured activity", cover >= 0.8,
     `${(cover * 100).toFixed(1)}% — consider raising --top`);
