@@ -88,7 +88,7 @@
     <div class="card">
       <h3>Tokenized stock trading that touches LONG liquidity</h3>
       <div class="agenote" data-age="rwa" hidden></div>
-      <p class="sub">Every swap on the chain in the census's activity window whose pool holds a stock token, split by whether that pool carries the LONG hook. Counts, so one whale cannot move it; sampled each slow-path run.</p>
+      <p class="sub">Every swap on the chain over the last 24 hours whose pool holds a stock token, split by whether that pool carries the LONG hook, plus Robinhood's Rialto venue; kept as hourly buckets from a stream that reads only the new blocks each run. Counts as well as dollars, so one whale cannot move the count.</p>
       <div id="rwaSwaps"></div>
       <div class="scroll"><table id="tSwapShare"></table></div>
       <div class="chart small" id="cSwapShare"></div>

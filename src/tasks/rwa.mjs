@@ -1,5 +1,5 @@
 import { rpc, getLogsRange, padAddr } from "../rpc.mjs";
-import { POOL_MANAGER, COMMUNITY_VAULT, LONG_HOOK, LONG_BUYBACK, AI, USDG, NVDA, GENESIS_BLOCK } from "../config.mjs";
+import { POOL_MANAGER, COMMUNITY_VAULT, LONG_HOOK, LONG_BUYBACK, AI, USDG, NVDA, GENESIS_BLOCK, BLOCKS_PER_DAY } from "../config.mjs";
 import { TOPICS, decodeTransfer, decodeInitialize, decodeSwap, decodeModifyLiquidity, fmtUnits } from "../decode.mjs";
 import { multicall, resolveTokens } from "../tokens.mjs";
 import { ladderRawAmounts } from "./depth.mjs";
@@ -334,91 +334,103 @@ export async function indexRwa(latest, tm, opts = {}) {
   const launched = new Set(Object.keys(reg.launches));
   const stockSet = new Set(stocks);
   let swapShare = null;
-  if (opts.swaps?.counts && allStockPools.size) {
-    const per = new Map();   // token → { all, long, usdAll, usdLong }
-    let all = 0, long = 0, aiPaired = 0, usdAll = 0, usdLong = 0;
-    for (const [id, n] of opts.swaps.counts) {
-      const e = allStockPools.get(id); if (!e) continue;
-      all += n; if (e.long) long += n;
-      if (e.long && e.ai) aiPaired += n;
-      const vol = opts.swaps.volume?.get(id);
-      /* Dollar value of the pool's stock leg, from the first priced stock on it. */
-      let usd = 0;
-      for (const { token, side } of e.stocks) {
-        const px = anchorUsd.get(token); if (!px || !vol) continue;
-        usd = fmtUnits(vol[side], decimals.get(token) ?? 18) * px; break;
+  if (allStockPools.size) {
+    /* 4a. LONG's share of tokenized-stock trading over a rolling 24-hour window.
+          One cursor-resumed stream instead of a fresh two-hour census each run: the
+          manager's Swap tape (every venue; stock pools folded, others only counted),
+          the hook's own swap event (LONG's numerator, buyback legs flagged) and
+          Rialto's fill event (Robinhood's own venue, USDG side taken from the event
+          itself) are read over the same hour-sized sub-ranges and committed together,
+          into hourly buckets kept for thirty hours. A run reads only the blocks since
+          the last one; the first pass starts a day back and states how many hours it
+          managed. Stock legs valued at today's prices, as everywhere on this page. */
+    const WINDOW_H = 24, KEEP_H = 30, STEP = Math.round(BLOCKS_PER_DAY / 24);
+    let SW = store && store.get("rwaSwapHours");
+    if (!SW || SW.v !== 1) SW = { v: 1, cursor: null, first: null, hours: {} };
+    const hourOf = (b) => tm.hourBucket(b);
+    const bucket = (h) => (SW.hours[h] ||= { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, perToken: {} });
+    const stockUsd = (e, a0, a1) => { for (const { token, side } of e.stocks) { const px = anchorUsd.get(token); if (!px) continue; return fmtUnits(abs(side === 0 ? a0 : a1), decimals.get(token) ?? 18) * px; } return 0; };
+    const foldSwaps = (logs) => {
+      for (const l of logs) {
+        const h = hourOf(parseInt(l.blockNumber, 16)); if (h == null) continue;
+        const B = bucket(h); B.chainSwaps++;
+        const e = allStockPools.get(l.topics[1]); if (!e) continue;
+        B.stockSwaps++; if (e.long) B.longSwaps++; if (e.long && e.ai) B.aiPaired++;
+        const s = decodeSwap(l), usd = stockUsd(e, s.amount0, s.amount1);
+        B.usdAll += usd; if (e.long) B.usdLong += usd;
+        for (const { token } of e.stocks) { const p = (B.perToken[token] ||= { all: 0, long: 0, usdAll: 0, usdLong: 0 }); p.all++; p.usdAll += usd; if (e.long) { p.long++; p.usdLong += usd; } }
       }
-      usdAll += usd; if (e.long) usdLong += usd;
-      for (const { token } of e.stocks) {
-        const r = per.get(token) || { all: 0, long: 0, usdAll: 0, usdLong: 0 };
-        r.all += n; r.usdAll += usd; if (e.long) { r.long += n; r.usdLong += usd; } per.set(token, r);
-      }
-    }
-    /* Dune's definition of LONG volume, alongside: the hook's own swap event (LONG v4
-       pools only, sender = buyback contract flagged), plus graduated v2/v3 pools'
-       own Swap events; and Dune's denominator, which adds Robinhood's Rialto venue
-       (USDG-quoted) to the DEX's stock trading. All in the same census window. */
-    const winFrom = Math.max(GENESIS_BLOCK, latest - opts.swaps.blocks + 1);
-    let hookUsd = 0, hookUserUsd = 0, hookSwaps = 0, hookBuybackSwaps = 0, gradUsd = 0, gradSwaps = 0, rialtoUsd = 0;
-    const rialtoTxs = new Set();
-    if (timeLeft()) {
-      const hl = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, winFrom, latest, { chunk: 20_000, deadline: opts.deadline });
-      for (const l of hl) {
+    };
+    const foldHook = (logs) => {
+      for (const l of logs) {
         const e = allStockPools.get(l.topics[3]); if (!e) continue;
-        const a0 = int256(word(l.data, 3)), a1 = int256(word(l.data, 4));
-        let usd = 0;
-        for (const { token, side } of e.stocks) { const px = anchorUsd.get(token); if (!px) continue; usd = fmtUnits(abs(side === 0 ? a0 : a1), decimals.get(token) ?? 18) * px; break; }
-        hookSwaps++; hookUsd += usd;
-        if (topicAddr(l.topics[1]) === LONG_BUYBACK) hookBuybackSwaps++; else hookUserUsd += usd;
+        const h = hourOf(parseInt(l.blockNumber, 16)); if (h == null) continue;
+        const B = bucket(h), usd = stockUsd(e, int256(word(l.data, 3)), int256(word(l.data, 4)));
+        B.hookSwaps++; B.hookUsd += usd;
+        if (topicAddr(l.topics[1]) === LONG_BUYBACK) B.buybackSwaps++; else B.hookUserUsd += usd;
       }
-      const gradPools = Object.entries(reg.migrations).map(([asset, m]) => ({ asset, pool: m.pool, numeraire: reg.launches[asset]?.numeraire })).filter((g) => g.numeraire && stockSet.has(g.numeraire));
-      for (let i = 0; i < gradPools.length && timeLeft(); i += 200) {
-        const part = gradPools.slice(i, i + 200);
-        const byPool = new Map(part.map((g) => [g.pool, g]));
-        const gl = await getLogsRange({ address: part.map((g) => g.pool), topics: [[V3_SWAP, V2_SWAP]] }, winFrom, latest, { chunk: 70_000, deadline: opts.deadline });
-        for (const l of gl) {
-          const g = byPool.get(l.address.toLowerCase()); if (!g) continue;
-          const numIs0 = g.numeraire < g.asset;   // v4/v2/v3 all order currencies by address
-          const dec = decimals.get(g.numeraire) ?? 18, px = anchorUsd.get(g.numeraire); if (!px) continue;
-          let amt;
-          if (l.topics[0] === V3_SWAP) amt = abs(int256(word(l.data, numIs0 ? 0 : 1)));
-          else amt = BigInt("0x" + word(l.data, numIs0 ? 0 : 1)) + BigInt("0x" + word(l.data, numIs0 ? 2 : 3));   // amountIn + amountOut on the numeraire side
-          gradSwaps++; gradUsd += fmtUnits(amt, dec) * px;
-        }
+    };
+    const foldRialto = (logs) => {
+      for (const l of logs) {
+        if (l.topics.length < 4) continue;
+        const a = topicAddr(l.topics[2]), b = topicAddr(l.topics[3]);
+        if (!stockSet.has(a) && !stockSet.has(b)) continue;
+        const usdg = b === USDG ? word(l.data, 4) : a === USDG ? word(l.data, 1) : null; if (!usdg) continue;   // USDG-quoted fills, as Dune counts them
+        const h = hourOf(parseInt(l.blockNumber, 16)); if (h == null) continue;
+        const B = bucket(h); B.rialtoFills++; B.rialtoUsd += fmtUnits(BigInt("0x" + usdg), 6);
       }
-      /* Rialto is a 130-byte forwarder that is never itself a party to the USDG
-         transfer; Dune takes, per transaction sent to it, the largest USDG transfer in
-         that transaction. Same here: its own per-trade event names the transactions,
-         and the window's USDG transfers are folded per transaction to their maximum. */
-      if (timeLeft()) {
-        const rlogs = await getLogsRange({ address: RIALTO }, winFrom, latest, { chunk: 70_000, deadline: opts.deadline });
-        for (const l of rlogs) rialtoTxs.add(l.transactionHash);
-        if (rialtoTxs.size) {
-          const maxByTx = new Map();
-          await getLogsRange({ address: USDG, topics: [TOPICS.TRANSFER] }, winFrom, latest, { chunk: 20_000, deadline: opts.deadline,
-            onLogs: (logs) => { for (const l of logs) { if (!rialtoTxs.has(l.transactionHash)) continue; const v = fmtUnits(BigInt(l.data), 6); if (v > (maxByTx.get(l.transactionHash) || 0)) maxByTx.set(l.transactionHash, v); } } });
-          for (const v of maxByTx.values()) rialtoUsd += v;
-        }
+    };
+    const t4 = Date.now();
+    if (SW.cursor == null) { SW.cursor = Math.max(GENESIS_BLOCK, latest - WINDOW_H * STEP) - 1; SW.first = SW.cursor + 1; }
+    let truncated = false, lo = SW.cursor + 1;
+    while (lo <= latest && timeLeft()) {
+      const hi = Math.min(latest, lo + STEP - 1);
+      const snap = JSON.stringify(SW.hours);
+      const a = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.SWAP] }, lo, hi, { chunk: 20_000, deadline: opts.deadline, onLogs: foldSwaps });
+      const reach = a.reachedBlock ?? hi;
+      let ok = reach >= lo;
+      if (ok) {
+        const b = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, lo, reach, { chunk: 20_000, deadline: opts.deadline + 60_000, onLogs: foldHook });
+        const c = await getLogsRange({ address: RIALTO, topics: [RIALTO_FILL] }, lo, reach, { chunk: 70_000, deadline: opts.deadline + 90_000, onLogs: foldRialto });
+        ok = !b.truncated && !c.truncated;
       }
+      if (!ok) { SW.hours = JSON.parse(snap); truncated = true; break; }
+      SW.cursor = reach; lo = reach + 1;
+      if (a.truncated) { truncated = true; break; }
     }
-    const longUsd = hookUsd + gradUsd;
-    const denominatorUsd = usdAll + gradUsd + rialtoUsd;
+    /* The window: the twenty-four hours ending at the cursor's hour. Older buckets
+       are pruned; a first pass that did not reach a full day says so. */
+    const endHour = hourOf(SW.cursor), startHour = endHour - (WINDOW_H - 1) * 3600;
+    for (const k of Object.keys(SW.hours)) if (Number(k) < endHour - KEEP_H * 3600) delete SW.hours[k];
+    if (store) store.set("rwaSwapHours", SW);
+    const firstHour = hourOf(SW.first);
+    const hoursCovered = Math.max(0, Math.round((endHour - Math.max(startHour, firstHour)) / 3600) + 1);
+    const inWin = Object.entries(SW.hours).map(([k, B]) => [Number(k), B]).filter(([h]) => h >= startHour && h <= endHour).sort((x, y) => x[0] - y[0]);
+    const tot = { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0 };
+    const per = new Map();
+    for (const [, B] of inWin) {
+      for (const k of Object.keys(tot)) tot[k] += B[k] || 0;
+      for (const [token, p] of Object.entries(B.perToken || {})) { const r = per.get(token) || { all: 0, long: 0, usdAll: 0, usdLong: 0 }; r.all += p.all; r.long += p.long; r.usdAll += p.usdAll; r.usdLong += p.usdLong; per.set(token, r); }
+    }
+    const denominatorUsd = tot.usdAll + tot.rialtoUsd;
     swapShare = {
-      windowBlocks: opts.swaps.blocks, windowHours: +((opts.swaps.blocks / 845_649) * 24).toFixed(1),
+      rolling: true, windowHours: hoursCovered, windowTargetHours: WINDOW_H, windowFrom: Math.max(startHour, firstHour), windowTo: endHour, cursor: SW.cursor,
       catalogueComplete: catalogued === stocks.length,
-      truncated: !!opts.swaps.truncated, chainSwaps: opts.swaps.total ?? null,
-      stockSwaps: all, longSwaps: long, aiPairedSwaps: aiPaired, share: all > 0 ? long / all : null,
-      usdAll: Math.round(usdAll), usdLong: Math.round(usdLong), usdShare: usdAll > 0 ? usdLong / usdAll : null,
-      /* Dune-equivalent figures */
+      truncated, chainSwaps: tot.chainSwaps,
+      stockSwaps: tot.stockSwaps, longSwaps: tot.longSwaps, aiPairedSwaps: tot.aiPaired, share: tot.stockSwaps > 0 ? tot.longSwaps / tot.stockSwaps : null,
+      usdAll: Math.round(tot.usdAll), usdLong: Math.round(tot.usdLong), usdShare: tot.usdAll > 0 ? tot.usdLong / tot.usdAll : null,
+      /* Dune-equivalent figures (no stock-quoted pool has graduated to v2/v3, so that leg is nil) */
       dune: {
-        longUsd: Math.round(longUsd), longUserUsd: Math.round(hookUserUsd + gradUsd), hookSwaps, buybackSwaps: hookBuybackSwaps, graduatedUsd: Math.round(gradUsd), graduatedSwaps: gradSwaps,
-        rialtoUsd: Math.round(rialtoUsd), rialtoTxs: rialtoTxs.size, denominatorUsd: Math.round(denominatorUsd),
-        share: denominatorUsd > 0 ? longUsd / denominatorUsd : null,
+        longUsd: Math.round(tot.hookUsd), longUserUsd: Math.round(tot.hookUserUsd), hookSwaps: tot.hookSwaps, buybackSwaps: tot.buybackSwaps, graduatedUsd: 0, graduatedSwaps: 0,
+        rialtoUsd: Math.round(tot.rialtoUsd), rialtoTxs: tot.rialtoFills, denominatorUsd: Math.round(denominatorUsd),
+        share: denominatorUsd > 0 ? tot.hookUsd / denominatorUsd : null,
       },
+      hourly: inWin.map(([h, B]) => ({ t: h, usdAll: Math.round(B.usdAll), usdLong: Math.round(B.usdLong), hookUsd: Math.round(B.hookUsd), rialtoUsd: Math.round(B.rialtoUsd), stockSwaps: B.stockSwaps, longSwaps: B.longSwaps,
+        share: B.usdAll + B.rialtoUsd > 0 ? B.hookUsd / (B.usdAll + B.rialtoUsd) : null })),
       perToken: [...per].map(([t, r]) => ({ token: t, symbol: sym(t), all: r.all, long: r.long, share: r.all ? r.long / r.all : null,
         usdAll: Math.round(r.usdAll), usdLong: Math.round(r.usdLong) })).sort((x, y) => y.usdAll - x.usdAll || y.all - x.all),
     };
-    log(`  stock-token swaps in window: ${all.toLocaleString()}, ${long.toLocaleString()} through LONG pools (${all ? (100 * long / all).toFixed(1) : "—"}% by count, ${usdAll ? (100 * usdLong / usdAll).toFixed(1) : "—"}% by dollars); Dune method: LONG $${Math.round(longUsd).toLocaleString()} (${hookSwaps} hook swaps, ${hookBuybackSwaps} buyback, ${gradSwaps} graduated) of $${Math.round(denominatorUsd).toLocaleString()} incl. Rialto $${Math.round(rialtoUsd).toLocaleString()} → ${denominatorUsd ? (100 * longUsd / denominatorUsd).toFixed(1) : "—"}%`);
+    log(`  stock trading, rolling ${hoursCovered}h of ${WINDOW_H}h${truncated ? " (resumes)" : ""}: ${tot.stockSwaps.toLocaleString()} stock-pool swaps of ${tot.chainSwaps.toLocaleString()} on chain, ${tot.longSwaps.toLocaleString()} through LONG pools (${tot.stockSwaps ? (100 * tot.longSwaps / tot.stockSwaps).toFixed(1) : "—"}% by count, ${tot.usdAll ? (100 * tot.usdLong / tot.usdAll).toFixed(1) : "—"}% by dollars); Dune method: LONG $${Math.round(tot.hookUsd).toLocaleString()} (${tot.hookSwaps} hook swaps, ${tot.buybackSwaps} buyback) of $${Math.round(denominatorUsd).toLocaleString()} incl. Rialto $${Math.round(tot.rialtoUsd).toLocaleString()} (${tot.rialtoFills} fills) → ${denominatorUsd ? (100 * tot.hookUsd / denominatorUsd).toFixed(1) : "—"}%, cursor ${SW.cursor.toLocaleString()}, ${secs(t4)}`);
   }
 
   /* 4b. Stock inventory inside LONG's own pools, for EVERY LONG stock pool.

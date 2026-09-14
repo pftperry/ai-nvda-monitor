@@ -3295,7 +3295,7 @@ function renderSince(R, pending) {
       : tile("Stock in DEX liquidity", "backfilling", `streams complete for ${T.covered ?? 0} of ${Z.stocks} stocks, ${pctLevel(Z.coverage, 1)} of DEX stock value`)}
     ${ready ? tile("LONG's portion of it", pctLevel(longShare, 1), `$${compact(last.longInvUsd)} in LONG pools, Dune's swap-delta definition · peak ${pctLevel(peakShare, 0)}`) : ""}
     ${tile("LONG stock volume since launch", `$${compact(T.longAllVolUsd)}`, `user swaps in every LONG stock pool${firstVol ? ` since ${dayFmt(firstVol.t)}` : ""}, from the hook's own swap event, at today's prices`, "", "hero")}
-    ${tile("Share of stock trading, measured window", censusShare == null ? "—" : pctLevel(censusShare, 1), censusShare == null ? "census pending" : `LONG's Dune definition over every DEX venue plus Rialto, last ${R.swapShare.windowHours >= 24 ? `${Math.round(R.swapShare.windowHours / 24)}d` : `${R.swapShare.windowHours}h`} · the same event on both sides`)}
+    ${tile("Share of stock trading, measured window", censusShare == null ? "—" : pctLevel(censusShare, 1), censusShare == null ? "census pending" : `LONG's Dune definition over every DEX venue plus Rialto, last ${R.swapShare.windowHours}h${R.swapShare.windowTargetHours && R.swapShare.windowHours < R.swapShare.windowTargetHours ? ` of a ${R.swapShare.windowTargetHours}h window still filling` : ""} · the same event on both sides`)}
     ${ready ? tile("Share since inception, transfer basis", T.shareDex == null ? "—" : `≤ ${pctLevel(T.shareDex, 0)}`, `an upper bound: $${compact(T.longVolUsd)} of LONG volume against $${compact(T.dexVolUsd)} of stock that moved in or out of the pool manager since ${dayFmt(Z.since)}; routes that hand a stock between pools inside the manager move no token and are missing from the denominator${T.rialtoVolUsd ? ` · ≤ ${pctLevel(T.shareAll, 0)} with Rialto's $${compact(T.rialtoVolUsd)} of off-DEX fills added` : ""}`) : ""}
   </div>${!ready ? progress : catching ? `<p class="muted" style="margin:6px 0 0">Streams still catching up${(Z.tokensPartial || []).length ? ` for ${Z.tokensPartial.length} stock token(s); the per-day series show the ${T.covered ?? 0} already complete` : ""}${Z.hookPartial ? ", LONG swaps" : ""}${Z.rialtoPartial ? ", Rialto" : ""}. The figures fill in over the next slow runs.</p>` : ""}`;
   if (ready) stackedBars($("#cChainTvl"), rows.filter((r) => r.t >= (rows.find((x) => x.allInvUsd > 0)?.t ?? 0)), {
@@ -3368,7 +3368,7 @@ function renderRwa() {
         return tile("Cross-venue basis", basis == null ? "—" : `${(basis * 1e4).toFixed(0)} bps`, basis == null ? "NVDA price pending" : `NVDA implied by AI/NVDA × AI/USDG vs the NVDA/USDG pool; near zero means the venues are arbitraged tight`, basis != null && Math.abs(basis) > 0.02 ? "warn" : ""); })()}
       ${tile("Listed stocks", `${T.listed} / ${T.stocks}`, `stock tokens with a LONG pool, of all identified on the chain`)}
     </div>`;
-    const win = R.swapShare?.windowHours ? (R.swapShare.windowHours >= 24 ? `${Math.round(R.swapShare.windowHours / 24)}d` : `${R.swapShare.windowHours}h`) : "window";
+    const win = R.swapShare?.windowHours ? (R.swapShare.windowHours >= 48 ? `${Math.round(R.swapShare.windowHours / 24)}d` : `${R.swapShare.windowHours}h`) : "window";
     $("#readRwa").innerHTML = takeEl(T.share >= 0.25 ? "pos" : "neu",
       `<b>${pctLevel(T.share, 1)}</b> of the tokenized-stock value on Robinhood Chain sits inside DEX liquidity or the community vault${R.longTvl ? `; <b>${pctLevel(T.longShare, 1)}</b> ($${compact(R.longTvl.usd)}) of it inside LONG's own pools${R.longTvl.complete ? "" : ` (ladders ${pctLevel(R.longTvl.backfillShare, 0)} backfilled; a floor until they reach the head)`}` : ""}${T.poolsAll ? `,
        and <b>${pctLevel(T.poolsLong / T.poolsAll, 0)}</b> of the ${T.poolsAll.toLocaleString()} pools that quote a stock token are LONG launches` : ""}.
@@ -3421,7 +3421,13 @@ function renderRwa() {
         { h: "Share", attrs: () => ({ class: "bar-cell" }), f: (r) => { const s = r.usdAll ? r.usdLong / r.usdAll : r.share; return `<div class="fill" style="width:${Math.min(120, (s || 0) * 120)}px"></div><span>${pctLevel(s, 0)}</span>`; } },
       ], ss.perToken.slice(0, 12));
       const sh = hist.filter((h) => h.swapShare != null);
-      if (sh.length > 1) {
+      const hourly = (ss.hourly || []).filter((h) => h.share != null);
+      if (hourly.length > 1) {
+        lineChart($("#cSwapShare"), hourly, {
+          xKey: "t", yKey: "share", zeroBase: true, area: true, color: "var(--series-3)", xFmt: tsFmt, fmt: (v) => pctLevel(v, 0),
+          tip: (h) => `<div class="k">${tsFmt(h.t)} hour</div><div>${pctLevel(h.share, 1)} of stock trading via LONG</div><div class="k">$${compact(h.hookUsd)} of $${compact(h.usdAll + h.rialtoUsd)} · ${(h.longSwaps || 0).toLocaleString()} of ${(h.stockSwaps || 0).toLocaleString()} stock-pool swaps</div>`,
+        });
+      } else if (sh.length > 1) {
         lineChart($("#cSwapShare"), sh.slice(-24 * 14), {
           xKey: "t", yKey: "swapShare", zeroBase: true, area: true, color: "var(--series-3)", xFmt: dayFmt, fmt: (v) => pctLevel(v, 0),
           tip: (h) => `<div class="k">${tsFmt(h.t)}</div><div>${pctLevel(h.swapShare, 1)} of stock swaps via LONG</div><div class="k">${(h.longSwaps || 0).toLocaleString()} of ${(h.stockSwaps || 0).toLocaleString()} in the ${win} window</div>`,
@@ -4269,7 +4275,9 @@ function renderMethod() {
       tokenized-stock trading volume since 1 Jun, <b>37.0%</b> among launchpad-token pairs, <b>30.1%</b> of stock traders,
       <b>$12.9M</b> of stock TVL in LONG pools, <b>$1.18B</b> cumulative LONG stock volume, and per stock: <b>15.6%</b> of all NVDA on
       the chain held in LONG pools (13.5% in AI/NVDA alone), AMC 27.4%, HIMS 22.6%, MU 16.6%, AAPL 13.5%, MSTR 13.6%, SPCX 11.2%.
-      This site's two-hour window read 14–16% of stock volume by dollars the same night; its pool-manager inventory ($54M, every venue)
+      This site's two-hour window read 14–16% of stock volume by dollars the same night (since 14 Sep the window is a rolling
+      24 hours, hourly buckets from one cursor-resumed stream of the manager's Swap tape, the hook's swap event and Rialto's fill
+      event, read over the same blocks and committed together); its pool-manager inventory ($54M, every venue)
       is the ceiling of which Dune's LONG-only figure is a part, and its replay of the 200 most active LONG stock pools ($8.8M) is a floor
       under it. Where the two disagree, Dune's launch list is the more exact definition of "LONG".</p>
 
