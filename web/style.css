@@ -91,14 +91,18 @@ nav.tabs .inner { max-width: 1280px; margin: 0 auto; width: 100%; display: flex;
 .card > h3 { margin: 0 0 3px; font: 700 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-primary); }
 .card > p.sub { margin: 0 0 12px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .grid { display: grid; gap: 12px; margin-bottom: 12px; }
-.grid .card { margin-bottom: 0; }
-.g4 { grid-template-columns: repeat(4, 1fr); }
-.g3 { grid-template-columns: repeat(3, 1fr); }
-.g2 { grid-template-columns: repeat(2, 1fr); }
-@media (max-width: 980px) { .g4, .g3, .g2 { grid-template-columns: repeat(2, 1fr); } }
+/* min-width: 0 on the items, and minmax(0, 1fr) tracks: a wide table inside a
+   scroll wrapper still counts toward a grid item's automatic minimum width, so
+   without these a 586px whale table stretched a one-column card to 613px on a
+   375px phone and the whole panel scrolled sideways. */
+.grid .card { margin-bottom: 0; min-width: 0; }
+.g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 980px) { .g4, .g3, .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 620px) {
-  .g4, .g3 { grid-template-columns: repeat(2, 1fr); gap: 8px; }
-  .g2 { grid-template-columns: 1fr; }
+  .g4, .g3 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .g2 { grid-template-columns: minmax(0, 1fr); }
 }
 /* A rail, not a heading: a thin rule with the label sitting on it. */
 .section-title { display: flex; align-items: center; gap: 12px; margin: 26px 0 12px; font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: .14em; color: var(--text-muted); }
@@ -199,14 +203,14 @@ footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border
 .dials { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 26px; }
 .dials.one { grid-template-columns: 1fr; }
 /* Platform-view tiles reuse the cockpit tile; a hero variant carries the headline. */
-.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 6px 0 12px; }
-.tiles.three { grid-template-columns: repeat(3, 1fr); }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 6px 0 12px; }
+.tiles.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .ctile.hero .val { font-size: 26px; color: var(--buy); }
 .ctile .val.warn { color: var(--warning); }
 .ctile .val.bad { color: var(--sell); }
 .captured { display: inline-block; height: 8px; border-radius: 2px; background: var(--buy); vertical-align: middle; margin-right: 6px; }
 .captured.long { background: var(--series-3); }
-@media (max-width: 620px) { .tiles, .tiles.three { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 620px) { .tiles, .tiles.three { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .dial-hd { display: flex; align-items: baseline; gap: 10px; }
 .dial-name { font: 700 10.5px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--text-muted); }
 .dial-hd b { font: 700 22px/1 var(--sans); letter-spacing: -.02em; }
