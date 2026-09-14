@@ -643,10 +643,17 @@ export async function indexRwa(latest, tm, opts = {}) {
     for (const d of Object.keys(F.rialto.days)) dayKeys.add(Number(d));
     const today = tm.dayBucket(latest);
     const days = [...dayKeys].filter((d) => d < today).sort((a, b) => a - b);   // complete days only
+    /* Only stocks whose transfer stream has reached the head enter the per-day
+       series (both sides, so numerator and denominator cover the same stocks); the
+       coverage figure says how much of today's DEX stock value that is. LONG's
+       all-stock volume is the exception: the hook stream is complete on its own. */
+    const complete = (a) => F.tokens[a]?.cursor === latest && !F.tokens[a]?.partial;
+    const covered = new Set(universe.filter(complete));
     const cumAll = {}, cumLong = {};
     const rows = days.map((d) => {
       let allInv = 0, dexVol = 0, feeLegs = 0, rialtoDex = 0, longInv = 0, longVol = 0, longUser = 0, longAllUser = 0, rialtoVol = 0;
       for (const [tok, st] of Object.entries(F.tokens)) {
+        if (!covered.has(tok)) continue;
         const c = st.days[d]?.x; if (!c) continue;
         cumAll[tok] = (cumAll[tok] || 0) + c.net; dexVol += c.gross * px(tok); feeLegs += (c.fee || 0) * px(tok); rialtoDex += (c.rialto || 0) * px(tok);
       }
@@ -654,20 +661,24 @@ export async function indexRwa(latest, tm, opts = {}) {
       for (const [tok, c] of Object.entries(F.hook.days[d] || {})) {
         cumLong[tok] = (cumLong[tok] || 0) + poolSign * (c.delta || 0);
         longAllUser += (c.volUser || 0) * px(tok);
-        if (tracked.has(tok)) { longVol += (c.vol || 0) * px(tok); longUser += (c.volUser || 0) * px(tok); }
+        if (covered.has(tok)) { longVol += (c.vol || 0) * px(tok); longUser += (c.volUser || 0) * px(tok); }
       }
-      for (const tok of Object.keys(cumLong)) if (tracked.has(tok)) longInv += Math.max(0, cumLong[tok]) * px(tok);
-      for (const [tok, c] of Object.entries(F.rialto.days[d] || {})) rialtoVol += (c.vol || 0) * px(tok);
+      for (const tok of Object.keys(cumLong)) if (covered.has(tok)) longInv += Math.max(0, cumLong[tok]) * px(tok);
+      for (const [tok, c] of Object.entries(F.rialto.days[d] || {})) if (covered.has(tok)) rialtoVol += (c.vol || 0) * px(tok);
       const dexUser = Math.max(0, dexVol - feeLegs);                 // trades only: the hook's and buyback's fee legs are not volume
       const rialtoOnly = Math.max(0, rialtoVol - rialtoDex);         // fills Rialto settled itself, not the ones it routed into the pools
+      /* Transfer-basis volume counts stock entering or leaving the manager. Under v4
+         flash accounting a multi-hop route that hands a stock from one pool to the
+         next inside the manager moves no token, so those legs are absent here while
+         the hook's event still records them; the share is therefore an upper bound
+         and is capped at one. */
       const R = (v) => Math.round(v);
       return { t: d, allInvUsd: R(allInv), longInvUsd: R(longInv), dexVolUsd: R(dexUser), rialtoVolUsd: R(rialtoOnly), allVolUsd: R(dexUser + rialtoOnly),
         longVolUsd: R(longUser), longGrossVolUsd: R(longVol), longAllVolUsd: R(longAllUser),
-        shareDex: dexUser > 0 ? longUser / dexUser : null, shareAll: dexUser + rialtoOnly > 0 ? longUser / (dexUser + rialtoOnly) : null };
+        shareDex: dexUser > 0 ? Math.min(1, longUser / dexUser) : null, shareAll: dexUser + rialtoOnly > 0 ? Math.min(1, longUser / (dexUser + rialtoOnly)) : null };
     });
     const sum = (k) => rows.reduce((s, r) => s + (r[k] || 0), 0);
     const last7 = rows.slice(-7);
-    const complete = (a) => F.tokens[a]?.cursor === latest && !F.tokens[a]?.partial;
     const coveredUsd = universe.filter(complete).reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
     const totalDexUsd = universe.reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
     const reconcile = universe.filter((a) => px(a) > 0).map((a) => ({ symbol: sym(a), cumNet: Math.round((cumAll[a] || 0) * 1e4) / 1e4, onChain: Math.round(Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * 1e4) / 1e4, complete: complete(a) }));
@@ -678,9 +689,10 @@ export async function indexRwa(latest, tm, opts = {}) {
       hookCursor: F.hook.cursor, hookPartial: !!F.hook.partial, rialtoCursor: F.rialto.cursor, rialtoPartial: !!F.rialto.partial, poolSign,
       reconcile, pricedAt: "today",
       totals: { dexVolUsd: sum("dexVolUsd"), rialtoVolUsd: sum("rialtoVolUsd"), allVolUsd: sum("allVolUsd"), longVolUsd: sum("longVolUsd"), longAllVolUsd: sum("longAllVolUsd"),
-        shareDex: sum("dexVolUsd") > 0 ? sum("longVolUsd") / sum("dexVolUsd") : null, shareAll: sum("allVolUsd") > 0 ? sum("longVolUsd") / sum("allVolUsd") : null,
-        shareDex7d: last7.reduce((s, r) => s + r.dexVolUsd, 0) > 0 ? last7.reduce((s, r) => s + r.longVolUsd, 0) / last7.reduce((s, r) => s + r.dexVolUsd, 0) : null },
-      note: "every identified stock token; LONG figures follow Dune's definition (hook swap event; buyback legs excluded from volume, included in held); all values at today's prices",
+        shareDex: sum("dexVolUsd") > 0 ? Math.min(1, sum("longVolUsd") / sum("dexVolUsd")) : null, shareAll: sum("allVolUsd") > 0 ? Math.min(1, sum("longVolUsd") / sum("allVolUsd")) : null,
+        shareDex7d: last7.reduce((s, r) => s + r.dexVolUsd, 0) > 0 ? Math.min(1, last7.reduce((s, r) => s + r.longVolUsd, 0) / last7.reduce((s, r) => s + r.dexVolUsd, 0)) : null,
+        covered: covered.size },
+      note: "per-day series cover the stock tokens whose transfer stream has reached the head (coverage = their share of DEX stock value); LONG all-stock volume is complete on its own; LONG figures follow Dune's definition (hook swap event; buyback legs excluded from volume, included in held); transfer-basis volume shares are upper bounds (intra-manager hops move no token); all values at today's prices",
     };
     log(`  flow histories: ${rows.length} complete day(s) since ${rows[0] ? new Date(rows[0].t * 1000).toISOString().slice(0, 10) : "none"}, ${universe.length} stock tokens (streams at the head for ${series.coverage ? (100 * series.coverage).toFixed(0) : "?"}% of DEX stock value), hook at ${F.hook.cursor.toLocaleString()}${F.hook.partial ? " (resumes)" : ""}, Rialto at ${F.rialto.cursor.toLocaleString()}${F.rialto.partial ? " (resumes)" : ""}, ${series.tokensPartial.length} token stream(s) still catching up, pool sign ${poolSign}, ${secs(t5)}`);
   }

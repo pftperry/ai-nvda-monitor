@@ -453,7 +453,10 @@ if (rwa && rwa.tokens?.length) {
     check("since-inception history is ordered, complete days only",
       Z.days.every((r, i, a) => i === 0 || r.t > a[i - 1].t) && (!Z.days.length || Z.days.at(-1).t < todayStart), `${Z.days.length} day(s)`);
     check("since-inception volumes are internally consistent",
-      Z.days.every((r) => r.longVolUsd <= r.longGrossVolUsd + 1 && r.allVolUsd >= r.dexVolUsd - 1 && r.allInvUsd >= 0 && r.longInvUsd >= 0 && (r.shareDex == null || (r.shareDex >= 0 && r.shareDex <= 1.000001))));
+      Z.days.every((r) => r.longVolUsd <= r.longGrossVolUsd + 1 && r.longVolUsd <= r.longAllVolUsd + 1 && r.allVolUsd >= r.dexVolUsd - 1 && r.allInvUsd >= 0 && r.longInvUsd >= 0 && (r.shareDex == null || (r.shareDex >= 0 && r.shareDex <= 1.000001))));
+    warn("LONG's stock volume stays within the transfer-measured DEX volume",
+      Z.days.every((r) => r.dexVolUsd === 0 || r.longVolUsd <= r.dexVolUsd * 1.000001),
+      "the hook records intra-manager hops that move no token; the transfer-basis share is an upper bound on those days");
     warn("LONG's swap-delta holdings stay near or under the pool manager's stock inventory",
       Z.days.every((r) => r.longInvUsd <= r.allInvUsd * 1.25 + 1000), "Dune's upper bound exceeds the transfer-netted inventory by more than a quarter on some day");
     const done = (Z.reconcile || []).filter((r) => r.complete && r.onChain > 0);
