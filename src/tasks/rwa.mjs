@@ -706,7 +706,14 @@ export async function indexRwa(latest, tm, opts = {}) {
     const last7 = rows.slice(-7);
     const coveredUsd = universe.filter(complete).reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
     const totalDexUsd = universe.reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
-    const reconcile = universe.filter((a) => px(a) > 0).map((a) => ({ symbol: sym(a), cumNet: Math.round((cumAll[a] || 0) * 1e4) / 1e4, onChain: Math.round(Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * 1e4) / 1e4, complete: complete(a) }));
+    /* Reconcile at the stream's own block: the balances read at the top of the run
+       are at the head, which on a forty-minute deep run is thousands of trades later
+       than the snapshot block the streams stop at, so every liquid stock disagreed
+       in both directions. One archive multicall at `latest` compares like with like. */
+    const recTokens = universe.filter((a) => px(a) > 0 && complete(a));
+    const atLatest = recTokens.length ? await multicall(recTokens.map((a) => ({ to: a, data: BALANCE_SEL + POOL_MANAGER.slice(2).padStart(64, "0") })), { blockTag: "0x" + latest.toString(16) }).catch(() => null) : [];
+    const reconcile = recTokens.map((a, i) => { const h = atLatest?.[i]; const bal = h && h !== "0x" ? Number(BigInt(h)) / 10 ** (decimals.get(a) ?? 18) : Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18);
+      return { symbol: sym(a), cumNet: Math.round((cumAll[a] || 0) * 1e4) / 1e4, onChain: Math.round(bal * 1e4) / 1e4, atBlock: h && h !== "0x" ? latest : "head", complete: true }; });
     series = {
       days: rows, stocks: universe.length, priced: universe.filter((a) => px(a) > 0).length, since: rows[0]?.t ?? null,
       coverage: totalDexUsd > 0 ? coveredUsd / totalDexUsd : null,   // share of today's DEX stock value whose stream has reached the head
