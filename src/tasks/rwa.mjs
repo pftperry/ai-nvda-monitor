@@ -45,6 +45,52 @@ export const AIRLOCK = "0xeb7c034704ef8dcd2d32324c1545f62fb4ad0862";
 export const AIRLOCK_MIGRATE = "0x2a05bb717043f3a794e94382bf63f2e275ecafc41be9b63c34f16d58da9822ca";
 const topicAddr = (t) => "0x" + t.slice(26).toLowerCase();
 
+/* Dune's price source (query 8032188): the Chainlink aggregators behind Robinhood's
+   feed proxies, 8 decimals. Read live with latestAnswer(); pool prints remain the
+   fallback for stocks without a feed. Same numbers as LONG's dashboard. */
+export const CHAINLINK_FEEDS = {
+  "0xaf3d76f1834a1d425780943c99ea8a608f8a93f9": "0xbb11a21267cfdb63d4935d99a499133dd1744acb", // AAPL
+  "0x86923f96303d656e4aa86d9d42d1e57ad2023fdc": "0xdad54b8ee51af258e5a6faa9a84a3300f4775f7d", // AMD
+  "0x12f190a9f9d7d37a250758b26824b97ce941bf54": "0x93503dfc97157cdb8aadccaf70452621d598fdeb", // AMZN
+  "0xad25ac6c84d497db898fa1e8387bf6af3532a1c4": "0xff5f85e4888782e66f1dd9cabadf4822fbeb1439", // BABA
+  "0x6330d8c3178a418788df01a47479c0ce7ccf450b": "0x30398b0b0df82a009bb2d507bc7fe1dc6d3ca294", // COIN
+  "0xdf0992e440dd0be65bd8439b609d6d4366bf1cb5": "0x901d8df245e48dfc82d6483fc45b5be6ddc5281a", // CRCL
+  "0x5f10a1c971b69e47e059e1dc91901b59b3fb49c3": "0xd9c04b7353421fc4deb1614ed13fe10d90e586cc", // CRWV
+  "0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3": "0x11ed6d598ef565dda86fafe7e779303e7cc6b2bd", // GOOGL
+  "0xc72b96e0e48ecd4dc75e1e45396e26300bc39681": "0x95fb52f75aecbca8e12aa4403f840c8bc18cfbd4", // INTC
+  "0xc0d6457c16cc70d6790dd43521c899c87ce02f35": "0xc190b6164b9e320a6400cdab0085a2e0e2b9738e", // META
+  "0xe93237c50d904957cf27e7b1133b510c669c2e74": "0xc3b117f52cf17dd4369eaf5eaf7cf0e2f91b4e30", // MSFT
+  "0xff080c8ce2e5feadaca0da81314ae59d232d4afd": "0xa088fad0a0a62693af068e2edb80b1578c8a9365", // MU
+  "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec": "0xc9d16e4f2569b9e3ea0468fd85844953713dc2a2", // NVDA
+  "0xb0992820e760d836549ba69bc7598b4af75dee03": "0x4a9abc759e0b7b0ba98b5fd39c419a5d3e962aaf", // ORCL
+  "0x894e1ec2d74ffe5aef8dc8a9e84686accb964f2a": "0x315afd0f71d5407b99ad19ab001a67af40fbaaf4", // PLTR
+  "0xb90a19ff0af67f7779aff50a882a9cff42446400": "0x7b2fdfcea772f093dd33b3acf8ee294b368f6c23", // SNDK
+  "0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea": "0x5eaa223c585f40cdca2d119ea91b97c491245631", // SPCX
+  "0x322f0929c4625ed5bad873c95208d54e1c003b2d": "0x7a6b81ba7fbcb90104d8c496158cf383cd7233b1", // TSLA
+  "0xd917b029c761d264c6a312bbbcda868658ef86a6": "0x76ba75c6c362900b275d9d4d5c422f0275e85578", // USAR
+  "0xd5f3879160bc7c32ebb4dc785f8a4f505888de68": "0x25e996ce8b3529885d429241156e83e7b7744049", // QQQ
+  "0x92fd66527192e3e61d4ddd13322aa222de86f9b5": "0x0e96b7708487f91baac09697593d3e8bf253f2d8", // SGOV
+  "0x411efb0e7f985935daec3d4c3ebaea0d0ad7d89f": "0xcdf6f7043b3af6afa0caaace1230b355096b5386", // SLV
+  "0x117cc2133c37b721f49de2a7a74833232b3b4c0c": "0x78bcb218fa04b9b3a278ebc865ed320bf8defbac", // SPY
+  "0x47f93d52cbec7c6d2cfc080e154002370a60daea": "0xf795030a46ad6ca4b07bf5fb704dc36039118c9f", // ASML
+  "0x941ae714ec6d8130c7b75d67160ca08f1e7d11dd": "0xd6ed4e7d4aba1111eb42a349899b5c72ee1c9fef", // DELL
+  "0x1b0e319c6a659f002271b69db8a7df2f911c153e": "0xf83cde62d1cd90de8d2bf3332b90c590985ad679", // GME
+  "0xec262a75e413fafd0df80480274532c79d42da09": "0x55bd01f666c99e4590e084fdeff88041bb50ccd1", // MSTR
+  "0x58ffe4a942d3885baa22d7520691f611ef09e7aa": "0x2b3a9a18998e9464760658233ab093e6aebf45d0", // TSM
+};
+const LATEST_ANSWER = "0x50d25bcd";
+/* LONG's hook emits its own event on every swap in a LONG pool (Dune query 8032229 reads
+   volume from it): topic1 sender, topic3 pool id, data words 3 and 4 amount0/amount1
+   (user perspective). Filtering on the hook address yields only LONG swaps. */
+export const HOOK_SWAP = "0x1d9f7b5e406d8c887155e1a78e070d2d41c5d0444dab8b21612f846835c27183";
+/* Robinhood's own stock venue, counted by Dune in "all stock trading"; USDG-quoted. */
+export const RIALTO = "0x4262efbd176f02824af27010bea218429c33c7e8";
+const V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+const V2_SWAP = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
+const word = (data, i) => data.slice(2 + 64 * i, 2 + 64 * (i + 1));
+const int256 = (h) => BigInt.asIntN(256, BigInt("0x" + h));
+const abs = (v) => (v < 0n ? -v : v);
+
 /** Every LONG launch (asset → numeraire) and every graduation (asset → v2/v3 pool), cursor-resumed. */
 async function launchRegistry(latest, store, deadline) {
   const st = (store && store.get("rwaLaunches")) || { v: 1, cursor: GENESIS_BLOCK - 1, launches: {}, migrations: {} };
@@ -166,7 +212,8 @@ export async function indexRwa(latest, tm, opts = {}) {
   const pools = opts.pools || [];
   const symbols = new Map(opts.symbols || []);
   const decimals = new Map(opts.decimals || []);
-  const anchorUsd = opts.anchorUsd || new Map();
+  const anchorUsd = new Map(opts.anchorUsd || []);
+  const priceSource = {};
   const sym = (a) => symbols.get(a) || a.slice(0, 8);
   const timeLeft = () => !opts.deadline || Date.now() < opts.deadline;
   const secs = (t) => `${((Date.now() - t) / 1000).toFixed(0)}s`;
@@ -201,6 +248,20 @@ export async function indexRwa(latest, tm, opts = {}) {
     for (const [a, m] of meta) { if (m.symbol) symbols.set(a, m.symbol); if (m.decimals != null) decimals.set(a, m.decimals); }
   }
   log(`  ${candidates.length} candidate tokens, ${looked} newly classified, ${stocks.length} are Robinhood stock tokens by bytecode (${unlisted.length} with no LONG pool)`);
+
+  /* 1b. Dollar prices from the Chainlink aggregators LONG's dashboard uses, where a
+        stock has one; pool prints otherwise. One multicall. */
+  const feedTokens = stocks.filter((a) => CHAINLINK_FEEDS[a]);
+  if (feedTokens.length) {
+    const ans = await multicall(feedTokens.map((a) => ({ to: CHAINLINK_FEEDS[a], data: LATEST_ANSWER })));
+    feedTokens.forEach((a, i) => {
+      if (!ans[i] || ans[i] === "0x") return;
+      const v = Number(BigInt.asIntN(256, BigInt(ans[i]))) / 1e8;
+      if (v > 0) { anchorUsd.set(a, v); priceSource[a] = "chainlink"; }
+    });
+  }
+  for (const a of stocks) if (!priceSource[a] && anchorUsd.has(a)) priceSource[a] = "pool";
+  log(`  prices: ${Object.values(priceSource).filter((s) => s === "chainlink").length} stocks from Chainlink feeds, ${Object.values(priceSource).filter((s) => s === "pool").length} from pool prints`);
 
   /* 2. Supply on chain, inventory in the pool manager, balance in the vault,
         through Multicall3 (four hundred separate calls tripped the throttle). */
@@ -249,7 +310,7 @@ export async function indexRwa(latest, tm, opts = {}) {
       activeTransfers: uni.active[a] || 0,
       supply, inDex, inVault,
       share: (inDex + inVault) / supply, dexShare: inDex / supply, vaultShare: inVault / supply,
-      priceUsd: usd, supplyUsd: usd ? supply * usd : null, dexUsd: usd ? inDex * usd : null, vaultUsd: usd ? inVault * usd : null,
+      priceUsd: usd, priceSource: priceSource[a] || null, supplyUsd: usd ? supply * usd : null, dexUsd: usd ? inDex * usd : null, vaultUsd: usd ? inVault * usd : null,
       longPools: degree.get(a) || 0, aiPools: withAi.get(a) || 0,
       poolsAll: mine.length, poolsLong: mine.filter((p) => p.long).length,
       poolsPartial: !poolState[a] || !!poolState[a].partial,
@@ -260,6 +321,11 @@ export async function indexRwa(latest, tm, opts = {}) {
   /* 4. Trading share in the window: swaps whose pool holds a stock token, split by
         whether the pool carries the LONG hook. By count, and by the dollar value
         of the stock leg where the stock has a price. */
+  /* LONG's own asset list and graduations (Dune's scope), used by the trading share
+     and the pool inventory below. */
+  const reg = await launchRegistry(latest, store, opts.deadline);
+  const launched = new Set(Object.keys(reg.launches));
+  const stockSet = new Set(stocks);
   let swapShare = null;
   if (opts.swaps?.counts && allStockPools.size) {
     const per = new Map();   // token → { all, long, usdAll, usdLong }
@@ -281,16 +347,63 @@ export async function indexRwa(latest, tm, opts = {}) {
         r.all += n; r.usdAll += usd; if (e.long) { r.long += n; r.usdLong += usd; } per.set(token, r);
       }
     }
+    /* Dune's definition of LONG volume, alongside: the hook's own swap event (LONG v4
+       pools only, sender = buyback contract flagged), plus graduated v2/v3 pools'
+       own Swap events; and Dune's denominator, which adds Robinhood's Rialto venue
+       (USDG-quoted) to the DEX's stock trading. All in the same census window. */
+    const winFrom = Math.max(GENESIS_BLOCK, latest - opts.swaps.blocks + 1);
+    let hookUsd = 0, hookUserUsd = 0, hookSwaps = 0, hookBuybackSwaps = 0, gradUsd = 0, gradSwaps = 0, rialtoUsd = 0;
+    const rialtoTxs = new Set();
+    if (timeLeft()) {
+      const hl = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, winFrom, latest, { chunk: 20_000, deadline: opts.deadline });
+      for (const l of hl) {
+        const e = allStockPools.get(l.topics[3]); if (!e) continue;
+        const a0 = int256(word(l.data, 3)), a1 = int256(word(l.data, 4));
+        let usd = 0;
+        for (const { token, side } of e.stocks) { const px = anchorUsd.get(token); if (!px) continue; usd = fmtUnits(abs(side === 0 ? a0 : a1), decimals.get(token) ?? 18) * px; break; }
+        hookSwaps++; hookUsd += usd;
+        if (topicAddr(l.topics[1]) === LONG_BUYBACK) hookBuybackSwaps++; else hookUserUsd += usd;
+      }
+      const gradPools = Object.entries(reg.migrations).map(([asset, m]) => ({ asset, pool: m.pool, numeraire: reg.launches[asset]?.numeraire })).filter((g) => g.numeraire && stockSet.has(g.numeraire));
+      for (let i = 0; i < gradPools.length && timeLeft(); i += 200) {
+        const part = gradPools.slice(i, i + 200);
+        const byPool = new Map(part.map((g) => [g.pool, g]));
+        const gl = await getLogsRange({ address: part.map((g) => g.pool), topics: [[V3_SWAP, V2_SWAP]] }, winFrom, latest, { chunk: 70_000, deadline: opts.deadline });
+        for (const l of gl) {
+          const g = byPool.get(l.address.toLowerCase()); if (!g) continue;
+          const numIs0 = g.numeraire < g.asset;   // v4/v2/v3 all order currencies by address
+          const dec = decimals.get(g.numeraire) ?? 18, px = anchorUsd.get(g.numeraire); if (!px) continue;
+          let amt;
+          if (l.topics[0] === V3_SWAP) amt = abs(int256(word(l.data, numIs0 ? 0 : 1)));
+          else amt = BigInt("0x" + word(l.data, numIs0 ? 0 : 1)) + BigInt("0x" + word(l.data, numIs0 ? 2 : 3));   // amountIn + amountOut on the numeraire side
+          gradSwaps++; gradUsd += fmtUnits(amt, dec) * px;
+        }
+      }
+      if (timeLeft()) {
+        for (const topics of [[TOPICS.TRANSFER, padAddr(RIALTO), null], [TOPICS.TRANSFER, null, padAddr(RIALTO)]]) {
+          const rl = await getLogsRange({ address: USDG, topics }, winFrom, latest, { chunk: 70_000, deadline: opts.deadline });
+          for (const l of rl) { if (rialtoTxs.has(l.transactionHash)) continue; rialtoTxs.add(l.transactionHash); rialtoUsd += fmtUnits(BigInt(l.data), 6); }
+        }
+      }
+    }
+    const longUsd = hookUsd + gradUsd;
+    const denominatorUsd = usdAll + gradUsd + rialtoUsd;
     swapShare = {
       windowBlocks: opts.swaps.blocks, windowHours: +((opts.swaps.blocks / 845_649) * 24).toFixed(1),
       catalogueComplete: catalogued === stocks.length,
       truncated: !!opts.swaps.truncated, chainSwaps: opts.swaps.total ?? null,
       stockSwaps: all, longSwaps: long, aiPairedSwaps: aiPaired, share: all > 0 ? long / all : null,
       usdAll: Math.round(usdAll), usdLong: Math.round(usdLong), usdShare: usdAll > 0 ? usdLong / usdAll : null,
+      /* Dune-equivalent figures */
+      dune: {
+        longUsd: Math.round(longUsd), longUserUsd: Math.round(hookUserUsd + gradUsd), hookSwaps, buybackSwaps: hookBuybackSwaps, graduatedUsd: Math.round(gradUsd), graduatedSwaps: gradSwaps,
+        rialtoUsd: Math.round(rialtoUsd), rialtoTxs: rialtoTxs.size, denominatorUsd: Math.round(denominatorUsd),
+        share: denominatorUsd > 0 ? longUsd / denominatorUsd : null,
+      },
       perToken: [...per].map(([t, r]) => ({ token: t, symbol: sym(t), all: r.all, long: r.long, share: r.all ? r.long / r.all : null,
         usdAll: Math.round(r.usdAll), usdLong: Math.round(r.usdLong) })).sort((x, y) => y.usdAll - x.usdAll || y.all - x.all),
     };
-    log(`  stock-token swaps in window: ${all.toLocaleString()}, ${long.toLocaleString()} through LONG pools (${all ? (100 * long / all).toFixed(1) : "—"}% by count, ${usdAll ? (100 * usdLong / usdAll).toFixed(1) : "—"}% by dollars)`);
+    log(`  stock-token swaps in window: ${all.toLocaleString()}, ${long.toLocaleString()} through LONG pools (${all ? (100 * long / all).toFixed(1) : "—"}% by count, ${usdAll ? (100 * usdLong / usdAll).toFixed(1) : "—"}% by dollars); Dune method: LONG $${Math.round(longUsd).toLocaleString()} (${hookSwaps} hook swaps, ${hookBuybackSwaps} buyback, ${gradSwaps} graduated) of $${Math.round(denominatorUsd).toLocaleString()} incl. Rialto $${Math.round(rialtoUsd).toLocaleString()} → ${denominatorUsd ? (100 * longUsd / denominatorUsd).toFixed(1) : "—"}%`);
   }
 
   /* 4b. Stock inventory inside LONG's own pools, for EVERY LONG stock pool.
@@ -310,9 +423,6 @@ export async function indexRwa(latest, tm, opts = {}) {
   if (allStockPools.size) {
     const t4 = Date.now();
     const longIds = new Set([...allStockPools].filter(([, e]) => e.long).map(([id]) => id));
-    /* LONG's own asset list and graduations, for the Dune-equivalent scope. */
-    const reg = await launchRegistry(latest, store, opts.deadline);
-    const launched = new Set(Object.keys(reg.launches));
     let LS = store && store.get("rwaLadderStream");
     if (!LS || LS.v !== 1) LS = { v: 1, cursor: GENESIS_BLOCK - 1, ladders: {}, lastSqrt: {}, events: 0 };
     /* Prices: the newest Swap per pool from this run's census window, layered over the map. */
@@ -359,7 +469,6 @@ export async function indexRwa(latest, tm, opts = {}) {
     }
     /* Graduated pools: assets migrated off v4 whose numeraire is a stock token. The
        v2/v3 pool holds its own tokens, so its balance IS its inventory. One multicall. */
-    const stockSet = new Set(stocks);
     const grads = Object.entries(reg.migrations).map(([asset, m]) => ({ asset, pool: m.pool, numeraire: reg.launches[asset]?.numeraire })).filter((g) => g.numeraire && stockSet.has(g.numeraire));
     let graduatedUsd = 0, graduatedPools = 0;
     if (grads.length) {
@@ -425,7 +534,7 @@ export async function indexRwa(latest, tm, opts = {}) {
   history.push({
     t: hour, share: totals.share, dexUsd: Math.round(totals.dexUsd), vaultUsd: Math.round(totals.vaultUsd), supplyUsd: Math.round(totals.supplyUsd),
     longUsd: totals.longUsd, longShare: totals.longShare,
-    swapShare: swapShare?.share ?? null, usdShare: swapShare?.usdShare ?? null, stockSwaps: swapShare?.stockSwaps ?? null, longSwaps: swapShare?.longSwaps ?? null,
+    swapShare: swapShare?.share ?? null, usdShare: swapShare?.usdShare ?? null, duneShare: swapShare?.dune?.share ?? null, stockSwaps: swapShare?.stockSwaps ?? null, longSwaps: swapShare?.longSwaps ?? null,
     activeStocks: totals.activeStocks, activeListed: totals.activeListed,
     perToken: Object.fromEntries(tokens.map((t) => [t.symbol, [+t.supply.toFixed(2), +t.inDex.toFixed(2), +t.inVault.toFixed(2)]])),
   });
