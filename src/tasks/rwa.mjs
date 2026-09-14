@@ -1,8 +1,8 @@
 import { rpc, getLogsRange, padAddr } from "../rpc.mjs";
 import { POOL_MANAGER, COMMUNITY_VAULT, LONG_HOOK, AI, USDG, NVDA, GENESIS_BLOCK } from "../config.mjs";
-import { TOPICS, decodeTransfer, decodeInitialize, decodeSwap, fmtUnits } from "../decode.mjs";
+import { TOPICS, decodeTransfer, decodeInitialize, decodeSwap, decodeModifyLiquidity, fmtUnits } from "../decode.mjs";
 import { multicall, resolveTokens } from "../tokens.mjs";
-import { poolTickLadder, ladderRawAmounts } from "./depth.mjs";
+import { ladderRawAmounts } from "./depth.mjs";
 
 /**
  * The real-world-asset ledger: how much of Robinhood Chain's tokenized stock
@@ -30,7 +30,7 @@ export const isStockCode = (code) => typeof code === "string" && (code.length - 
 export const STOCK_EVENT = "0x37e7f0db430edc9dd31bc66f25f8449353aa0818f503b906747dd8f286cd3802";
 
 const MIN_DEGREE = 3;              // pools a token must anchor before it is worth a getCode call
-const LONG_TVL_POOLS = 200;        // most active LONG stock pools whose ladders are replayed for stock inventory
+const CATALOGUE_VERSION = 2;       // 2: entries carry the pool's initial sqrt price, the fallback valuation price for pools that never traded
 const DAILY_TRACKED = [NVDA];      // tokens whose DEX inventory is rebuilt daily from transfers
 const UNIVERSE_WINDOW = 9_000;     // blocks of the stock event scanned per run (~15 min); samples are unioned over a day
 const SUPPLY_SEL = "0x18160ddd";
@@ -92,10 +92,11 @@ async function stockPools(token, latest, prior, opts) {
     if (seen.has(p.poolId)) continue;
     seen.add(p.poolId);
     /* Kept small: NVDA alone quotes ten thousand pools. */
-    state.pools.push({ id: p.poolId, long: p.hooks === LONG_HOOK, ai: p.currency0 === AI || p.currency1 === AI, side: p.currency0 === token ? 0 : 1 });
+    state.pools.push({ id: p.poolId, long: p.hooks === LONG_HOOK, ai: p.currency0 === AI || p.currency1 === AI, side: p.currency0 === token ? 0 : 1, p0: p.sqrtPriceX96.toString() });
   }
   state.cursor = reached;
   state.partial = !!(asC0.truncated || asC1.truncated);
+  state.v = CATALOGUE_VERSION;
   return state;
 }
 
@@ -190,13 +191,14 @@ export async function indexRwa(latest, tm, opts = {}) {
   const byDex = [...stocks].sort((x, y) => (dexRaw(y) > dexRaw(x) ? 1 : dexRaw(y) < dexRaw(x) ? -1 : 0));
   for (const a of byDex) {
     if (!timeLeft()) break;
-    poolState[a] = await stockPools(a, latest, poolState[a], { deadline: opts.deadline });
+    const prior = poolState[a]?.v === CATALOGUE_VERSION ? poolState[a] : null;   // older entries lack p0; rebuild once
+    poolState[a] = await stockPools(a, latest, prior, { deadline: opts.deadline });
     if (!poolState[a].partial) catalogued++;
   }
   if (store) store.set("rwaPools", poolState);
-  const allStockPools = new Map();   // poolId → { long, ai, stocks: [{token, side}] }
+  const allStockPools = new Map();   // poolId → { long, ai, p0, stocks: [{token, side}] }
   for (const a of stocks) for (const p of poolState[a]?.pools || []) {
-    const e = allStockPools.get(p.id) || { long: p.long, ai: p.ai, stocks: [] };
+    const e = allStockPools.get(p.id) || { long: p.long, ai: p.ai, p0: p.p0, stocks: [] };
     e.stocks.push({ token: a, side: p.side }); allStockPools.set(p.id, e);
   }
   log(`  pool catalogue: ${allStockPools.size.toLocaleString()} pools quote a stock token (${catalogued} of ${stocks.length} tokens complete), ${secs(t2)}`);
@@ -258,45 +260,76 @@ export async function indexRwa(latest, tm, opts = {}) {
     log(`  stock-token swaps in window: ${all.toLocaleString()}, ${long.toLocaleString()} through LONG pools (${all ? (100 * long / all).toFixed(1) : "—"}% by count, ${usdAll ? (100 * usdLong / usdAll).toFixed(1) : "—"}% by dollars)`);
   }
 
-  /* 4b. Stock inventory inside LONG's own pools. The pool manager's balance mixes
-        every venue; LONG's Dune reports its pools alone hold a quarter of it. The
-        singleton keeps no per-pool balance, so the most active LONG stock pools'
-        position ladders are replayed and valued at their last swap price. A lower
-         bound: the long tail of dormant pools is not replayed. */
+  /* 4b. Stock inventory inside LONG's own pools, for EVERY LONG stock pool.
+        The pool manager's balance mixes every venue, and the singleton keeps no
+        per-pool balance, so each pool's position ladder is rebuilt from the
+        ModifyLiquidity tape. Not pool by pool -- forty thousand pools would be a
+        hundred thousand queries -- but from ONE stream of every ModifyLiquidity
+        the manager ever emitted, keeping only the pools in the stock catalogue,
+        resumed from a cursor. The first pass is long (the hook re-adds liquidity
+        on every swap in its compounding mode, so the tape is hundreds of
+        thousands of events a day) and is allowed to span several runs; after it,
+        a run reads a few hours. Each pool is valued at its last swap price seen
+        by the census scans (kept as a map across runs), or at its initial price
+        if it has never traded -- a pool that never traded holds no stock anyway,
+        since launches seed the launched token alone. */
   let longTvl = null;
-  if (opts.swaps?.counts && opts.swaps?.last && allStockPools.size) {
+  if (allStockPools.size) {
     const t4 = Date.now();
-    const ranked = [...opts.swaps.counts].filter(([id]) => allStockPools.get(id)?.long).sort((a, b) => b[1] - a[1]);
-    const pick = ranked.slice(0, LONG_TVL_POOLS);
-    const prevLadders = (store && store.get("rwaLadders")) || {};
-    const ladders = {};
+    const longIds = new Set([...allStockPools].filter(([, e]) => e.long).map(([id]) => id));
+    let LS = store && store.get("rwaLadderStream");
+    if (!LS || LS.v !== 1) LS = { v: 1, cursor: GENESIS_BLOCK - 1, ladders: {}, lastSqrt: {}, events: 0 };
+    /* Prices: the newest Swap per pool from this run's census window, layered over the map. */
+    if (opts.swaps?.last) for (const [id, l] of opts.swaps.last) if (longIds.has(id)) LS.lastSqrt[id] = decodeSwap(l).sqrtPriceX96.toString();
+    const from = LS.cursor + 1;
+    let seen = 0;
+    if (from <= latest && timeLeft()) {
+      const r = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.MODIFY_LIQUIDITY] }, from, latest, {
+        chunk: 200_000, deadline: opts.deadline,
+        onLogs: (logs) => {
+          for (const l of logs) {
+            const id = l.topics[1]; if (!longIds.has(id)) continue;
+            const m = decodeModifyLiquidity(l);
+            const lad = (LS.ladders[id] ||= {});
+            lad[m.tickLower] = (BigInt(lad[m.tickLower] || 0) + m.liquidityDelta).toString();
+            lad[m.tickUpper] = (BigInt(lad[m.tickUpper] || 0) - m.liquidityDelta).toString();
+            seen++;
+          }
+        },
+      });
+      LS.cursor = r.reachedBlock ?? latest;
+      LS.partial = !!r.truncated;
+      LS.events += seen;
+      /* Ticks that net to zero are closed positions; dropping them keeps the store small. */
+      for (const [id, lad] of Object.entries(LS.ladders)) { for (const [t, v] of Object.entries(lad)) if (v === "0") delete lad[t]; if (!Object.keys(lad).length) delete LS.ladders[id]; }
+    }
+    if (store) store.set("rwaLadderStream", LS);
+
     const perToken = {};
-    let usd = 0, covered = 0, done = 0;
-    const longSwapsTotal = ranked.reduce((s, [, n]) => s + n, 0);
-    for (const [id, n] of pick) {
-      if (!timeLeft()) break;
-      const e = allStockPools.get(id);
-      const lastLog = opts.swaps.last.get(id); if (!lastLog) continue;
-      const sw = decodeSwap(lastLog);
-      const sqrtP = Number(sw.sqrtPriceX96) / 2 ** 96;
-      const ladder = await poolTickLadder(id, latest, prevLadders[id], { deadline: opts.deadline });
-      ladders[id] = ladder;
-      if (ladder.partial || !(sqrtP > 0)) continue;
-      const { a0, a1 } = ladderRawAmounts(ladder.net, sqrtP);
+    let usd = 0, valued = 0, unpriced = 0, withLiquidity = 0;
+    for (const [id, lad] of Object.entries(LS.ladders)) {
+      const e = allStockPools.get(id); if (!e) continue;
+      withLiquidity++;
+      const sq = LS.lastSqrt[id] ?? e.p0; if (!sq) { unpriced++; continue; }
+      const sqrtP = Number(BigInt(sq)) / 2 ** 96; if (!(sqrtP > 0)) { unpriced++; continue; }
+      const { a0, a1 } = ladderRawAmounts(lad, sqrtP);
+      let counted = false;
       for (const { token, side } of e.stocks) {
         const amt = (side === 0 ? a0 : a1) / 10 ** (decimals.get(token) ?? 18);
         const px = anchorUsd.get(token); if (!px || !(amt > 0)) continue;
-        usd += amt * px; perToken[sym(token)] = (perToken[sym(token)] || 0) + amt * px;
+        usd += amt * px; perToken[sym(token)] = (perToken[sym(token)] || 0) + amt * px; counted = true;
       }
-      covered += n; done++;
+      if (counted) valued++;
     }
-    if (store) store.set("rwaLadders", ladders);   // only the pools currently in the top set; the rest re-replay if they return
+    const span = latest - GENESIS_BLOCK + 1;
     longTvl = {
-      usd: Math.round(usd), pools: done, candidates: pick.length, partial: done < pick.length,
-      swapCoverage: longSwapsTotal ? covered / longSwapsTotal : null,
+      usd: Math.round(usd),
+      pools: valued, poolsWithLiquidity: withLiquidity, poolsUnpriced: unpriced, longStockPools: longIds.size,
+      backfilledTo: LS.cursor, complete: !LS.partial && LS.cursor >= latest, backfillShare: Math.min(1, (LS.cursor - GENESIS_BLOCK + 1) / span),
+      events: LS.events,
       perToken: Object.fromEntries(Object.entries(perToken).map(([k, v]) => [k, Math.round(v)]).sort((a, b) => b[1] - a[1])),
     };
-    log(`  stock inventory in LONG pools: $${Math.round(usd).toLocaleString()} across ${done} of ${pick.length} most active pools (${longSwapsTotal ? (100 * covered / longSwapsTotal).toFixed(0) : "—"}% of LONG stock swaps), ${secs(t4)}`);
+    log(`  stock inventory in LONG pools: $${Math.round(usd).toLocaleString()} across ${valued} pools with stock (${withLiquidity} with liquidity of ${longIds.size} LONG stock pools); ladder stream at block ${LS.cursor.toLocaleString()} (${(100 * longTvl.backfillShare).toFixed(1)}% of history${LS.partial ? ", resumes" : ""}), ${seen.toLocaleString()} events this run, ${secs(t4)}`);
   }
 
   /* 5. Totals over the priced set only: an unpriced token contributes no dollars,

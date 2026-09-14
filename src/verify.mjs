@@ -450,8 +450,11 @@ if (rwa && rwa.tokens?.length) {
        against the balances' spot. */
     warn("stock inventory in LONG pools fits inside the pool manager's inventory",
       rwa.longTvl.usd <= rwa.totals.dexUsd * 1.05, `$${rwa.longTvl.usd} in LONG pools vs $${Math.round(rwa.totals.dexUsd)} in all pools`);
-    check("LONG-pool ladders report their coverage honestly",
-      rwa.longTvl.pools <= rwa.longTvl.candidates && (rwa.longTvl.swapCoverage == null || (rwa.longTvl.swapCoverage >= 0 && rwa.longTvl.swapCoverage <= 1.000001)));
+    check("LONG-pool ladder stream reports its coverage honestly",
+      rwa.longTvl.pools <= rwa.longTvl.poolsWithLiquidity && rwa.longTvl.poolsWithLiquidity <= rwa.longTvl.longStockPools
+      && rwa.longTvl.backfillShare >= 0 && rwa.longTvl.backfillShare <= 1.000001,
+      `${rwa.longTvl.pools} valued of ${rwa.longTvl.poolsWithLiquidity} with liquidity of ${rwa.longTvl.longStockPools}; ${(rwa.longTvl.backfillShare * 100).toFixed(1)}% of history`);
+    warn("LONG-pool ladder stream has reached the head", rwa.longTvl.complete, `backfilled to block ${rwa.longTvl.backfilledTo}; the figure is a floor until it catches up`);
   }
   for (const [tok, rows] of Object.entries(rwa.daily || {})) {
     check(`${rwa.dailyTracked?.[tok] || tok.slice(0, 8)} daily DEX inventory is a running sum that never goes negative`,

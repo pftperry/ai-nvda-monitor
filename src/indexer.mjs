@@ -485,7 +485,7 @@ if (!fast && !flag("no-launchpad")) {
          A day of Swap logs on this chain is 3.5 million rows: the first attempt
          spent its whole budget downloading them and had nothing left for the pool
          catalogue, so the share reads as a two-hour sample, kept as a series. */
-      const rwaDeadline = Date.now() + opt("rwa-budget", 480) * 1000;
+      const rwaDeadline = Date.now() + opt("rwa-budget", deep ? 2400 : 480) * 1000;
       const rwa = await indexRwa(latest, tm, {
         store, pools: census.pools, symbols, decimals, anchorUsd: anchors,
         swaps: { counts: rank.counts, volume: rank.volume, last: rank.last, blocks: Math.round(C.BLOCKS_PER_DAY / 12), total: rank.swaps, truncated: rank.truncated },

@@ -184,7 +184,7 @@ jobs:
           case "$MODE" in
             fast)    node src/indexer.mjs --fast --top 20 ;;
             quick)   node src/indexer.mjs --quick ;;
-            deep)    node src/indexer.mjs --top 30 ;;
+            deep)    node src/indexer.mjs --deep --top 30 ;;
             # Discards stored series and re-derives every bucket. Needed when a
             # decoding input changes (a token's decimals, say), because resuming
             # from a cursor only adds new buckets and never revisits old ones.
