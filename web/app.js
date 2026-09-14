@@ -3451,42 +3451,55 @@ function renderRevenue() {
   const held = (B.accumulator.ai || 0) + (B.buyback.ai || 0);
   const vols = completeDays(dailyVolumes()).slice(-7);
   const aiVol7 = sumOf(vols, (d) => d.total || 0);
-  const bought7 = s7("aiToBuyback"), boughtP = p7("aiToBuyback");
+  /* Two paths through one contract, seen in its transfers. On an AI-paired launch
+     pool the fee leg is the launched token; the contract sells it for AI and
+     forwards the AI to the accumulation wallet (a bid). On the AI/NVDA and AI/USDG
+     pools the fee leg is AI; the contract sells it for NVDA or USDG and forwards
+     that to the revenue wallet (an offer). Kept = taken in, less sold into pools. */
+  const in7 = s7("aiToBuyback"), sold7 = s7("aiBuybackToPools") + s7("aiBuybackElsewhere"), kept7 = in7 - sold7;
+  const inP = p7("aiToBuyback"), soldP = p7("aiBuybackToPools") + p7("aiBuybackElsewhere"), keptP = inP - soldP;
+  const supply = S.burns?.totalSupply || marketState().supply || 1;
 
   /* Investor: demand that does not depend on anyone's opinion of AI. */
   $("#rvTiles").innerHTML = `<div class="tiles">
-    ${tile("AI collected, 7d", compact(bought7), `≈ $${compact(bought7 * px)} at today's price${boughtP ? ` · <span class="${bought7 >= boughtP ? "up" : "down"}">${pct(bought7 / boughtP - 1, 0)}</span> vs prior 7d` : ""}`, "", "hero")}
-    ${tile("Of AI volume", aiVol7 ? pctLevel(bought7 / aiVol7, 2) : "—", "the buyback contract's AI intake against all AI traded on indexed venues, same 7 days")}
-    ${tile("Accumulated, never sold", compact(held), `${compact(B.accumulator.ai || 0)} in the accumulation wallet + ${compact(B.buyback.ai || 0)} in the contract · $${compact(held * px)}`)}
-    ${tile("Sent out, ever", compact(T.aiAccumOut), T.aiAccumOut > 0 ? "AI the accumulation wallet has moved" : "the accumulation wallet has never sent AI", T.aiAccumOut > 0 ? "warn" : "")}
+    ${tile("AI kept by the protocol, 7d", compact(kept7), `bought with launched-token fee legs and parked · ≈ $${compact(kept7 * px)}${keptP ? ` · <span class="${kept7 >= keptP ? "up" : "down"}">${pct(kept7 / keptP - 1, 0)}</span> vs prior 7d` : ""}`, kept7 >= 0 ? "" : "bad", "hero")}
+    ${tile("AI sold into pools, 7d", compact(sold7), `the flagship pools' AI fee leg, sold for NVDA or USDG and sent to the revenue wallet · ≈ $${compact(sold7 * px)}`, sold7 > kept7 ? "warn" : "")}
+    ${tile("Net, as a share of AI volume", aiVol7 ? `${kept7 - sold7 >= 0 ? "+" : ""}${pctLevel((kept7 - sold7) / aiVol7, 2)}` : "—", "kept minus sold, against all AI traded on indexed venues, same 7 days", kept7 - sold7 >= 0 ? "" : "bad")}
+    ${tile("Held by the engine", compact(held), `${compact(B.accumulator.ai || 0)} in the accumulation wallet (never sent any out) + ${compact(B.buyback.ai || 0)} in the contract · $${compact(held * px)} · ${pctLevel(held / supply, 2)} of supply`)}
   </div>`;
-  barChart($("#cBuyback"), days.slice(-30), {
-    xKey: "t", yKey: "aiToBuyback", color: "var(--buy)", xFmt: dayFmt,
-    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${compact(d.aiToBuyback)} AI collected</div><div class="k">${compact(d.aiBuybackToAccum)} forwarded to the accumulation wallet</div>`,
+  barChart($("#cBuyback"), days.slice(-30).map((d) => ({ ...d, kept: Math.max(0, d.aiToBuyback - d.aiBuybackToPools - (d.aiBuybackElsewhere || 0)) })), {
+    xKey: "t", yKey: "kept", color: "var(--buy)", xFmt: dayFmt,
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${compact(d.kept)} AI kept</div><div class="k">${compact(d.aiToBuyback)} taken in · ${compact(d.aiBuybackToPools)} sold into pools · ${compact(d.aiBuybackToAccum)} to the accumulation wallet</div>`,
   });
-  $("#readBuyback").innerHTML = takeEl(bought7 > 0 ? "pos" : "neu",
-    `The protocol's fee engine took in <b>${compact(bought7)} AI</b> over the last 7 complete days${aiVol7 ? `, <b>${pctLevel(bought7 / aiVol7, 2)}</b> of all AI traded on the indexed venues` : ""},
-     and it has never sold any: <b>${compact(held)} AI</b> (${pctLevel(held / (S.burns?.totalSupply || marketState().supply || 1), 2)} of supply) sits in the accumulation wallet and the contract.
-     This is the mechanical bid under AI that a fee-only view misses: every launched-token trade on an AI-paired LONG pool buys a little AI.
-     <span class="muted">Half of each swap's hook fee goes to this contract; the other half is folded back into the pool as liquidity (the compounding card).</span>`);
+  const lifeSold = T.aiBuybackToPools + T.aiBuybackElsewhere, lifeIn = T.aiToBuyback;
+  $("#readBuyback").innerHTML = takeEl(kept7 > sold7 ? "pos" : "warn",
+    `Over the last 7 complete days the protocol's fee engine <b>kept ${compact(kept7)} AI</b> (bought with launched-token fee legs on AI-paired pools) and
+     <b>sold ${compact(sold7)} AI</b> into pools (the flagship pools' AI fee leg, converted to NVDA or USDG for the revenue wallet)${aiVol7 ? `, a net
+     <b>${kept7 - sold7 >= 0 ? "+" : ""}${pctLevel((kept7 - sold7) / aiVol7, 2)}</b> of all AI traded on the indexed venues` : ""}.
+     Over its life it took in <b>${compact(lifeIn)} AI</b> and sold <b>${compact(lifeSold)}</b> of it (${pctLevel(lifeSold / lifeIn, 0)}), almost all in July and early August
+     when the flagship carried the volume; since mid-August the balance has swung to keeping. The <b>${compact(held)} AI</b> it holds
+     (${pctLevel(held / supply, 2)} of supply) has never been sent on from the accumulation wallet.
+     <span class="muted">This is the mechanical flow a fee-only view misses, in both directions. Half of each swap's hook fee goes to this contract;
+     the other half is folded back into the pool as liquidity (the compounding card).</span>`);
 
   /* Treasury: the money. */
-  const usdgIn7 = s7("usdgToRevenue"), usdgOutTotal = T.usdgRevenueOut;
+  const usdgIn7 = s7("usdgToRevenueFromBuyback") + s7("usdgToRevenueOther"), usdgOutTotal = T.usdgRevenueOut;
   const fromBuybackShare = T.usdgToRevenue ? T.usdgToRevenueFromBuyback / T.usdgToRevenue : null;
   $("#rvTreasury").innerHTML = `<div class="tiles">
     ${tile("Revenue wallet, USDG", B.revenue.usdg == null ? "—" : `$${compact(B.revenue.usdg)}`, `held now · $${compact(T.usdgToRevenue)} ever received${fromBuybackShare != null ? `, ${pctLevel(fromBuybackShare, 0)} of it from the buyback contract` : ""}`, "", "hero")}
-    ${tile("USDG in, 7d", `$${compact(usdgIn7)}`, `$${compact(usdgIn7 / 7)} a day · stock-paired fee legs`)}
+    ${tile("USDG in, 7d", `$${compact(usdgIn7)}`, `$${compact(usdgIn7 / 7)} a day${fromBuybackShare != null && fromBuybackShare < 0.5 ? " · mostly from senders other than the buyback contract" : ""}`)}
     ${tile("USDG out, ever", `$${compact(usdgOutTotal)}`, usdgOutTotal > 0 ? "moved out of the revenue wallet" : "nothing has left the revenue wallet", usdgOutTotal > 0 ? "warn" : "")}
     ${tile("AI held by the engine", `$${compact(held * px)}`, `${compact(held)} AI across the accumulation wallet and the contract`)}
   </div>`;
-  barChart($("#cRevenue"), days.slice(-30), {
-    xKey: "t", yKey: "usdgToRevenue", color: "var(--series-2)", xFmt: dayFmt, fmt: (v) => `$${compact(v)}`,
-    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>$${compact(d.usdgToRevenue)} USDG into the revenue wallet</div>${d.usdgRevenueOut ? `<div class="k">$${compact(d.usdgRevenueOut)} out</div>` : ""}`,
+  barChart($("#cRevenue"), days.slice(-30).map((d) => ({ ...d, usdgIn: d.usdgToRevenueFromBuyback + d.usdgToRevenueOther })), {
+    xKey: "t", yKey: "usdgIn", color: "var(--series-2)", xFmt: dayFmt, fmt: (v) => `$${compact(v)}`,
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>$${compact(d.usdgIn)} USDG into the revenue wallet</div><div class="k">$${compact(d.usdgToRevenueFromBuyback)} from the buyback contract</div>${d.usdgRevenueOut ? `<div class="k">$${compact(d.usdgRevenueOut)} out</div>` : ""}`,
   });
   $("#readRevenue").innerHTML = takeEl("neu",
-    `The platform fee wallet followed above is the smaller of LONG's two fee paths. The larger one runs through the <b>buyback contract</b>:
-     stock-paired fee legs are forwarded as USDG to a wallet holding <b>$${compact(B.revenue.usdg || 0)}</b> today (<b>$${compact(usdgIn7)}</b> in the last week), and AI-paired legs are
-     converted to AI and parked, <b>${compact(held)} AI</b> so far. ${usdgOutTotal > 0 ? `<b>$${compact(usdgOutTotal)}</b> has left the revenue wallet.` : "Neither wallet has sent anything out."}
+    `The platform fee wallet followed below is the smaller of LONG's fee paths. The <b>revenue wallet</b> holds <b>$${compact(B.revenue.usdg || 0)}</b> of USDG
+     (<b>$${compact(usdgIn7)}</b> in the last week${fromBuybackShare != null ? `; only ${pctLevel(fromBuybackShare, 0)} of its lifetime inflow came from the buyback contract, the rest from other protocol senders` : ""}),
+     and the <b>buyback contract</b> has taken in <b>${compact(lifeIn)} AI</b> over its life, sold <b>${compact(lifeSold)}</b> of it into pools for NVDA and USDG, and parked
+     <b>${compact(held)} AI</b>. ${usdgOutTotal > 0 ? `<b>$${compact(usdgOutTotal)}</b> has left the revenue wallet.` : "Nothing has left the revenue wallet."}
      <span class="muted">Both destinations are plain externally-owned accounts, so who holds their keys is not something the chain can say; LONG's own Dune
      methodology names the contract as the protocol's buyback leg.</span>`);
 }
