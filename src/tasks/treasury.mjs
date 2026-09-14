@@ -41,6 +41,8 @@ const TRACK = {
 export const NAMES = {
   [POOL_MANAGER]: "v4 pool manager", [LONG_HOOK]: "LONG hook", [FEE_SPLITTER]: "fee splitter",
   [COMMUNITY_VAULT]: "community vault", [BURN_ADDRESS]: "0x0", [PLATFORM_FEE_RECIPIENT]: "platform fee wallet",
+  // Named by LONG's own Dune methodology as the protocol's ~1% buyback leg on launched-token swaps.
+  "0x6f02324d20cc679d0e585290caa6b16bacbc0f77": "LONG buyback contract",
   "0xe72688f7d25d7318b9a81f21edda640ca948c83b": "RobinHoodSettler (Robinhood Wallet swaps, 0x Settler)",
   "0x1d4b86491ec211257cbedd77a4380a7494624eff": "RobinHoodSettler (Robinhood Wallet swaps, 0x Settler)",
   "0x00000000009726632680fb29d3f7a9734e3010e2": "Rainbow router",

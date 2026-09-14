@@ -3259,7 +3259,8 @@ function renderRwa() {
       ${tile(`${nv.symbol} captured`, pctLevel(nv.share, 1), `${nf(nv.inDex + nv.inVault, 0)} of ${nf(nv.supply, 0)} ${nv.symbol} on chain · ${pctLevel(nv.dexShare, 1)} in pools, ${pctLevel(nv.vaultShare, 1)} in the vault`)}
       ${tile("Market coverage", cov == null ? "—" : `${T.activeListed} / ${T.activeStocks}`, cov == null ? "stock-event sample pending" : `stock tokens that moved on the chain in the last day have a LONG market (${pctLevel(cov, 0)})`)}
       ${tile("New issuance captured", issuance ? pctLevel(issuance.share, 0) : "—", issuance ? `of $${compact(issuance.dSup)} of stock minted in ${Math.round(issuance.days)}d, $${compact(issuance.dDex)} went into DEX liquidity` : "needs a week of history; supply grows daily")}
-      ${tile("In DEX liquidity", `$${compact(T.dexUsd)}`, `stock tokens held by the pool manager, all venues`)}
+      ${tile("In LONG pools", R.longTvl ? `$${compact(R.longTvl.usd)}` : "—", R.longTvl ? `${pctLevel(T.longShare, 1)} of stock supply · ${R.longTvl.pools} most active LONG stock pools replayed, ${pctLevel(R.longTvl.swapCoverage, 0)} of LONG stock swaps · a floor` : "ladders replay on the next slow run", "", R.longTvl ? "hero" : "")}
+      ${tile("In DEX liquidity, all venues", `$${compact(T.dexUsd)}`, `stock tokens held by the pool manager across every pool, LONG's or not`)}
       ${tile("Stock pools", T.poolsAll ? `${T.poolsLong.toLocaleString()} / ${T.poolsAll.toLocaleString()}` : "—", T.poolsAll ? `pools quoting a stock token carry the LONG hook (${pctLevel(T.poolsLong / T.poolsAll, 0)})${T.cataloguePartial ? " · catalogue still filling" : ""}` : "catalogue building")}
       ${(() => { const p = S.prices; const basis = p?.nvdaUsd && p?.nvdaUsdImplied ? p.nvdaUsdImplied / p.nvdaUsd - 1 : null;
         return tile("Cross-venue basis", basis == null ? "—" : `${(basis * 1e4).toFixed(0)} bps`, basis == null ? "NVDA price pending" : `NVDA implied by AI/NVDA × AI/USDG vs the NVDA/USDG pool; near zero means the venues are arbitraged tight`, basis != null && Math.abs(basis) > 0.02 ? "warn" : ""); })()}
@@ -3267,7 +3268,7 @@ function renderRwa() {
     </div>`;
     const win = R.swapShare?.windowHours ? (R.swapShare.windowHours >= 24 ? `${Math.round(R.swapShare.windowHours / 24)}d` : `${R.swapShare.windowHours}h`) : "window";
     $("#readRwa").innerHTML = takeEl(T.share >= 0.25 ? "pos" : "neu",
-      `<b>${pctLevel(T.share, 1)}</b> of the tokenized-stock value on Robinhood Chain sits inside DEX liquidity or the community vault${T.poolsAll ? `,
+      `<b>${pctLevel(T.share, 1)}</b> of the tokenized-stock value on Robinhood Chain sits inside DEX liquidity or the community vault${R.longTvl ? `; <b>${pctLevel(T.longShare, 1)}</b> ($${compact(R.longTvl.usd)}) of it inside LONG's own pools, measured on the ${R.longTvl.pools} most active` : ""}${T.poolsAll ? `,
        and <b>${pctLevel(T.poolsLong / T.poolsAll, 0)}</b> of the ${T.poolsAll.toLocaleString()} pools that quote a stock token are LONG launches` : ""}.
        <b>${pctLevel(nv.share, 1)}</b> of every ${nv.symbol} token on the chain is in a pool or the vault${R.tokens[0] !== nv ? `; ${R.tokens[0].symbol} leads by dollars at ${pctLevel(R.tokens[0].share, 1)}` : ""}.
        <span class="muted">Supply is the token's on-chain <code>totalSupply</code>; the pool-manager balance is DEX inventory on every venue,
@@ -3280,6 +3281,7 @@ function renderRwa() {
       { h: "In vault", f: (t) => (t.inVault ? nf(t.inVault, 0) : `<span class="muted">0</span>`) },
       { h: "Captured", attrs: () => ({ class: "bar-cell" }), f: (t) => `<div class="fill" style="width:${Math.min(120, t.share * 120)}px"></div><span>${pctLevel(t.share, 1)}</span>` },
       { h: "USD in pools", f: (t) => (t.dexUsd == null ? `<span class="muted">unpriced</span>` : `$${compact(t.dexUsd)}`) },
+      { h: "In LONG pools", f: (t) => (R.longTvl?.perToken?.[t.symbol] != null ? `$${compact(R.longTvl.perToken[t.symbol])}` : "—") },
       { h: "LONG pools / all", f: (t) => (t.poolsAll || !t.poolsPartial ? `${t.poolsLong.toLocaleString()} / ${t.poolsAll.toLocaleString()}${t.poolsPartial ? "*" : ""}` : `<span class="muted">cataloguing</span>`) },
       { h: `Swaps ${win} via LONG`, f: (t) => { const s = sw.find((x) => x.token === t.token); return s ? `${s.long.toLocaleString()} / ${s.all.toLocaleString()} <span class="muted">${pctLevel(s.share, 0)}</span>` : "—"; } },
     ], R.tokens);
@@ -4051,7 +4053,16 @@ function renderMethod() {
       <b>Outside LPs</b> are distinct non-protocol addresses with positive net liquidity in the replayed ladders.
       <b>Yield</b> is the last week's compounding annualised against protocol-owned liquidity, at today's prices, so a
       run-rate rather than a return. <b>Cross-venue basis</b> is NVDA implied by AI/NVDA × AI/USDG against the NVDA/USDG
-      pool's own print.</p>
+      pool's own print. <b>Stock in LONG pools</b> replays the position ladders of the most active LONG stock pools and
+      values the stock leg at each pool's last swap price; the dormant tail is not replayed, so it is a floor.</p>
+
+      <p><b style="color:var(--text-primary)">Cross-checks against LONG's own Dune dashboard</b> (@natan_benish2001, read 14 Sep 2026;
+      it identifies LONG pools from the factories' <code>LaunchCreated</code> events and follows pools that graduate to v2/v3,
+      prices with Chainlink, and counts Robinhood's Rialto venue in "all stock trading"). Dune: <b>16.4%</b> LONG share of all
+      tokenized-stock trading volume since 1 Jun, <b>37.0%</b> among launchpad-token pairs, <b>30.1%</b> of stock traders,
+      <b>$12.9M</b> of stock TVL in LONG pools, <b>$1.18B</b> cumulative LONG stock volume. This site's two-hour window read
+      14–16% by dollars the same night, and its pool-manager inventory ($54M, every venue) is the ceiling of which Dune's
+      LONG-only figure is a part. Where the two disagree, Dune's launch list is the more exact definition of "LONG".</p>
 
       <p><b style="color:var(--text-primary)">Holders.</b> Every AI transfer since genesis is replayed into a balance per
       address and snapshotted every four hours; balances must sum to supply exactly before anything is published. On

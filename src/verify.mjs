@@ -443,6 +443,15 @@ if (rwa && rwa.tokens?.length) {
       `${rwa.universe.blocksSampled.toLocaleString()} blocks over ${rwa.universe.samples} sample(s)`);
   }
   check("capture history is ordered", rwa.history.every((h, i, a) => i === 0 || h.t > a[i - 1].t));
+  if (rwa.longTvl) {
+    /* LONG's pools are a subset of the pool manager, so what they hold cannot exceed
+       what the manager holds; a small overshoot is the ladders' last-swap price
+       against the balances' spot. */
+    warn("stock inventory in LONG pools fits inside the pool manager's inventory",
+      rwa.longTvl.usd <= rwa.totals.dexUsd * 1.05, `$${rwa.longTvl.usd} in LONG pools vs $${Math.round(rwa.totals.dexUsd)} in all pools`);
+    check("LONG-pool ladders report their coverage honestly",
+      rwa.longTvl.pools <= rwa.longTvl.candidates && (rwa.longTvl.swapCoverage == null || (rwa.longTvl.swapCoverage >= 0 && rwa.longTvl.swapCoverage <= 1.000001)));
+  }
   for (const [tok, rows] of Object.entries(rwa.daily || {})) {
     check(`${rwa.dailyTracked?.[tok] || tok.slice(0, 8)} daily DEX inventory is a running sum that never goes negative`,
       rows.every((r, i) => (i === 0 ? Math.abs(r.cum - r.net) < 1e-3 : Math.abs(r.cum - rows[i - 1].cum - r.net) < 1e-3) && r.cum >= -1e-3),

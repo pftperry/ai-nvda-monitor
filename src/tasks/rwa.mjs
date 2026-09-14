@@ -1,7 +1,8 @@
 import { rpc, getLogsRange, padAddr } from "../rpc.mjs";
 import { POOL_MANAGER, COMMUNITY_VAULT, LONG_HOOK, AI, USDG, NVDA, GENESIS_BLOCK } from "../config.mjs";
-import { TOPICS, decodeTransfer, decodeInitialize, fmtUnits } from "../decode.mjs";
+import { TOPICS, decodeTransfer, decodeInitialize, decodeSwap, fmtUnits } from "../decode.mjs";
 import { multicall, resolveTokens } from "../tokens.mjs";
+import { poolTickLadder, ladderRawAmounts } from "./depth.mjs";
 
 /**
  * The real-world-asset ledger: how much of Robinhood Chain's tokenized stock
@@ -29,6 +30,7 @@ export const isStockCode = (code) => typeof code === "string" && (code.length - 
 export const STOCK_EVENT = "0x37e7f0db430edc9dd31bc66f25f8449353aa0818f503b906747dd8f286cd3802";
 
 const MIN_DEGREE = 3;              // pools a token must anchor before it is worth a getCode call
+const LONG_TVL_POOLS = 200;        // most active LONG stock pools whose ladders are replayed for stock inventory
 const DAILY_TRACKED = [NVDA];      // tokens whose DEX inventory is rebuilt daily from transfers
 const UNIVERSE_WINDOW = 9_000;     // blocks of the stock event scanned per run (~15 min); samples are unioned over a day
 const SUPPLY_SEL = "0x18160ddd";
@@ -256,6 +258,47 @@ export async function indexRwa(latest, tm, opts = {}) {
     log(`  stock-token swaps in window: ${all.toLocaleString()}, ${long.toLocaleString()} through LONG pools (${all ? (100 * long / all).toFixed(1) : "—"}% by count, ${usdAll ? (100 * usdLong / usdAll).toFixed(1) : "—"}% by dollars)`);
   }
 
+  /* 4b. Stock inventory inside LONG's own pools. The pool manager's balance mixes
+        every venue; LONG's Dune reports its pools alone hold a quarter of it. The
+        singleton keeps no per-pool balance, so the most active LONG stock pools'
+        position ladders are replayed and valued at their last swap price. A lower
+         bound: the long tail of dormant pools is not replayed. */
+  let longTvl = null;
+  if (opts.swaps?.counts && opts.swaps?.last && allStockPools.size) {
+    const t4 = Date.now();
+    const ranked = [...opts.swaps.counts].filter(([id]) => allStockPools.get(id)?.long).sort((a, b) => b[1] - a[1]);
+    const pick = ranked.slice(0, LONG_TVL_POOLS);
+    const prevLadders = (store && store.get("rwaLadders")) || {};
+    const ladders = {};
+    const perToken = {};
+    let usd = 0, covered = 0, done = 0;
+    const longSwapsTotal = ranked.reduce((s, [, n]) => s + n, 0);
+    for (const [id, n] of pick) {
+      if (!timeLeft()) break;
+      const e = allStockPools.get(id);
+      const lastLog = opts.swaps.last.get(id); if (!lastLog) continue;
+      const sw = decodeSwap(lastLog);
+      const sqrtP = Number(sw.sqrtPriceX96) / 2 ** 96;
+      const ladder = await poolTickLadder(id, latest, prevLadders[id], { deadline: opts.deadline });
+      ladders[id] = ladder;
+      if (ladder.partial || !(sqrtP > 0)) continue;
+      const { a0, a1 } = ladderRawAmounts(ladder.net, sqrtP);
+      for (const { token, side } of e.stocks) {
+        const amt = (side === 0 ? a0 : a1) / 10 ** (decimals.get(token) ?? 18);
+        const px = anchorUsd.get(token); if (!px || !(amt > 0)) continue;
+        usd += amt * px; perToken[sym(token)] = (perToken[sym(token)] || 0) + amt * px;
+      }
+      covered += n; done++;
+    }
+    if (store) store.set("rwaLadders", ladders);   // only the pools currently in the top set; the rest re-replay if they return
+    longTvl = {
+      usd: Math.round(usd), pools: done, candidates: pick.length, partial: done < pick.length,
+      swapCoverage: longSwapsTotal ? covered / longSwapsTotal : null,
+      perToken: Object.fromEntries(Object.entries(perToken).map(([k, v]) => [k, Math.round(v)]).sort((a, b) => b[1] - a[1])),
+    };
+    log(`  stock inventory in LONG pools: $${Math.round(usd).toLocaleString()} across ${done} of ${pick.length} most active pools (${longSwapsTotal ? (100 * covered / longSwapsTotal).toFixed(0) : "—"}% of LONG stock swaps), ${secs(t4)}`);
+  }
+
   /* 5. Totals over the priced set only: an unpriced token contributes no dollars,
         and mixing a token count with a dollar share would be meaningless. */
   const priced = tokens.filter((t) => t.priceUsd);
@@ -271,6 +314,8 @@ export async function indexRwa(latest, tm, opts = {}) {
     cataloguePartial: tokens.some((t) => t.poolsPartial),
   };
   totals.share = totals.supplyUsd > 0 ? (totals.dexUsd + totals.vaultUsd) / totals.supplyUsd : null;
+  totals.longUsd = longTvl ? longTvl.usd : null;
+  totals.longShare = longTvl && totals.supplyUsd > 0 ? (longTvl.usd + totals.vaultUsd) / totals.supplyUsd : null;
 
   /* 6. Daily DEX inventory for the tracked stock, from transfers, so the trend
         exists from genesis rather than from today. Last, with whatever budget is
@@ -295,6 +340,7 @@ export async function indexRwa(latest, tm, opts = {}) {
   const history = (opts.prior?.history || []).filter((h) => h.t !== hour).slice(-24 * 120);
   history.push({
     t: hour, share: totals.share, dexUsd: Math.round(totals.dexUsd), vaultUsd: Math.round(totals.vaultUsd), supplyUsd: Math.round(totals.supplyUsd),
+    longUsd: totals.longUsd, longShare: totals.longShare,
     swapShare: swapShare?.share ?? null, usdShare: swapShare?.usdShare ?? null, stockSwaps: swapShare?.stockSwaps ?? null, longSwaps: swapShare?.longSwaps ?? null,
     activeStocks: totals.activeStocks, activeListed: totals.activeListed,
     perToken: Object.fromEntries(tokens.map((t) => [t.symbol, [+t.supply.toFixed(2), +t.inDex.toFixed(2), +t.inVault.toFixed(2)]])),
@@ -306,7 +352,7 @@ export async function indexRwa(latest, tm, opts = {}) {
     classifier: { ...STOCK_CODE, event: STOCK_EVENT, note: "Robinhood tokenized-stock beacon proxy: same bytecode and beacon as NVDA; emits the stock transfer event" },
     minDegree: MIN_DEGREE,
     universe: { activeTokens: Object.keys(uni.active).length, samples: uni.samples, blocksSampled: uni.blocksSampled, partial: uni.partial },
-    tokens, totals, swapShare, history,
+    tokens, totals, swapShare, longTvl, history,
     dailyTracked: Object.fromEntries(DAILY_TRACKED.map((t) => [t, sym(t)])),
     daily,
     dailyPartial: Object.fromEntries(DAILY_TRACKED.map((t) => [t, !!dexState[t]?.partial])),

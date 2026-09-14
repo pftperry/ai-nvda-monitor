@@ -23,7 +23,11 @@ export const HOLDER_STATE_SCHEMA = 4;   // 4: actors netted per transaction (buy
    the same breath (balance measured at zero, 947 transfers in and 662 out), so it
    is a pipe, not a holder, and netting a swap's transfers would otherwise call it
    a buyer on every trade. */
-const MACHINERY = new Set([BURN_ADDRESS, POOL_MANAGER, LONG_HOOK, COMMUNITY_VAULT, FEE_SPLITTER, PLATFORM_FEE_RECIPIENT]);
+/* The protocol's buyback contract (named as such in LONG's own Dune methodology,
+   sender 0x6f02…0F77) holds several million AI and passes AI through on most
+   launched-token swaps; a contract, not an owner. */
+export const LONG_BUYBACK = "0x6f02324d20cc679d0e585290caa6b16bacbc0f77";
+const MACHINERY = new Set([BURN_ADDRESS, POOL_MANAGER, LONG_HOOK, COMMUNITY_VAULT, FEE_SPLITTER, PLATFORM_FEE_RECIPIENT, LONG_BUYBACK]);
 
 /* Dollar buckets, matching the convention holder dashboards use, so a reader can
    check the count against one. The top bucket is split at $10k because "share of

@@ -216,6 +216,19 @@ export function mergedImpact(entries, aiUsd) {
   return { sell: IMPACT_SIZES.map((u) => solve(u, "sell")), buy: IMPACT_SIZES.map((u) => solve(u, "buy")), venues: usable.length };
 }
 
+/** Raw token amounts (token0, token1) every position in a ladder holds at a given sqrt price. */
+export function ladderRawAmounts(net, sqrtP) {
+  const ticks = Object.keys(net).map(Number).sort((a, b) => a - b);
+  let L = 0n, a0 = 0, a1 = 0;
+  for (let i = 0; i < ticks.length - 1; i++) {
+    L += BigInt(net[ticks[i]]);
+    if (L <= 0n) continue;
+    const r = amountsFor(Number(L), tickToSqrt(ticks[i]), tickToSqrt(ticks[i + 1]), sqrtP);
+    a0 += r.a0; a1 += r.a1;
+  }
+  return { a0, a1 };
+}
+
 /** Dollar value of every position in a ladder at the pool's spot, split into AI and quote legs. */
 function ladderValueUsd(net, pool, aiUsd) {
   const dec0 = pool.aiIsCurrency0 ? 18 : (pool.pairDecimals ?? 18);
