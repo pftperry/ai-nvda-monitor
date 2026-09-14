@@ -4041,7 +4041,14 @@ function renderMethod() {
       itself, and <b>compounding</b> is the hook's own liquidity additions by day (its fee fold-ins since 27 Jul; the
       launch seed on 14 Jul is shown separately), valued at today's prices. <b>Cost to trade</b> walks the tick ladder
       from spot until a dollar amount is absorbed, per venue and across all venues at once (the single price at which
-      the pools together take the whole order, which is what a router achieves).</p>
+      the pools together take the whole order, which is what a router achieves). <b>Coverage</b> uses the stock tokens'
+      own transfer event, which no other contract on the chain emits: a short window of it is scanned each slow-path run
+      and unioned over the trailing day, so the universe is every stock token actually in use, listed on LONG or not.
+      <b>Volume share</b> values the stock leg of every swap in the census window at that stock's USDG price.
+      <b>Outside LPs</b> are distinct non-protocol addresses with positive net liquidity in the replayed ladders.
+      <b>Yield</b> is the last week's compounding annualised against protocol-owned liquidity, at today's prices, so a
+      run-rate rather than a return. <b>Cross-venue basis</b> is NVDA implied by AI/NVDA × AI/USDG against the NVDA/USDG
+      pool's own print.</p>
 
       <p><b style="color:var(--text-primary)">Holders.</b> Every AI transfer since genesis is replayed into a balance per
       address and snapshotted every four hours; balances must sum to supply exactly before anything is published. On
