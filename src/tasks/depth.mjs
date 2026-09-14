@@ -37,7 +37,7 @@ function amountsFor(L, sqrtA, sqrtB, sqrtP) {
  * Resumes from a cursor: positions are append-only deltas, so a later scan only
  * has to add to the ladder rather than rebuild it.
  */
-export const LADDER_VERSION = 3;   // v2 kept the hook's positions apart; v3 also keeps each LP's net liquidity
+export const LADDER_VERSION = 4;   // v2 kept the hook's positions apart; v3 each LP's liquidity; v4 each LP's positions by range
 export async function poolTickLadder(poolId, latest, prior = null, opts = {}) {
   const usable = prior && prior.v === LADDER_VERSION ? prior : null;
   const from = usable?.cursor ? Math.max(GENESIS_BLOCK, usable.cursor + 1) : GENESIS_BLOCK;
@@ -51,8 +51,11 @@ export async function poolTickLadder(poolId, latest, prior = null, opts = {}) {
   /* Net liquidity per provider, in liquidity units. Who else is in the pool
      besides the protocol, and how concentrated they are, is a question about the
      durability of the book that the tick ladder alone cannot answer. */
+  /* By range as well as by provider: liquidity units are not comparable across
+     ranges (a tight band carries far more L per dollar than a wide one), so a
+     provider's share must be valued at spot from its positions, not summed in L. */
   const lps = new Map();
-  for (const [a, v] of Object.entries(usable?.lps || {})) lps.set(a, BigInt(v));
+  for (const [a, ranges] of Object.entries(usable?.lps || {})) lps.set(a, new Map(Object.entries(ranges).map(([k, v]) => [k, BigInt(v)])));
   /* The hook's own liquidity changes, by day and by tick range. The protocol seeds
      a launch's liquidity and, since its second week, folds the pool's fees back into
      it on every swap; this is the tape of that compounding. Ranges are kept so the
@@ -63,7 +66,10 @@ export async function poolTickLadder(poolId, latest, prior = null, opts = {}) {
     const m = decodeModifyLiquidity(l);
     net.set(m.tickLower, (net.get(m.tickLower) ?? 0n) + m.liquidityDelta);
     net.set(m.tickUpper, (net.get(m.tickUpper) ?? 0n) - m.liquidityDelta);
-    lps.set(m.sender, (lps.get(m.sender) ?? 0n) + m.liquidityDelta);
+    const mine = lps.get(m.sender) || new Map();
+    const rk = `${m.tickLower}:${m.tickUpper}`;
+    mine.set(rk, (mine.get(rk) ?? 0n) + m.liquidityDelta);
+    lps.set(m.sender, mine);
     if (m.sender === LONG_HOOK) {
       hookNet.set(m.tickLower, (hookNet.get(m.tickLower) ?? 0n) + m.liquidityDelta);
       hookNet.set(m.tickUpper, (hookNet.get(m.tickUpper) ?? 0n) - m.liquidityDelta);
@@ -83,21 +89,32 @@ export async function poolTickLadder(poolId, latest, prior = null, opts = {}) {
     events: (usable?.events || 0) + logs.length,
     net: asObj(net),
     hook: { net: asObj(hookNet), days: hookDays },
-    lps: Object.fromEntries([...lps].filter(([, v]) => v > 0n).map(([a, v]) => [a, v.toString()])),
+    lps: Object.fromEntries([...lps].map(([a, m]) => [a, Object.fromEntries([...m].filter(([, v]) => v > 0n).map(([k, v]) => [k, v.toString()]))]).filter(([, r]) => Object.keys(r).length)),
   };
 }
 
-/** The provider base of one pool: how many, and how much of the liquidity units the biggest outsiders hold. */
-export function lpBase(ladder) {
-  const rows = Object.entries(ladder.lps || {}).map(([a, v]) => ({ a, L: Number(BigInt(v)) })).filter((r) => r.L > 0);
-  const total = rows.reduce((s, r) => s + r.L, 0);
-  const external = rows.filter((r) => r.a !== LONG_HOOK).sort((x, y) => y.L - x.L);
-  const ext = external.reduce((s, r) => s + r.L, 0);
+/** The provider base of one pool, valued at spot: how many, and how much of the dollars the biggest outsiders hold. */
+export function lpBase(ladder, pool, aiUsd) {
+  const rows = [];
+  for (const [a, ranges] of Object.entries(ladder.lps || {})) {
+    const net = {};
+    for (const [k, v] of Object.entries(ranges)) {
+      const [lo, hi] = k.split(":").map(Number);
+      net[lo] = (BigInt(net[lo] || 0) + BigInt(v)).toString();
+      net[hi] = (BigInt(net[hi] || 0) - BigInt(v)).toString();
+    }
+    const usd = ladderValueUsd(net, pool, aiUsd).usd;
+    if (usd > 0) rows.push({ a, usd });
+  }
+  const total = rows.reduce((s, r) => s + r.usd, 0);
+  const external = rows.filter((r) => r.a !== LONG_HOOK).sort((x, y) => y.usd - x.usd);
+  const ext = external.reduce((s, r) => s + r.usd, 0);
   return {
     providers: rows.length, external: external.length,
+    externalUsd: Math.round(ext),
     hookShare: total > 0 ? +(1 - ext / total).toFixed(4) : null,
-    topExternalShare: total > 0 && external.length ? +(external[0].L / total).toFixed(4) : null,
-    top5ExternalShare: total > 0 ? +(external.slice(0, 5).reduce((s, r) => s + r.L, 0) / total).toFixed(4) : null,
+    topExternalShare: total > 0 && external.length ? +(external[0].usd / total).toFixed(4) : null,
+    top5ExternalShare: total > 0 ? +(external.slice(0, 5).reduce((s, r) => s + r.usd, 0) / total).toFixed(4) : null,
   };
 }
 
@@ -404,7 +421,7 @@ export async function indexDepth(pools, latest, aiUsd, opts = {}) {
     d.hookShare = all.usd > 0 ? +(own.usd / all.usd).toFixed(4) : null;
     d.hookActiveShare = all.active > 0 ? +(own.active / all.active).toFixed(4) : null;
     d.hookDays = hookByDay(ladder, p, aiUsd);
-    d.lps = lpBase(ladder);
+    d.lps = lpBase(ladder, p, aiUsd);
     out.push(d);
     complete.push({ pool: p, ladder });
   }
@@ -421,7 +438,7 @@ export async function indexDepth(pools, latest, aiUsd, opts = {}) {
   const hookTvlUsd = out.reduce((s, d) => s + (d.hookTvlUsd || 0), 0);
   /* Distinct outside providers across every venue: one address in three pools is one provider. */
   const externalLps = new Set();
-  for (const { ladder } of complete) for (const [a, v] of Object.entries(ladder.lps || {})) if (a !== LONG_HOOK && BigInt(v) > 0n) externalLps.add(a);
+  for (const { ladder } of complete) for (const [a, ranges] of Object.entries(ladder.lps || {})) if (a !== LONG_HOOK && Object.values(ranges).some((v) => BigInt(v) > 0n)) externalLps.add(a);
   if (opts.io?.write) opts.io.write("ladders.json", { updatedAt: Math.floor(Date.now() / 1000), ladders });
 
   out.sort((a, b) => b.tvlUsd - a.tvlUsd);

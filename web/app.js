@@ -3236,7 +3236,9 @@ function renderRwa() {
     const nv = R.tokens.find((t) => t.token === (S.meta.contracts.nvdaToken || "").toLowerCase()) || R.tokens[0];
     const hist = R.history || [];
     const wk = hist.find((h) => h.t >= (hist.at(-1)?.t || 0) - 7 * 86400);
-    const dShare = wk && wk !== hist.at(-1) && wk.share != null && T.share != null ? T.share - wk.share : null;
+    /* A week-over-week delta needs a row at least six days old; comparing against a
+       two-hour-old row from a run that saw a different token set is not a trend. */
+    const dShare = wk && wk !== hist.at(-1) && hist.at(-1).t - wk.t >= 6 * 86400 && wk.share != null && T.share != null ? T.share - wk.share : null;
     /* Issuance capture: of the stock supply minted over the last week (supply on
        chain grows daily), how much landed in DEX liquidity. From the history rows'
        per-token supply and inventory, dollar-weighted at today's prices. */
@@ -3347,7 +3349,7 @@ function renderRwa() {
     ${tile("Total liquidity", `$${compact(tvl)}`, `${D.pools.length} indexed venues${tvlD != null ? ` · <span class="${tvlD >= 0 ? "up" : "down"}">${pct(tvlD, 1)}</span> in 7d` : ""}`, "", "hero")}
     ${tile("Protocol-owned", own == null ? "—" : pctLevel(tvl ? own / tvl : null, 1), own == null ? "ladders predate the split" : `$${compact(own)} held by the LONG hook itself`)}
     ${tile("Flagship pool", `$${compact(flagship.tvlUsd)}`, `AI/${flagship.pair}${flagship.hookShare != null ? ` · ${pctLevel(flagship.hookShare, 0)} protocol-owned` : ""}`)}
-    ${tile("Outside LPs", D.externalLps != null ? D.externalLps.toLocaleString() : "—", D.externalLps != null ? `distinct providers besides the protocol across all venues${fl?.topExternalShare != null ? ` · largest holds ${pctLevel(fl.topExternalShare, 1)} of AI/${flagship.pair}` : ""}` : "ladders predate the split")}
+    ${tile("Outside LPs", D.externalLps != null ? D.externalLps.toLocaleString() : "—", D.externalLps != null ? `distinct providers besides the protocol across all venues${fl?.externalUsd != null ? ` · $${compact(fl.externalUsd)} in AI/${flagship.pair}, largest ${pctLevel(fl.topExternalShare, 1)} of that pool` : ""}` : "ladders predate the split")}
   </div>`;
   if (H.length > 1) {
     multiLine($("#cTvl"), H.slice(-24 * 14), {
@@ -3368,6 +3370,7 @@ function renderRwa() {
     const total = sumOf(since, (r) => r.addUsd), removed = sumOf(since, (r) => r.remUsd);
     const now = Math.floor(Date.now() / 1000), d7 = sumOf(since.filter((r) => r.t >= now - 8 * 86400 && r.t < Math.floor(now / 86400) * 86400), (r) => r.addUsd);
     const days = since.filter((r) => r.addUsd > 0).length;
+    const firstCompound = since.find((r) => r.addUsd > 0);
     /* Yield: what the protocol's own liquidity earned and reinvested over the last
        week, annualised against what it holds today. Compounding is valued at
        today's prices, so this is a run-rate, not an accounting return. */
@@ -3375,7 +3378,7 @@ function renderRwa() {
     $("#rwaCompound").innerHTML = `<div class="tiles">
       ${tile("Compounded, 7d", `$${compact(d7)}`, "fees folded into the hook's positions, complete days", "", "hero")}
       ${tile("Yield on protocol liquidity", apr == null ? "—" : pctLevel(apr, 0), apr == null ? "needs a week of compounding" : `annualised run-rate on $${compact(own)} of protocol-owned liquidity, all reinvested`)}
-      ${tile("Since launch", `$${compact(total)}`, `over ${days} days, after the $${compact(seedDay.addUsd)} seed on ${dayFmt(seedDay.t)}`)}
+      ${tile(firstCompound ? `Since ${dayFmt(firstCompound.t)}` : "Since launch", `$${compact(total)}`, `${days} day${days === 1 ? "" : "s"} of compounding so far, after the $${compact(seedDay.addUsd)} seed on ${dayFmt(seedDay.t)}`)}
       ${tile("Withdrawn", `$${compact(removed)}`, removed > 0 ? "liquidity the hook has removed" : "the hook has removed nothing", removed > 0 ? "warn" : "")}
     </div>`;
     barChart($("#cCompound"), since.slice(-30), {
