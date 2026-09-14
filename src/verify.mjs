@@ -37,6 +37,7 @@ const depth = readData("depth.json");
 const launchpad = readData("launchpad.json");
 const holders = readData("holders.json");
 const rwa = readData("rwa.json");
+const revenue = readData("revenue.json");
 
 if (!meta || !burns || !flow) {
   console.error("Missing data artifacts. Run `npm run index` first.");
@@ -466,6 +467,25 @@ if (rwa && rwa.tokens?.length) {
     }
   }
 } else console.log("  --  rwa.json absent (built on the slow path)");
+
+console.log("\nFee engine");
+if (revenue && revenue.daily?.length) {
+  const T = revenue.totals, B = revenue.balances;
+  check("fee-engine days are ordered and non-negative",
+    revenue.daily.every((d, i, a) => (i === 0 || d.t > a[i - 1].t) && Object.entries(d).every(([k, v]) => k === "t" || v >= 0)));
+  check("the buyback contract forwards no more AI than it received",
+    T.aiBuybackToAccum + T.aiBuybackToPools <= T.aiToBuyback * 1.000001 + 1, `${T.aiBuybackToAccum + T.aiBuybackToPools} forwarded of ${T.aiToBuyback} received`);
+  /* The accumulator is an EOA the scans watch on both sides, so its balance must
+     equal inflow minus outflow up to the blocks between the scan and the read. */
+  if (!revenue.partial && B.accumulator.ai != null) {
+    const walk = T.aiBuybackToAccum - T.aiAccumOut;
+    warn("the AI accumulator's balance is its inflow minus its outflow",
+      Math.abs(B.accumulator.ai - walk) <= Math.max(50, B.accumulator.ai * 0.002), `${B.accumulator.ai.toFixed(2)} held vs ${walk.toFixed(2)} walked`);
+    warn("the revenue wallet's USDG balance is its inflow minus its outflow",
+      B.revenue.usdg == null || Math.abs(B.revenue.usdg - (T.usdgToRevenue - T.usdgRevenueOut)) <= Math.max(100, B.revenue.usdg * 0.002),
+      `${B.revenue.usdg} held vs ${(T.usdgToRevenue - T.usdgRevenueOut).toFixed(2)} walked`);
+  } else warn("fee-engine scan reached the head", !revenue.partial, "resumes next run");
+} else console.log("  --  revenue.json absent (first pass pending)");
 
 console.log("\nLaunchpad census");
 if (launchpad && launchpad.buckets?.length) {

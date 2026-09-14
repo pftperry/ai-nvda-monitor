@@ -136,6 +136,15 @@
         <div class="scroll"><table id="tWhales"></table></div>
       </div>
     </div>
+    <div class="card">
+      <h3>Mechanical AI buying by the protocol</h3>
+      <div class="agenote" data-age="revenue" hidden></div>
+      <p class="sub">On every swap in a LONG pool the hook hands one fee leg to the protocol's buyback contract, which sells non-AI legs into the pool for AI and forwards the AI to a wallet that has never sold. Measured from the contract's own transfers.</p>
+      <div id="rvTiles"></div>
+      <h4 class="subhead">AI collected by the buyback contract, daily</h4>
+      <div class="chart small" id="cBuyback"></div>
+      <div id="readBuyback"></div>
+    </div>
   </section>
 
   <!-- ───────────────────────── Valuation: Coulou's frame ───────────────────────── -->
@@ -430,6 +439,15 @@
 
   <!-- ───────────────────────── Treasury ───────────────────────── -->
   <section class="panel" id="p-treasury" role="tabpanel" aria-labelledby="tab-treasury" hidden>
+    <div class="card">
+      <h3>The bigger fee engine</h3>
+      <div class="agenote" data-age="revenue" hidden></div>
+      <p class="sub">The buyback contract named in LONG's own methodology: it takes a fee leg on every LONG-pool swap, turns AI-paired legs into AI it never sells, and forwards stock-paired legs as USDG to a revenue wallet. Followed from its transfers.</p>
+      <div id="rvTreasury"></div>
+      <h4 class="subhead">USDG into the revenue wallet, daily</h4>
+      <div class="chart small" id="cRevenue"></div>
+      <div id="readRevenue"></div>
+    </div>
     <div class="card">
       <h3>Where the fees go</h3>
       <div class="agenote" data-age="treasury" hidden></div>

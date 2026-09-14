@@ -16,6 +16,7 @@ import { indexBurns } from "./tasks/burns.mjs";
 import { indexPrices } from "./tasks/prices.mjs";
 import { indexTreasury } from "./tasks/treasury.mjs";
 import { indexRwa } from "./tasks/rwa.mjs";
+import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
 
@@ -314,6 +315,16 @@ writeData("meta.json", {
 if (!fast) writeData("pools.json", { updatedAt: now, pools: active.slice(0, 250) });
 writeData("flow.json", { updatedAt: now, windows, pools: flowOut });
 writeData("burns.json", burns);
+
+/* The platform's second fee engine (buyback contract, AI accumulator, revenue
+   EOA). Streamed and resumed, so after the first pass a refresh costs seconds. */
+step("Following the fee engine");
+try {
+  const revenue = await indexRevenue(latest, tm, { store, deadline: Date.now() + opt("revenue-budget", fast ? 60 : 420) * 1000 });
+  writeData("revenue.json", revenue);
+} catch (e) {
+  softFail("fee engine", e, "the previous revenue.json stays in place");
+}
 // cursor is what the next fast run appends from; windowFrom is where this scan began.
 if (routing) writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, cursor: latest, ...routing });
 writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape });

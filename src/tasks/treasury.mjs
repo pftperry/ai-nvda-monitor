@@ -43,6 +43,8 @@ export const NAMES = {
   [COMMUNITY_VAULT]: "community vault", [BURN_ADDRESS]: "0x0", [PLATFORM_FEE_RECIPIENT]: "platform fee wallet",
   // Named by LONG's own Dune methodology as the protocol's ~1% buyback leg on launched-token swaps.
   "0x6f02324d20cc679d0e585290caa6b16bacbc0f77": "LONG buyback contract",
+  "0x35d217b10f974a49f1bfd369fc5c85b597ae09a1": "protocol AI accumulation wallet",
+  "0x92d435c96e63c43e12d6d0ab28f6b0b04072f765": "protocol revenue wallet (USDG)",
   "0xe72688f7d25d7318b9a81f21edda640ca948c83b": "RobinHoodSettler (Robinhood Wallet swaps, 0x Settler)",
   "0x1d4b86491ec211257cbedd77a4380a7494624eff": "RobinHoodSettler (Robinhood Wallet swaps, 0x Settler)",
   "0x00000000009726632680fb29d3f7a9734e3010e2": "Rainbow router",
@@ -86,6 +88,12 @@ export const IDENTITIES = {
   "0xce6541c872a8b50fb7b285de52ad0d189ba89dcc": { short: "operator Safe (2-of-2)", who: "Safe multisig owned by the operator account and the same co-signer", evidence: "getOwners() = 0xa1627ad8…, 0x20481f27…; getThreshold() = 2; received 3,000,000 AI from the sibling Safe" },
   "0xf1a19597e8842c27bfed01475bec5e12aeeed69a": { short: "operator Safe (1-of-1)", who: "Safe owned by the operator account alone", evidence: "getOwners() = 0xa1627ad8…; getThreshold() = 1" },
   "0x20481f270ef6842c0938219c2a51fe13ec8435bf": { short: "Safe co-signer", who: "the second owner of both 2-of-2 operator Safes", evidence: "getOwners() on 0xae346da9… and 0xce6541c8…; paid 2.2M AI directly by the operator accounts" },
+  "0x6f02324d20cc679d0e585290caa6b16bacbc0f77": { short: "LONG buyback contract", who: "the protocol contract that receives a fee leg on every LONG-pool swap and converts it to AI",
+    evidence: "named in LONG's Dune methodology (sender 0x6f02…0F77); sells non-AI fee legs into the pool for AI (949 own swaps across 132 pools in 35 minutes), forwards ~95% of the AI on and keeps ~5%" },
+  "0x35d217b10f974a49f1bfd369fc5c85b597ae09a1": { short: "protocol AI accumulation wallet", who: "an EOA that receives ~95% of the AI the buyback contract collects",
+    evidence: "no contract code; 5.0M AI received and none ever sent out as of 14 Sep 2026" },
+  "0x92d435c96e63c43e12d6d0ab28f6b0b04072f765": { short: "protocol revenue wallet", who: "an EOA that receives the stock-paired fee legs as USDG and NVDA",
+    evidence: "no contract code; held $10.5M of USDG when found on 14 Sep 2026, fed by the buyback contract" },
 };
 /* Accounts the chain itself proves are the operator's, which the hop-based
    discovery would otherwise leave as "outside wallets": Safes whose getOwners()

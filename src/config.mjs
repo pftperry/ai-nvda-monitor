@@ -94,6 +94,16 @@ export const PLATFORM_FEE_RECIPIENT = "0x4a0cb7eef4b4dc31c75eac705e03463cfc3c5cb
 
 export const BURN_ADDRESS = "0x0000000000000000000000000000000000000000";
 
+/* The platform's second fee engine, found through LONG's own Dune methodology
+   ("the protocol's ~1% buyback legs, sender = 0x6f02…0F77") and traced on chain:
+   on every swap in a LONG pool the hook hands one fee leg to this contract, which
+   sells non-AI legs into the pool for AI (a mechanical AI purchase) and forwards
+   ~95% of the AI to an EOA that has never sent any out; stock-paired legs are
+   forwarded as USDG/NVDA to a second EOA. Neither EOA has code. */
+export const LONG_BUYBACK = "0x6f02324d20cc679d0e585290caa6b16bacbc0f77";
+export const LONG_AI_ACCUMULATOR = "0x35d217b10f974a49f1bfd369fc5c85b597ae09a1";
+export const LONG_REVENUE_WALLET = "0x92d435c96e63c43e12d6d0ab28f6b0b04072f765";
+
 /** The flagship pool. Created at block 9721433 (2026-07-14). Dynamic fee resolving to 7000 pips. */
 export const AI_NVDA_POOL = "0xcbdfea90430a30ee4469c9902e120a77e7c7e4711d5643671c1d1957f2f1ce27";
 /** Deepest AI/USDG venue, per Dexscreener cross-check. */

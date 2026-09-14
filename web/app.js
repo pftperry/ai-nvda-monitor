@@ -493,7 +493,7 @@ function table(host, cols, rows) {
 /* ── data ───────────────────────────────────────────────────────────────── */
 const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -514,14 +514,14 @@ async function refreshData() {
     const meta = await loadJSON("meta.json");
     if (!meta || meta.headBlock === S.meta?.headBlock) return;   // nothing newly indexed
     const [flow, burns] = await Promise.all(["flow.json", "burns.json"].map(loadJSON));
-    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa] = await Promise.all(
+    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa, revenue] = await Promise.all(
       OPTIONAL_ARTIFACTS.map((f) => loadJSON(f).catch(() => null))
     );
     Object.assign(S, {
       meta, flow, burns,
       routing: routing ?? S.routing, bridges: bridges ?? S.bridges,
       tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth, launchpad: launchpad ?? S.launchpad,
-      holders: holders ?? S.holders, prices: prices ?? S.prices, treasury: treasury ?? S.treasury, rwa: rwa ?? S.rwa,
+      holders: holders ?? S.holders, prices: prices ?? S.prices, treasury: treasury ?? S.treasury, rwa: rwa ?? S.rwa, revenue: revenue ?? S.revenue,
     });
     renderAll();
     refreshLiveTail();   // the live window starts at the new head, so re-scope it
@@ -3419,6 +3419,66 @@ function renderRwa() {
   collapseIntros($("#p-investor"));
 }
 
+/* ── The fee engine ──────────────────────────────────────────────────────
+   The buyback contract, the AI it accumulates and the USDG it routes to the
+   revenue wallet. Two homes: the Investor tab reads it as mechanical AI demand,
+   the Treasury tab reads it as where the platform's money actually goes. */
+function renderRevenue() {
+  const R = S.revenue;
+  const px = marketState().price || 0;
+  const pending = `<p class="muted">The fee engine's first replay runs on the next index; this card fills when it lands.</p>`;
+  if (!R?.daily?.length) {
+    for (const id of ["#rvTiles", "#rvTreasury"]) $(id).innerHTML = pending;
+    for (const id of ["#cBuyback", "#readBuyback", "#cRevenue", "#readRevenue"]) $(id).innerHTML = "";
+    return;
+  }
+  const days = completeDays(R.daily);
+  const last7 = days.slice(-7), prior7 = days.slice(-14, -7);
+  const s7 = (k) => sumOf(last7, (d) => d[k]), p7 = (k) => sumOf(prior7, (d) => d[k]);
+  const B = R.balances, T = R.totals;
+  const held = (B.accumulator.ai || 0) + (B.buyback.ai || 0);
+  const vols = completeDays(dailyVolumes()).slice(-7);
+  const aiVol7 = sumOf(vols, (d) => d.total || 0);
+  const bought7 = s7("aiToBuyback"), boughtP = p7("aiToBuyback");
+
+  /* Investor: demand that does not depend on anyone's opinion of AI. */
+  $("#rvTiles").innerHTML = `<div class="tiles">
+    ${tile("AI collected, 7d", compact(bought7), `≈ $${compact(bought7 * px)} at today's price${boughtP ? ` · <span class="${bought7 >= boughtP ? "up" : "down"}">${pct(bought7 / boughtP - 1, 0)}</span> vs prior 7d` : ""}`, "", "hero")}
+    ${tile("Of AI volume", aiVol7 ? pctLevel(bought7 / aiVol7, 2) : "—", "the buyback contract's AI intake against all AI traded on indexed venues, same 7 days")}
+    ${tile("Accumulated, never sold", compact(held), `${compact(B.accumulator.ai || 0)} in the accumulation wallet + ${compact(B.buyback.ai || 0)} in the contract · $${compact(held * px)}`)}
+    ${tile("Sent out, ever", compact(T.aiAccumOut), T.aiAccumOut > 0 ? "AI the accumulation wallet has moved" : "the accumulation wallet has never sent AI", T.aiAccumOut > 0 ? "warn" : "")}
+  </div>`;
+  barChart($("#cBuyback"), days.slice(-30), {
+    xKey: "t", yKey: "aiToBuyback", color: "var(--buy)", xFmt: dayFmt,
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${compact(d.aiToBuyback)} AI collected</div><div class="k">${compact(d.aiBuybackToAccum)} forwarded to the accumulation wallet</div>`,
+  });
+  $("#readBuyback").innerHTML = takeEl(bought7 > 0 ? "pos" : "neu",
+    `The protocol's fee engine took in <b>${compact(bought7)} AI</b> over the last 7 complete days${aiVol7 ? `, <b>${pctLevel(bought7 / aiVol7, 2)}</b> of all AI traded on the indexed venues` : ""},
+     and it has never sold any: <b>${compact(held)} AI</b> (${pctLevel(held / (S.burns?.totalSupply || marketState().supply || 1), 2)} of supply) sits in the accumulation wallet and the contract.
+     This is the mechanical bid under AI that a fee-only view misses: every launched-token trade on an AI-paired LONG pool buys a little AI.
+     <span class="muted">Half of each swap's hook fee goes to this contract; the other half is folded back into the pool as liquidity (the compounding card).</span>`);
+
+  /* Treasury: the money. */
+  const usdgIn7 = s7("usdgToRevenue"), usdgOutTotal = T.usdgRevenueOut;
+  const fromBuybackShare = T.usdgToRevenue ? T.usdgToRevenueFromBuyback / T.usdgToRevenue : null;
+  $("#rvTreasury").innerHTML = `<div class="tiles">
+    ${tile("Revenue wallet, USDG", B.revenue.usdg == null ? "—" : `$${compact(B.revenue.usdg)}`, `held now · $${compact(T.usdgToRevenue)} ever received${fromBuybackShare != null ? `, ${pctLevel(fromBuybackShare, 0)} of it from the buyback contract` : ""}`, "", "hero")}
+    ${tile("USDG in, 7d", `$${compact(usdgIn7)}`, `$${compact(usdgIn7 / 7)} a day · stock-paired fee legs`)}
+    ${tile("USDG out, ever", `$${compact(usdgOutTotal)}`, usdgOutTotal > 0 ? "moved out of the revenue wallet" : "nothing has left the revenue wallet", usdgOutTotal > 0 ? "warn" : "")}
+    ${tile("AI held by the engine", `$${compact(held * px)}`, `${compact(held)} AI across the accumulation wallet and the contract`)}
+  </div>`;
+  barChart($("#cRevenue"), days.slice(-30), {
+    xKey: "t", yKey: "usdgToRevenue", color: "var(--series-2)", xFmt: dayFmt, fmt: (v) => `$${compact(v)}`,
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>$${compact(d.usdgToRevenue)} USDG into the revenue wallet</div>${d.usdgRevenueOut ? `<div class="k">$${compact(d.usdgRevenueOut)} out</div>` : ""}`,
+  });
+  $("#readRevenue").innerHTML = takeEl("neu",
+    `The platform fee wallet followed above is the smaller of LONG's two fee paths. The larger one runs through the <b>buyback contract</b>:
+     stock-paired fee legs are forwarded as USDG to a wallet holding <b>$${compact(B.revenue.usdg || 0)}</b> today (<b>$${compact(usdgIn7)}</b> in the last week), and AI-paired legs are
+     converted to AI and parked, <b>${compact(held)} AI</b> so far. ${usdgOutTotal > 0 ? `<b>$${compact(usdgOutTotal)}</b> has left the revenue wallet.` : "Neither wallet has sent anything out."}
+     <span class="muted">Both destinations are plain externally-owned accounts, so who holds their keys is not something the chain can say; LONG's own Dune
+     methodology names the contract as the protocol's buyback leg.</span>`);
+}
+
 /* ── AI against its platform ─────────────────────────────────────────────
    The launchpad census prices the platform's biggest tokens every slow-path run,
    and now keeps those prices as a series. Whether AI is leading or lagging its own
@@ -4053,7 +4113,10 @@ function renderMethod() {
       <b>Outside LPs</b> are distinct non-protocol addresses with positive net liquidity in the replayed ladders.
       <b>Yield</b> is the last week's compounding annualised against protocol-owned liquidity, at today's prices, so a
       run-rate rather than a return. <b>Cross-venue basis</b> is NVDA implied by AI/NVDA × AI/USDG against the NVDA/USDG
-      pool's own print. <b>Stock in LONG pools</b> replays the position ladders of the most active LONG stock pools and
+      pool's own print. <b>The fee engine</b> streams the buyback contract's AI transfers (in, to the accumulation wallet, into
+      pools), the accumulation wallet's outflows, and the revenue wallet's USDG and NVDA flows into daily buckets, resumed from a
+      cursor, with live balances as the cross-check (verify walks inflow minus outflow against each balance).
+      <b>Stock in LONG pools</b> replays the position ladders of the most active LONG stock pools and
       values the stock leg at each pool's last swap price; the dormant tail is not replayed, so it is a floor.</p>
 
       <p><b style="color:var(--text-primary)">Cross-checks against LONG's own Dune dashboard</b> (@natan_benish2001, read 14 Sep 2026;
@@ -4247,6 +4310,7 @@ function renderAges() {
 function renderAll() {
   renderInvestor(); renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
   try { renderRwa(); } catch (e) { console.error("renderRwa", e); }
+  try { renderRevenue(); } catch (e) { console.error("renderRevenue", e); }
   try { renderHolders(); } catch (e) { console.error("renderHolders", e); /* optional; never blank the tab */ }
   renderAges();
   collapseIntros();
@@ -4283,10 +4347,10 @@ async function boot() {
     const [meta, flow, burns] = await Promise.all(
       ["meta.json", "flow.json", "burns.json"].map(loadJSON)
     );
-    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa] = await Promise.all(
+    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa, revenue] = await Promise.all(
       OPTIONAL_ARTIFACTS.map((f) => loadJSON(f).catch(() => null))
     );
-    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa });
+    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa, revenue });
   } catch (e) {
     $("#boot").remove();
     $("#bootErr").innerHTML = `<div class="err"><b>Could not load indexed data.</b><br>
