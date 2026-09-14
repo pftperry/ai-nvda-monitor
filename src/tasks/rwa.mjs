@@ -593,13 +593,22 @@ export async function indexRwa(latest, tm, opts = {}) {
        so a deadline loses at most one sub-range -- and each batch gets a fair slice
        of what is left so every stock advances each run rather than the first batch
        taking the whole budget (measured: one batch ate 2,400s and kept nothing). */
+    /* Batches run four at a time (the RPC layer has no serialising queue and the
+       provider takes parallel log queries), the heaviest stocks each on their own,
+       so the NVDA-sized streams no longer wait behind or starve the small ones.
+       Measured before this: one run finished 60 small stocks worth 1% of DEX value
+       while the heavy batch, given a quarter of the time, barely moved. */
+    const HEAVY = 6, WORKERS = 4;
     const batches = [];
-    for (const [cursor, toks] of [...byCursor.entries()].sort((a, b) => b[0] - a[0])) for (let i = 0; i < toks.length; i += BATCH) batches.push({ cursor, batch: toks.slice(i, i + BATCH) });
+    for (const [cursor, toks] of [...byCursor.entries()].sort((a, b) => b[0] - a[0])) {
+      const ordered = toks.slice().sort((x, y) => (dexRaw(y) > dexRaw(x) ? 1 : dexRaw(y) < dexRaw(x) ? -1 : 0));
+      const heavy = ordered.slice(0, HEAVY), rest = ordered.slice(HEAVY);
+      for (const tok of heavy) batches.push({ cursor, batch: [tok] });
+      for (let i = 0; i < rest.length; i += BATCH) batches.push({ cursor, batch: rest.slice(i, i + BATCH) });
+    }
     const STEP = 1_500_000, flowDeadline = opts.deadline || Date.now() + 3_600_000;
-    for (let bi = 0; bi < batches.length && timeLeft(); bi++) {
-      const { cursor, batch } = batches[bi];
-      const slice = Math.max(45_000, (flowDeadline - Date.now()) / (batches.length - bi));
-      const sliceEnd = Math.min(flowDeadline, Date.now() + slice);
+    const runBatch = async ({ cursor, batch }) => {
+      const sliceEnd = flowDeadline;
       const fold = (sign) => (logs) => {
         for (const l of logs) {
           const tok = l.address.toLowerCase(), st = F.tokens[tok]; if (!st) continue;
@@ -628,7 +637,11 @@ export async function indexRwa(latest, tm, opts = {}) {
         if (rIn.truncated) { stopped = true; break; }
       }
       for (const tok of batch) F.tokens[tok].partial = stopped || F.tokens[tok].cursor < latest;
-    }
+    };
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(WORKERS, batches.length) }, async () => {
+      while (next < batches.length && timeLeft()) await runBatch(batches[next++]);
+    }));
     if (store) store.set("rwaFlow", F);
 
     /* Publish. Which sign of the hook's amount is the pool's gain is settled by the

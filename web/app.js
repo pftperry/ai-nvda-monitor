@@ -3284,19 +3284,26 @@ function renderSince(R, pending) {
   const covNote = `${T.covered ?? "—"} of ${Z.stocks} stock tokens, the ones whose streams have reached the head (${pctLevel(Z.coverage, 0)} of the chain's DEX stock value)`;
   const censusShare = R.swapShare?.dune?.share ?? R.swapShare?.usdShare ?? null;
   const firstVol = rows.find((r) => r.longAllVolUsd > 0);
+  /* The inventory series is drawn only once the complete streams carry at least
+     half of today's DEX stock value: the small stocks finish first, and a chart of
+     them alone would read as "almost nothing on the chain", which is false. */
+  const ready = (Z.coverage ?? 0) >= 0.5;
+  const progress = `<p class="muted" style="margin:6px 0 0">Backfilling from the chain's first block: streams complete for ${T.covered ?? 0} of ${Z.stocks} stock tokens, ${pctLevel(Z.coverage, 1)} of today's DEX stock value${(Z.tokensPartial || []).length ? `; still reading ${Z.tokensPartial.slice(0, 6).join(", ")}${Z.tokensPartial.length > 6 ? ` and ${Z.tokensPartial.length - 6} more` : ""}` : ""}. The liquidity chart appears once they cover half the value; each slow run adds more.</p>`;
   host.innerHTML = `<div class="tiles">
-    ${tile("Stock in DEX liquidity", `$${compact(last.allInvUsd)}`,
-      `${covNote}, at ${dayFmt(last.t)}${growth ? ` · <span class="up">${xf(growth)}</span> since LONG launched (${dayFmt(firstLong.t)})` : ""}${d30 && d30 !== last && d30.allInvUsd ? ` · ${pct(last.allInvUsd / d30.allInvUsd - 1, 0)} in 30d` : ""}`, "", "hero")}
-    ${tile("LONG's portion of it", pctLevel(longShare, 1), `$${compact(last.longInvUsd)} in LONG pools, Dune's swap-delta definition · peak ${pctLevel(peakShare, 0)}`)}
+    ${ready ? tile("Stock in DEX liquidity", `$${compact(last.allInvUsd)}`,
+      `${covNote}, at ${dayFmt(last.t)}${growth ? ` · <span class="up">${xf(growth)}</span> since LONG launched (${dayFmt(firstLong.t)})` : ""}${d30 && d30 !== last && d30.allInvUsd ? ` · ${pct(last.allInvUsd / d30.allInvUsd - 1, 0)} in 30d` : ""}`, "", "hero")
+      : tile("Stock in DEX liquidity", "backfilling", `streams complete for ${T.covered ?? 0} of ${Z.stocks} stocks, ${pctLevel(Z.coverage, 1)} of DEX stock value`)}
+    ${ready ? tile("LONG's portion of it", pctLevel(longShare, 1), `$${compact(last.longInvUsd)} in LONG pools, Dune's swap-delta definition · peak ${pctLevel(peakShare, 0)}`) : ""}
     ${tile("LONG stock volume since launch", `$${compact(T.longAllVolUsd)}`, `user swaps in every LONG stock pool${firstVol ? ` since ${dayFmt(firstVol.t)}` : ""}, from the hook's own swap event, at today's prices`, "", "hero")}
     ${tile("Share of stock trading, measured window", censusShare == null ? "—" : pctLevel(censusShare, 1), censusShare == null ? "census pending" : `LONG's Dune definition over every DEX venue plus Rialto, last ${R.swapShare.windowHours >= 24 ? `${Math.round(R.swapShare.windowHours / 24)}d` : `${R.swapShare.windowHours}h`} · the same event on both sides`)}
-    ${tile("Share since inception, transfer basis", T.shareDex == null ? "—" : `≤ ${pctLevel(T.shareDex, 0)}`, `an upper bound: $${compact(T.longVolUsd)} of LONG volume against $${compact(T.dexVolUsd)} of stock that moved in or out of the pool manager since ${dayFmt(Z.since)}; routes that hand a stock between pools inside the manager move no token and are missing from the denominator${T.rialtoVolUsd ? ` · ≤ ${pctLevel(T.shareAll, 0)} with Rialto's $${compact(T.rialtoVolUsd)} of off-DEX fills added` : ""}`)}
-  </div>${catching ? `<p class="muted" style="margin:6px 0 0">Streams still catching up${(Z.tokensPartial || []).length ? ` for ${Z.tokensPartial.length} stock token(s); the per-day series show the ${T.covered ?? 0} already complete` : ""}${Z.hookPartial ? ", LONG swaps" : ""}${Z.rialtoPartial ? ", Rialto" : ""}. The figures fill in over the next slow runs.</p>` : ""}`;
-  stackedBars($("#cChainTvl"), rows.filter((r) => r.t >= (rows.find((x) => x.allInvUsd > 0)?.t ?? 0)), {
+    ${ready ? tile("Share since inception, transfer basis", T.shareDex == null ? "—" : `≤ ${pctLevel(T.shareDex, 0)}`, `an upper bound: $${compact(T.longVolUsd)} of LONG volume against $${compact(T.dexVolUsd)} of stock that moved in or out of the pool manager since ${dayFmt(Z.since)}; routes that hand a stock between pools inside the manager move no token and are missing from the denominator${T.rialtoVolUsd ? ` · ≤ ${pctLevel(T.shareAll, 0)} with Rialto's $${compact(T.rialtoVolUsd)} of off-DEX fills added` : ""}`) : ""}
+  </div>${!ready ? progress : catching ? `<p class="muted" style="margin:6px 0 0">Streams still catching up${(Z.tokensPartial || []).length ? ` for ${Z.tokensPartial.length} stock token(s); the per-day series show the ${T.covered ?? 0} already complete` : ""}${Z.hookPartial ? ", LONG swaps" : ""}${Z.rialtoPartial ? ", Rialto" : ""}. The figures fill in over the next slow runs.</p>` : ""}`;
+  if (ready) stackedBars($("#cChainTvl"), rows.filter((r) => r.t >= (rows.find((x) => x.allInvUsd > 0)?.t ?? 0)), {
     xKey: "t", totalKey: "allInvUsd", partKey: "longInvUsd", totalColor: "color-mix(in srgb, var(--series-3) 45%, transparent)", partColor: "var(--series-1)",
     fmt: (v) => `$${compact(v)}`,
     tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>$${compact(r.allInvUsd)} of stock in DEX liquidity</div><div>$${compact(r.longInvUsd)} in LONG pools${r.allInvUsd ? ` · ${pctLevel(Math.min(1, r.longInvUsd / r.allInvUsd), 1)}` : ""}</div>`,
   });
+  else $("#cChainTvl").innerHTML = `<p class="muted" style="padding:12px 0">Appears once the stock streams cover half of DEX stock value (now ${pctLevel(Z.coverage, 1)}).</p>`;
   const vrows = rows.filter((r) => r.t >= (firstVol?.t ?? Infinity));
   if (vrows.length > 1) {
     let cum = 0;
@@ -3306,7 +3313,7 @@ function renderSince(R, pending) {
     });
   } else $("#cVolShare").innerHTML = `<p class="muted" style="padding:12px 0">Fills in as the LONG swap stream backfills.</p>`;
   $("#readSince").innerHTML = takeEl(longShare >= 0.08 ? "pos" : "neu",
-    `Across ${covNote}, DEX liquidity has grown to <b>$${compact(last.allInvUsd)}</b>${growth ? ` (${xf(growth)} since LONG launched)` : ""} and LONG holds <b>${pctLevel(longShare, 1)}</b> of it.
+    `${ready ? `Across ${covNote}, DEX liquidity has grown to <b>$${compact(last.allInvUsd)}</b>${growth ? ` (${xf(growth)} since LONG launched)` : ""} and LONG holds <b>${pctLevel(longShare, 1)}</b> of it.` : `The liquidity history is still backfilling (streams complete for ${pctLevel(Z.coverage, 1)} of DEX stock value).`}
      LONG's pools have traded <b>$${compact(T.longAllVolUsd)}</b> of tokenized stock since launch${censusShare != null ? `, and in the measured window LONG carried <b>${pctLevel(censusShare, 1)}</b> of all stock trading by LONG's own Dune definition` : ""}.
      <span class="muted">Inventory from each token's transfers through the pool manager (exact: the manager's balance only moves by transfer); LONG's volume from the hook's swap event; today's prices, complete UTC days. A since-inception volume share needs the same event on both sides, and the chain-wide Swap tape is tens of millions of events, so the transfer-basis share is published only as an upper bound.</span>`);
 }
