@@ -548,47 +548,9 @@ export async function indexRwa(latest, tm, opts = {}) {
       (byCursor.get(st.cursor) || byCursor.set(st.cursor, []).get(st.cursor)).push(tok);
     }
     const BATCH = 25;
-    for (const [cursor, toks] of [...byCursor.entries()].sort((a, b) => b[0] - a[0])) {   // nearly-current batches first: cheap, keep the head fresh
-      for (let i = 0; i < toks.length; i += BATCH) {
-        if (!timeLeft()) break;
-        const batch = toks.slice(i, i + BATCH), from = cursor + 1;
-        const snapshot = Object.fromEntries(batch.map((tok) => [tok, JSON.stringify(F.tokens[tok].days)]));
-        const restore = () => { for (const tok of batch) { F.tokens[tok].days = JSON.parse(snapshot[tok]); F.tokens[tok].partial = true; } };
-        const fold = (sign) => (logs) => {
-          for (const l of logs) {
-            const tok = l.address.toLowerCase(), st = F.tokens[tok]; if (!st) continue;
-            const t = decodeTransfer(l); if (t.from === t.to) continue;
-            const d = dayOf(t.block); if (d == null) continue;
-            const v = fmtUnits(t.value, decimals.get(tok) ?? 18), cp = sign > 0 ? t.from : t.to;
-            addDay(st.days, d, "x", "net", sign * v); addDay(st.days, d, "x", "gross", v);
-            if (RIALTO_ROUTERS.has(cp)) addDay(st.days, d, "x", "rialto", v);
-            else if (cp === LONG_BUYBACK || cp === LONG_HOOK) addDay(st.days, d, "x", "fee", v);
-          }
-        };
-        const rIn = await getLogsRange({ address: batch, topics: [TOPICS.TRANSFER, null, padAddr(POOL_MANAGER)] }, from, latest, { deadline: opts.deadline, onLogs: fold(1), chunk: 200_000 });
-        const reach = rIn.reachedBlock ?? latest;
-        if (reach < from) { restore(); continue; }
-        const rOut = await getLogsRange({ address: batch, topics: [TOPICS.TRANSFER, padAddr(POOL_MANAGER), null] }, from, reach, { deadline: opts.deadline + 120_000, onLogs: fold(-1), chunk: 200_000 });
-        if (rOut.truncated) { restore(); continue; }   // keep in/out consistent: drop the attempt
-        for (const tok of batch) { F.tokens[tok].cursor = reach; F.tokens[tok].partial = !!rIn.truncated; }
-      }
-    }
-    if (timeLeft()) {
-      const Rl = F.rialto, from = Rl.cursor + 1;
-      if (from <= latest) {
-        const r = await getLogsRange({ address: RIALTO, topics: [RIALTO_FILL] }, from, latest, { chunk: 100_000, deadline: opts.deadline,
-          onLogs: (logs) => {
-            for (const l of logs) {
-              if (l.topics.length < 4) continue;
-              const a = topicAddr(l.topics[2]), b = topicAddr(l.topics[3]);
-              const stock = tracked.has(a) ? a : tracked.has(b) ? b : null; if (!stock) continue;
-              const d = dayOf(parseInt(l.blockNumber, 16)); if (d == null) continue;
-              addDay(Rl.days, d, stock, "vol", fmtUnits(BigInt("0x" + word(l.data, stock === a ? 1 : 4)), decimals.get(stock) ?? 18));
-            }
-          } });
-        Rl.cursor = r.reachedBlock ?? latest; Rl.partial = !!r.truncated;
-      }
-    }
+    /* LONG's own side first: the hook's swap event and Rialto's fills are bounded
+       streams (a few million and well under a million logs) and they are the
+       numerator, so they must not wait behind the stock streams. */
     if (timeLeft()) {
       const H = F.hook, from = H.cursor + 1;
       if (from <= latest) {
@@ -607,6 +569,65 @@ export async function indexRwa(latest, tm, opts = {}) {
           } });
         H.cursor = r.reachedBlock ?? latest; H.partial = !!r.truncated;
       }
+    }
+    if (timeLeft()) {
+      const Rl = F.rialto, from = Rl.cursor + 1;
+      if (from <= latest) {
+        const r = await getLogsRange({ address: RIALTO, topics: [RIALTO_FILL] }, from, latest, { chunk: 100_000, deadline: opts.deadline,
+          onLogs: (logs) => {
+            for (const l of logs) {
+              if (l.topics.length < 4) continue;
+              const a = topicAddr(l.topics[2]), b = topicAddr(l.topics[3]);
+              const stock = tracked.has(a) ? a : tracked.has(b) ? b : null; if (!stock) continue;
+              const d = dayOf(parseInt(l.blockNumber, 16)); if (d == null) continue;
+              addDay(Rl.days, d, stock, "vol", fmtUnits(BigInt("0x" + word(l.data, stock === a ? 1 : 4)), decimals.get(stock) ?? 18));
+            }
+          } });
+        Rl.cursor = r.reachedBlock ?? latest; Rl.partial = !!r.truncated;
+      }
+    }
+    /* The stock streams are the heavy part (every stock swap on the chain moves a
+       stock leg through the manager: tens of millions of logs since April), so they
+       run last, in lock-stepped sub-ranges that commit as they go -- an inbound leg
+       and its outbound leg over the same blocks, cursor advanced after each pair,
+       so a deadline loses at most one sub-range -- and each batch gets a fair slice
+       of what is left so every stock advances each run rather than the first batch
+       taking the whole budget (measured: one batch ate 2,400s and kept nothing). */
+    const batches = [];
+    for (const [cursor, toks] of [...byCursor.entries()].sort((a, b) => b[0] - a[0])) for (let i = 0; i < toks.length; i += BATCH) batches.push({ cursor, batch: toks.slice(i, i + BATCH) });
+    const STEP = 1_500_000, flowDeadline = opts.deadline || Date.now() + 3_600_000;
+    for (let bi = 0; bi < batches.length && timeLeft(); bi++) {
+      const { cursor, batch } = batches[bi];
+      const slice = Math.max(45_000, (flowDeadline - Date.now()) / (batches.length - bi));
+      const sliceEnd = Math.min(flowDeadline, Date.now() + slice);
+      const fold = (sign) => (logs) => {
+        for (const l of logs) {
+          const tok = l.address.toLowerCase(), st = F.tokens[tok]; if (!st) continue;
+          const t = decodeTransfer(l); if (t.from === t.to) continue;
+          const d = dayOf(t.block); if (d == null) continue;
+          const v = fmtUnits(t.value, decimals.get(tok) ?? 18), cp = sign > 0 ? t.from : t.to;
+          addDay(st.days, d, "x", "net", sign * v); addDay(st.days, d, "x", "gross", v);
+          if (RIALTO_ROUTERS.has(cp)) addDay(st.days, d, "x", "rialto", v);
+          else if (cp === LONG_BUYBACK || cp === LONG_HOOK) addDay(st.days, d, "x", "fee", v);
+        }
+      };
+      let lo = cursor + 1, stopped = false;
+      while (lo <= latest && Date.now() < sliceEnd) {
+        const hi = Math.min(latest, lo + STEP - 1);
+        const snapshot = Object.fromEntries(batch.map((tok) => [tok, JSON.stringify(F.tokens[tok].days)]));
+        const rIn = await getLogsRange({ address: batch, topics: [TOPICS.TRANSFER, null, padAddr(POOL_MANAGER)] }, lo, hi, { deadline: sliceEnd, onLogs: fold(1), chunk: 200_000 });
+        const reach = rIn.reachedBlock ?? hi;
+        let ok = reach >= lo;
+        if (ok) {
+          const rOut = await getLogsRange({ address: batch, topics: [TOPICS.TRANSFER, padAddr(POOL_MANAGER), null] }, lo, reach, { deadline: sliceEnd + 90_000, onLogs: fold(-1), chunk: 200_000 });
+          ok = !rOut.truncated;
+        }
+        if (!ok) { for (const tok of batch) F.tokens[tok].days = JSON.parse(snapshot[tok]); stopped = true; break; }
+        for (const tok of batch) F.tokens[tok].cursor = reach;
+        lo = reach + 1;
+        if (rIn.truncated) { stopped = true; break; }
+      }
+      for (const tok of batch) F.tokens[tok].partial = stopped || F.tokens[tok].cursor < latest;
     }
     if (store) store.set("rwaFlow", F);
 
