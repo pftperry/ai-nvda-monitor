@@ -3283,12 +3283,12 @@ function renderSince(R, pending) {
   const xf = (g) => (g >= 10 ? `${g.toFixed(0)}×` : `${g.toFixed(1)}×`);
   host.innerHTML = `<div class="tiles">
     ${tile("Stock in DEX liquidity", `$${compact(last.allInvUsd)}`,
-      `${Z.tracked.length} largest stocks, ${pctLevel(Z.coverage, 0)} of the chain's DEX stock value, at ${dayFmt(last.t)}${growth ? ` · <span class="up">${xf(growth)}</span> since LONG launched (${dayFmt(firstLong.t)})` : ""}${d30 && d30 !== last && d30.allInvUsd ? ` · ${pct(last.allInvUsd / d30.allInvUsd - 1, 0)} in 30d` : ""}`, "", "hero")}
+      `every stock token identified on the chain (${Z.stocks}), at ${dayFmt(last.t)}${growth ? ` · <span class="up">${xf(growth)}</span> since LONG launched (${dayFmt(firstLong.t)})` : ""}${d30 && d30 !== last && d30.allInvUsd ? ` · ${pct(last.allInvUsd / d30.allInvUsd - 1, 0)} in 30d` : ""}`, "", "hero")}
     ${tile("LONG's portion of it", pctLevel(longShare, 1), `$${compact(last.longInvUsd)} in LONG pools, Dune's swap-delta definition · peak ${pctLevel(peakShare, 0)}`)}
     ${tile("LONG share of DEX stock volume", pctLevel(T.shareDex, 1), `$${compact(T.longVolUsd)} of $${compact(T.dexVolUsd)} traded on any DEX since ${dayFmt(Z.since)}${T.shareDex7d != null ? ` · ${pctLevel(T.shareDex7d, 1)} last 7d` : ""}`)}
     ${tile("Counting Rialto too", pctLevel(T.shareAll, 1), `of $${compact(T.allVolUsd)} once Robinhood's own venue is added ($${compact(T.rialtoVolUsd)} settled off-DEX), Dune's framing`)}
     ${tile("LONG stock volume, every stock", `$${compact(T.longAllVolUsd)}`, `user swaps in every LONG stock pool since ${dayFmt(Z.since)}, at today's prices`)}
-  </div>${catching ? `<p class="muted" style="margin:6px 0 0">Streams still catching up (${[...(Z.tokensPartial || []), Z.hookPartial ? "LONG swaps" : null, Z.rialtoPartial ? "Rialto" : null].filter(Boolean).join(", ")}); the figures fill in over the next slow runs.</p>` : ""}`;
+  </div>${catching ? `<p class="muted" style="margin:6px 0 0">Streams still catching up${(Z.tokensPartial || []).length ? ` for ${Z.tokensPartial.length} stock token(s) (streams at the head cover ${pctLevel(Z.coverage, 0)} of DEX stock value)` : ""}${Z.hookPartial ? ", LONG swaps" : ""}${Z.rialtoPartial ? ", Rialto" : ""}; the figures fill in over the next slow runs.</p>` : ""}`;
   stackedBars($("#cChainTvl"), rows.filter((r) => r.t >= (rows.find((x) => x.allInvUsd > 0)?.t ?? 0)), {
     xKey: "t", totalKey: "allInvUsd", partKey: "longInvUsd", totalColor: "color-mix(in srgb, var(--series-3) 45%, transparent)", partColor: "var(--series-1)",
     fmt: (v) => `$${compact(v)}`,
@@ -3303,7 +3303,7 @@ function renderSince(R, pending) {
     });
   } else $("#cVolShare").innerHTML = `<p class="muted" style="padding:12px 0">Fills in as the volume streams backfill.</p>`;
   $("#readSince").innerHTML = takeEl(T.shareDex >= 0.1 ? "pos" : "neu",
-    `Across the chain's ${Z.tracked.length} largest stocks, DEX liquidity has grown to <b>$${compact(last.allInvUsd)}</b>${growth ? ` (${xf(growth)} since LONG launched)` : ""} and LONG holds <b>${pctLevel(longShare, 1)}</b> of it.
+    `Across every stock token on the chain, DEX liquidity has grown to <b>$${compact(last.allInvUsd)}</b>${growth ? ` (${xf(growth)} since LONG launched)` : ""} and LONG holds <b>${pctLevel(longShare, 1)}</b> of it.
      Since the chain went live, <b>${pctLevel(T.shareDex, 1)}</b> of the stock volume traded on any DEX went through LONG pools (<b>${pctLevel(T.shareAll, 1)}</b> once Robinhood's Rialto venue is counted), ${T.shareDex7d != null ? `<b>${pctLevel(T.shareDex7d, 1)}</b> over the last week` : "the last week pending"}.
      <span class="muted">Stock units from each token's transfers through the pool manager (all venues) and the hook's own swap event (LONG), valued at today's prices, complete UTC days; the hook's and buyback's fee legs are not counted as volume. Rialto fills that route into the pools are counted once.</span>`);
 }
@@ -4238,10 +4238,10 @@ function renderMethod() {
       cumulative numeraire swap deltas, which counts the stock a trader paid in but never subtracts the fee legs the hook
       hands out of the pool afterwards (the buyback contract's leg leaves for good) or liquidity that was later removed.
       Replaying the positions gives what the pools hold now; the swap-delta sum is an upper bound on it.
-      <b>Since the chain went live</b> (the two histories on the Investor tab) tracks the fifteen largest stocks by DEX inventory
-      plus NVDA from the chain's first block (30 Apr 2026; a pre-genesis anchor set maps those blocks to days). All-venue
-      inventory is each token's transfers into and out of the pool manager, netted per day (reconciled against the live balance
-      by verify); all-venue volume is the gross of those legs less the hook's and buyback contract's fee legs, plus Rialto's own
+      <b>Since the chain went live</b> (the two histories on the Investor tab) covers every identified stock token from the
+      chain's first block (30 Apr 2026; a pre-genesis anchor set maps those blocks to days). All-venue inventory is each
+      token's transfers into and out of the pool manager, streamed in address batches and netted per day (reconciled against
+      the live balance by verify); all-venue volume is the gross of those legs less the hook's and buyback contract's fee legs, plus Rialto's own
       fill event for fills Robinhood settled itself (its pool-routed fills pass through one router pair and are counted once).
       LONG's side is the hook's per-swap event: stock amounts as volume, buyback legs excluded; pool-perspective running sums as
       "held", which is Dune's definition and so an upper bound like theirs. Everything is valued at today's prices, so a bar's

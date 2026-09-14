@@ -515,8 +515,7 @@ export async function indexRwa(latest, tm, opts = {}) {
             stock volume (Dune's definition; buyback legs flagged), and its running
             pool-perspective sum is Dune's "stock held in LONG pools".
         Per day, per stock, in stock units; valued at today's prices when published
-        (stated on the page). Tracked = the fifteen largest stocks by DEX inventory
-        plus NVDA, frozen at first build so the history stays comparable. Streamed
+        (stated on the page). Every identified stock token is covered. Streamed
         and cursor-resumed; the first pass wants a deep run. The shared timemap
         starts at AI genesis (14 Jul); the chain's first block is 30 Apr, so a
         pre-genesis anchor set is built once and kept with the state. */
@@ -524,39 +523,49 @@ export async function indexRwa(latest, tm, opts = {}) {
   if (allStockPools.size && timeLeft()) {
     const t5 = Date.now();
     let F = store && store.get("rwaFlow");
-    if (!F || F.v !== 2) F = { v: 2, anchors: null, tracked: null, tokens: {}, hook: { cursor: GENESIS_BLOCK - 1, days: {} }, rialto: { cursor: -1, days: {} } };
+    if (!F || F.v !== 3) F = { v: 3, anchors: null, tokens: {}, hook: { cursor: GENESIS_BLOCK - 1, days: {} }, rialto: { cursor: -1, days: {} } };
     if (!F.anchors) { const early = new TimeMap([]); await early.build(0, GENESIS_BLOCK, 250_000); F.anchors = early.toJSON(); }
     const tmx = new TimeMap([...F.anchors, ...tm.toJSON()]);
     const dayOf = (b) => tmx.dayBucket(b);
-    if (!F.tracked) {
-      const ranked = [...stocks].filter((a) => anchorUsd.get(a)).sort((x, y) => (dexRaw(y) > dexRaw(x) ? 1 : dexRaw(y) < dexRaw(x) ? -1 : 0));
-      F.tracked = [...new Set([NVDA, ...ranked.slice(0, 15)])];
-    }
-    const tracked = new Set(F.tracked);
+    /* Every identified stock token, priced or not (an unpriced one contributes no
+       dollars but keeps its cursor). Tokens are streamed in address batches that
+       share one cursor, so the tail of small stocks costs almost nothing beyond the
+       big ones; a token first seen later starts from block 0 in its own batch. */
+    const universe = [...stocks];
+    const tracked = new Set(universe);
     const px = (tok) => anchorUsd.get(tok) || 0;
     const addDay = (map, d, key, field, v) => { const row = (map[d] ||= {}); const cell = (row[key] ||= {}); cell[field] = (cell[field] || 0) + v; };
-    for (const tok of F.tracked) {
-      if (!timeLeft()) break;
+    const byCursor = new Map();
+    for (const tok of universe) {
       const st = (F.tokens[tok] ||= { cursor: -1, days: {} });
-      const from = st.cursor + 1; if (from > latest) continue;
-      const dec = decimals.get(tok) ?? 18;
-      const snapshot = JSON.stringify(st.days);
-      const fold = (sign) => (logs) => {
-        for (const l of logs) {
-          const t = decodeTransfer(l); if (t.from === t.to) continue;
-          const d = dayOf(t.block); if (d == null) continue;
-          const v = fmtUnits(t.value, dec), cp = sign > 0 ? t.from : t.to;
-          addDay(st.days, d, "x", "net", sign * v); addDay(st.days, d, "x", "gross", v);
-          if (RIALTO_ROUTERS.has(cp)) addDay(st.days, d, "x", "rialto", v);
-          else if (cp === LONG_BUYBACK || cp === LONG_HOOK) addDay(st.days, d, "x", "fee", v);
-        }
-      };
-      const rIn = await getLogsRange({ address: tok, topics: [TOPICS.TRANSFER, null, padAddr(POOL_MANAGER)] }, from, latest, { deadline: opts.deadline, onLogs: fold(1), chunk: 200_000 });
-      const reach = rIn.reachedBlock ?? latest;
-      if (reach < from) { st.days = JSON.parse(snapshot); st.partial = true; continue; }
-      const rOut = await getLogsRange({ address: tok, topics: [TOPICS.TRANSFER, padAddr(POOL_MANAGER), null] }, from, reach, { deadline: opts.deadline + 120_000, onLogs: fold(-1), chunk: 200_000 });
-      if (rOut.truncated) { st.days = JSON.parse(snapshot); st.partial = true; continue; }   // keep in/out consistent: drop the attempt
-      st.cursor = reach; st.partial = !!rIn.truncated;
+      if (st.cursor + 1 > latest) continue;
+      (byCursor.get(st.cursor) || byCursor.set(st.cursor, []).get(st.cursor)).push(tok);
+    }
+    const BATCH = 25;
+    for (const [cursor, toks] of [...byCursor.entries()].sort((a, b) => b[0] - a[0])) {   // nearly-current batches first: cheap, keep the head fresh
+      for (let i = 0; i < toks.length; i += BATCH) {
+        if (!timeLeft()) break;
+        const batch = toks.slice(i, i + BATCH), from = cursor + 1;
+        const snapshot = Object.fromEntries(batch.map((tok) => [tok, JSON.stringify(F.tokens[tok].days)]));
+        const restore = () => { for (const tok of batch) { F.tokens[tok].days = JSON.parse(snapshot[tok]); F.tokens[tok].partial = true; } };
+        const fold = (sign) => (logs) => {
+          for (const l of logs) {
+            const tok = l.address.toLowerCase(), st = F.tokens[tok]; if (!st) continue;
+            const t = decodeTransfer(l); if (t.from === t.to) continue;
+            const d = dayOf(t.block); if (d == null) continue;
+            const v = fmtUnits(t.value, decimals.get(tok) ?? 18), cp = sign > 0 ? t.from : t.to;
+            addDay(st.days, d, "x", "net", sign * v); addDay(st.days, d, "x", "gross", v);
+            if (RIALTO_ROUTERS.has(cp)) addDay(st.days, d, "x", "rialto", v);
+            else if (cp === LONG_BUYBACK || cp === LONG_HOOK) addDay(st.days, d, "x", "fee", v);
+          }
+        };
+        const rIn = await getLogsRange({ address: batch, topics: [TOPICS.TRANSFER, null, padAddr(POOL_MANAGER)] }, from, latest, { deadline: opts.deadline, onLogs: fold(1), chunk: 200_000 });
+        const reach = rIn.reachedBlock ?? latest;
+        if (reach < from) { restore(); continue; }
+        const rOut = await getLogsRange({ address: batch, topics: [TOPICS.TRANSFER, padAddr(POOL_MANAGER), null] }, from, reach, { deadline: opts.deadline + 120_000, onLogs: fold(-1), chunk: 200_000 });
+        if (rOut.truncated) { restore(); continue; }   // keep in/out consistent: drop the attempt
+        for (const tok of batch) { F.tokens[tok].cursor = reach; F.tokens[tok].partial = !!rIn.truncated; }
+      }
     }
     if (timeLeft()) {
       const Rl = F.rialto, from = Rl.cursor + 1;
@@ -631,21 +640,22 @@ export async function indexRwa(latest, tm, opts = {}) {
     });
     const sum = (k) => rows.reduce((s, r) => s + (r[k] || 0), 0);
     const last7 = rows.slice(-7);
-    const coveredUsd = F.tracked.reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
-    const totalDexUsd = stocks.reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
-    const reconcile = F.tracked.map((a) => ({ symbol: sym(a), cumNet: Math.round((cumAll[a] || 0) * 1e4) / 1e4, onChain: Math.round(Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * 1e4) / 1e4, complete: F.tokens[a]?.cursor === latest && !F.tokens[a]?.partial }));
+    const complete = (a) => F.tokens[a]?.cursor === latest && !F.tokens[a]?.partial;
+    const coveredUsd = universe.filter(complete).reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
+    const totalDexUsd = universe.reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
+    const reconcile = universe.filter((a) => px(a) > 0).map((a) => ({ symbol: sym(a), cumNet: Math.round((cumAll[a] || 0) * 1e4) / 1e4, onChain: Math.round(Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * 1e4) / 1e4, complete: complete(a) }));
     series = {
-      days: rows, tracked: F.tracked.map((a) => sym(a)), since: rows[0]?.t ?? null,
-      coverage: totalDexUsd > 0 ? coveredUsd / totalDexUsd : null,
-      tokensPartial: F.tracked.filter((a) => F.tokens[a]?.partial || (F.tokens[a]?.cursor ?? -1) < latest).map((a) => sym(a)),
+      days: rows, stocks: universe.length, priced: universe.filter((a) => px(a) > 0).length, since: rows[0]?.t ?? null,
+      coverage: totalDexUsd > 0 ? coveredUsd / totalDexUsd : null,   // share of today's DEX stock value whose stream has reached the head
+      tokensPartial: universe.filter((a) => !complete(a)).map((a) => sym(a)),
       hookCursor: F.hook.cursor, hookPartial: !!F.hook.partial, rialtoCursor: F.rialto.cursor, rialtoPartial: !!F.rialto.partial, poolSign,
       reconcile, pricedAt: "today",
       totals: { dexVolUsd: sum("dexVolUsd"), rialtoVolUsd: sum("rialtoVolUsd"), allVolUsd: sum("allVolUsd"), longVolUsd: sum("longVolUsd"), longAllVolUsd: sum("longAllVolUsd"),
         shareDex: sum("dexVolUsd") > 0 ? sum("longVolUsd") / sum("dexVolUsd") : null, shareAll: sum("allVolUsd") > 0 ? sum("longVolUsd") / sum("allVolUsd") : null,
         shareDex7d: last7.reduce((s, r) => s + r.dexVolUsd, 0) > 0 ? last7.reduce((s, r) => s + r.longVolUsd, 0) / last7.reduce((s, r) => s + r.dexVolUsd, 0) : null },
-      note: "tracked stocks only (the fifteen largest by DEX inventory plus NVDA, frozen at first build); LONG figures follow Dune's definition (hook swap event; buyback legs excluded from volume, included in held); all values at today's prices",
+      note: "every identified stock token; LONG figures follow Dune's definition (hook swap event; buyback legs excluded from volume, included in held); all values at today's prices",
     };
-    log(`  flow histories: ${rows.length} complete day(s) since ${rows[0] ? new Date(rows[0].t * 1000).toISOString().slice(0, 10) : "none"}, ${F.tracked.length} stocks tracked (${series.coverage ? (100 * series.coverage).toFixed(0) : "?"}% of DEX stock value), hook at ${F.hook.cursor.toLocaleString()}${F.hook.partial ? " (resumes)" : ""}, Rialto at ${F.rialto.cursor.toLocaleString()}${F.rialto.partial ? " (resumes)" : ""}, ${series.tokensPartial.length} token stream(s) still catching up, pool sign ${poolSign}, ${secs(t5)}`);
+    log(`  flow histories: ${rows.length} complete day(s) since ${rows[0] ? new Date(rows[0].t * 1000).toISOString().slice(0, 10) : "none"}, ${universe.length} stock tokens (streams at the head for ${series.coverage ? (100 * series.coverage).toFixed(0) : "?"}% of DEX stock value), hook at ${F.hook.cursor.toLocaleString()}${F.hook.partial ? " (resumes)" : ""}, Rialto at ${F.rialto.cursor.toLocaleString()}${F.rialto.partial ? " (resumes)" : ""}, ${series.tokensPartial.length} token stream(s) still catching up, pool sign ${poolSign}, ${secs(t5)}`);
   }
 
   /* 5. Totals over the priced set only: an unpriced token contributes no dollars,
