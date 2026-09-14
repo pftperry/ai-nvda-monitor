@@ -86,6 +86,12 @@ const LATEST_ANSWER = "0x50d25bcd";
 export const HOOK_SWAP = "0x1d9f7b5e406d8c887155e1a78e070d2d41c5d0444dab8b21612f846835c27183";
 /* Robinhood's own stock venue, counted by Dune in "all stock trading"; USDG-quoted. */
 export const RIALTO = "0x4262efbd176f02824af27010bea218429c33c7e8";
+/* Rialto's fill event (topic1 trader, topic2 token in, topic3 token out; data word 1
+   amount in, word 4 amount out) and the two router addresses through which its
+   pool-routed fills touch the pool manager (in via the first, out via the second;
+   measured: every pool-manager leg of those routers sat in a Rialto transaction). */
+export const RIALTO_FILL = "0x4b02af496e764b30261032ae2ad58e4f96e73563c59fe32f8401e76531c1a95e";
+export const RIALTO_ROUTERS = new Set(["0x040234dfd2d32336e3cd9534fa1909adab002cea", "0x006102b16a04c20306a28b652745d3973d7d24fa"]);
 const V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
 const V2_SWAP = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
 const word = (data, i) => data.slice(2 + 64 * i, 2 + 64 * (i + 1));

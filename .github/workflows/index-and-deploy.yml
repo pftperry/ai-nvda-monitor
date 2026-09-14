@@ -182,23 +182,23 @@ jobs:
           # topic1, so the browser covers every indexed venue in one request whether
           # that is three pools or thirty.
           case "$MODE" in
-            fast)    node src/indexer.mjs --fast --top 20 ;;
+            fast)    node src/indexer.mjs --fast --top 40 ;;
             quick)   node src/indexer.mjs --quick ;;
-            deep)    node src/indexer.mjs --deep --top 30 ;;
+            deep)    node src/indexer.mjs --deep --top 50 ;;
             # Discards stored series and re-derives every bucket. Needed when a
             # decoding input changes (a token's decimals, say), because resuming
             # from a cursor only adds new buckets and never revisits old ones.
-            rebuild) node src/indexer.mjs --rebuild --top 20 ;;
+            rebuild) node src/indexer.mjs --rebuild --top 40 ;;
             # Repair a decoding fix that only affected some venues, without paying
             # for a full re-derive of every pool. Bridges are skipped: a repair has
             # one job and the 75-minute ceiling is real -- re-deriving both USDG
             # pools from genesis is RPC-bound and took over an hour measured
             # locally, so spending any of that budget on bridge venue discovery
             # risks the timeout killing the repair itself.
-            repair-usdg) node src/indexer.mjs --rebuild-pools usdg --top 20 --no-bridges ;;
+            repair-usdg) node src/indexer.mjs --rebuild-pools usdg --top 40 --no-bridges ;;
             # Just the flagship AI/USDG venue -- the one the dollar price and market
             # cap read from. Half the work, for when the full repair will not fit.
-            repair-usdg-main) node src/indexer.mjs --rebuild-pools 0x7aebd805 --top 20 --no-bridges ;;
+            repair-usdg-main) node src/indexer.mjs --rebuild-pools 0x7aebd805 --top 40 --no-bridges ;;
             # Re-derive one named venue. A decode fix only ever repairs the future --
             # resuming from a cursor never revisits a stored bucket -- so when one
             # lands, the pools it affected have to be re-derived by hand. Cheaper
@@ -208,13 +208,13 @@ jobs:
               if [ -z "${{ github.event.inputs.pool }}" ]; then
                 echo "::error::repair-pool needs a pool id prefix or symbol in the 'pool' input"; exit 1
               fi
-              node src/indexer.mjs --rebuild-pools "${{ github.event.inputs.pool }}" --top 20 --no-bridges ;;
+              node src/indexer.mjs --rebuild-pools "${{ github.event.inputs.pool }}" --top 40 --no-bridges ;;
             # Replay every AI transfer from genesis into a fresh holder state and
             # write it as the committed seed. Runs here rather than locally because
             # the dedicated endpoint makes it a few minutes; on the public one it is
             # an hour of throttling. Touches nothing else; the step below commits it.
             seed-holders) node tools/backfill-holders.mjs --rebuild ;;
-            *)       node src/indexer.mjs --top 20 ;;
+            *)       node src/indexer.mjs --top 40 ;;
           esac
 
       - name: Commit the holder seed
