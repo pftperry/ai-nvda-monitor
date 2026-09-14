@@ -1,6 +1,7 @@
-import { rpc, rpcBatch, getLogsRange, padAddr } from "../rpc.mjs";
+import { rpc, getLogsRange, padAddr } from "../rpc.mjs";
 import { POOL_MANAGER, COMMUNITY_VAULT, LONG_HOOK, AI, USDG, NVDA, GENESIS_BLOCK } from "../config.mjs";
 import { TOPICS, decodeTransfer, decodeInitialize, fmtUnits } from "../decode.mjs";
+import { multicall } from "../tokens.mjs";
 
 /**
  * The real-world-asset ledger: how much of Robinhood Chain's tokenized stock
@@ -117,15 +118,19 @@ export async function indexRwa(latest, tm, opts = {}) {
   const stocks = candidates.filter((a) => codeCache[a] === true);
   log(`  ${candidates.length} anchor tokens, ${looked} newly classified, ${stocks.length} are Robinhood stock tokens by bytecode`);
 
-  /* 2. Supply on chain, inventory in the pool manager, balance in the vault. */
+  /* 2. Supply on chain, inventory in the pool manager, balance in the vault.
+        Through Multicall3: four hundred separate eth_calls tripped the provider's
+        throttle and took seven minutes; three aggregate calls take seconds. */
+  const t0 = Date.now();
   const calls = [];
   for (const a of stocks) {
-    calls.push({ method: "eth_call", params: [{ to: a, data: SUPPLY_SEL }, "latest"] });
-    calls.push({ method: "eth_call", params: [{ to: a, data: BALANCE_SEL + POOL_MANAGER.slice(2).padStart(64, "0") }, "latest"] });
-    calls.push({ method: "eth_call", params: [{ to: a, data: BALANCE_SEL + COMMUNITY_VAULT.slice(2).padStart(64, "0") }, "latest"] });
+    calls.push({ to: a, data: SUPPLY_SEL });
+    calls.push({ to: a, data: BALANCE_SEL + POOL_MANAGER.slice(2).padStart(64, "0") });
+    calls.push({ to: a, data: BALANCE_SEL + COMMUNITY_VAULT.slice(2).padStart(64, "0") });
   }
-  const res = await rpcBatch(calls);
+  const res = await multicall(calls);
   const num = (h, dec) => (h && h !== "0x" ? fmtUnits(BigInt(h), dec) : null);
+  log(`  supply and inventory for ${stocks.length} tokens read in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
   /* 3. Daily DEX inventory for the tracked stock, from transfers, so the trend
         exists from genesis rather than from today. Before the pool catalogue,
@@ -135,12 +140,13 @@ export async function indexRwa(latest, tm, opts = {}) {
   const dexState = (store && store.get("rwaDex")) || {};
   for (const tok of DAILY_TRACKED) {
     if (opts.deadline && Date.now() > opts.deadline) break;
+    const t1 = Date.now();
     const st = await dexInventoryDaily(tok, latest, tm, dexState[tok], { deadline: opts.deadline, decimals: decimals.get(tok) ?? 18 });
     dexState[tok] = st;
     let cum = 0;
     daily[tok] = Object.entries(st.byDay).map(([d, v]) => [Number(d), v]).sort((a, b) => a[0] - b[0])
       .map(([t, net]) => ({ t, net: +net.toFixed(4), cum: +(cum += net).toFixed(4) }));
-    if (st.partial) log(`  ${sym(tok)} inventory replay stopped at block ${st.cursor.toLocaleString()} (budget); resumes next run`);
+    log(`  ${sym(tok)} DEX inventory: ${daily[tok].length} day(s) to block ${st.cursor.toLocaleString()}${st.partial ? " (budget; resumes next run)" : ""}, ${((Date.now() - t1) / 1000).toFixed(0)}s`);
   }
   if (store) store.set("rwaDex", dexState);
 
@@ -149,11 +155,16 @@ export async function indexRwa(latest, tm, opts = {}) {
   const poolState = (store && store.get("rwaPools")) || {};
   const allStockPools = new Map();   // poolId → { long, ai, stocks }
   let catalogued = 0;
-  for (const a of stocks) {
+  const t2 = Date.now();
+  /* Biggest first, so a run that cannot finish the list has covered the tokens
+     that carry the trading. */
+  const byDex = [...stocks].sort((x, y) => (res[stocks.indexOf(y) * 3 + 1] ? Number(BigInt(res[stocks.indexOf(y) * 3 + 1])) : 0) - (res[stocks.indexOf(x) * 3 + 1] ? Number(BigInt(res[stocks.indexOf(x) * 3 + 1])) : 0));
+  for (const a of byDex) {
     if (opts.deadline && Date.now() > opts.deadline) break;
     poolState[a] = await stockPools(a, latest, poolState[a], { deadline: opts.deadline });
-    catalogued++;
+    if (!poolState[a].partial) catalogued++;
   }
+  log(`  pool catalogue took ${((Date.now() - t2) / 1000).toFixed(0)}s`);
   for (const a of stocks) for (const p of poolState[a]?.pools || []) {
     const e = allStockPools.get(p.id) || { long: p.long, ai: p.ai, stocks: new Set() };
     e.stocks.add(a); allStockPools.set(p.id, e);

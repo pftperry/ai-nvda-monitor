@@ -15,6 +15,7 @@
 import { analyseRouting, routingHoleDay } from "./tasks/routing.mjs";
 import { walkBook, aiRatio, poolImpact, mergedImpact, IMPACT_SIZES } from "./tasks/depth.mjs";
 import { isStockCode } from "./tasks/rwa.mjs";
+import { encodeAggregate3, decodeAggregate3 } from "./tokens.mjs";
 import { getLogsRange } from "./rpc.mjs";
 import { TimeMap } from "./timemap.mjs";
 
@@ -242,6 +243,32 @@ console.log("Cost to trade");
     assert(i.sell[3].pct === 1, "and the impact reads as the whole book");
   });
 }
+
+console.log("\nMulticall encoding");
+ok("aggregate3 calldata has the ABI shape and its result decodes back to per-call bytes", () => {
+  const calls = [
+    { to: "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec", data: "0x18160ddd" },
+    { to: "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec", data: "0x70a08231" + "8366a39cc670b4001a1121b8f6a443a643e40951".padStart(64, "0") },
+  ];
+  const enc = encodeAggregate3(calls);
+  assert(enc.startsWith("0x82ad56cb"), "aggregate3 selector");
+  const w = (i) => enc.slice(10 + i * 64, 10 + (i + 1) * 64);
+  assert(BigInt("0x" + w(0)) === 32n && BigInt("0x" + w(1)) === 2n, "array offset and length");
+  assert(BigInt("0x" + w(2)) === 64n, "first tuple starts after two head words");
+  // first tuple: target, allowFailure, bytes offset 0x60, length 4, data
+  assert(w(4).endsWith("d0601ce157db5bdc3162bbac2a2c8af5320d9eec") && BigInt("0x" + w(5)) === 1n && BigInt("0x" + w(6)) === 0x60n && BigInt("0x" + w(7)) === 4n, "tuple layout");
+  assert((enc.length - 10) % 64 === 0, "whole words");
+  /* A hand-built return: two (bool success, bytes returnData) tuples, the second failed. */
+  const W = (h) => h.replace(/^0x/, "").padStart(64, "0");
+  const t1 = W("1") + W("40") + W("20") + W("714b276e02211902549");
+  const t2 = W("0") + W("40") + W("0");
+  const ret = "0x" + W("20") + W("2") + W("40") + W((64 + t1.length / 2).toString(16)) + t1 + t2;
+  const dec = decodeAggregate3(ret, 2);
+  assert(BigInt(dec[0]) === 0x714b276e02211902549n, `first result decodes, got ${dec[0]}`);
+  assert(dec[1] === null, "a failed sub-call is null, not garbage");
+  let threw = false; try { decodeAggregate3(ret, 3); } catch { threw = true; }
+  assert(threw, "a count mismatch is an error");
+});
 
 console.log("\nStock-token classifier");
 ok("Robinhood's proxy bytecode is recognised by length and prefix, nothing else", () => {

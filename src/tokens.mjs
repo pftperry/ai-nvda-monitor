@@ -119,3 +119,56 @@ export async function balanceOf(token, holder, blockTag = "latest") {
   const [r] = await rpcBatch([{ method: "eth_call", params: [{ to: token, data }, blockTag] }]);
   return r && r !== "0x" ? BigInt(r) : 0n;
 }
+
+/**
+ * Many reads in one request through Multicall3 (deployed at its canonical address
+ * on Robinhood Chain, 3,808 bytes, checked 14 Sep 2026).
+ *
+ * The provider's limiter counts JSON-RPC sub-requests, so batching at the transport
+ * bought nothing (see rpcBatch). Multicall batches INSIDE the EVM: one eth_call,
+ * one unit of rate budget, up to a few hundred reads. Failed sub-calls come back
+ * as null rather than failing the batch (allowFailure = true).
+ */
+export const MULTICALL3 = "0xca11bde05977b3631167028862be2a173976ca11";
+const W = (h) => h.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+const hex = (n) => n.toString(16);
+
+export function encodeAggregate3(calls) {
+  const tuples = calls.map((c) => {
+    const d = c.data.replace(/^0x/, "");
+    const padded = d.padEnd(Math.ceil(d.length / 64) * 64, "0");
+    return W(c.to) + W("0") + W("60") + W(hex(d.length / 2)) + padded;   // target, allowFailure=false→ we pass true below
+  }).map((t) => t.slice(0, 64) + W("1") + t.slice(128));                   // allowFailure = true
+  let off = calls.length * 32;
+  const heads = tuples.map((t) => { const h = W(hex(off)); off += t.length / 2; return h; });
+  return "0x82ad56cb" + W("20") + W(hex(calls.length)) + heads.join("") + tuples.join("");
+}
+
+export function decodeAggregate3(ret, n) {
+  const d = ret.replace(/^0x/, "");
+  const word = (i) => d.slice(i * 64, i * 64 + 64);
+  const base = Number(BigInt("0x" + word(0))) / 32;               // offset to the array, in words
+  const len = Number(BigInt("0x" + word(base)));
+  if (len !== n) throw new Error(`multicall returned ${len} results for ${n} calls`);
+  const out = [];
+  for (let k = 0; k < len; k++) {
+    const tup = base + 1 + Number(BigInt("0x" + word(base + 1 + k))) / 32;
+    const success = BigInt("0x" + word(tup)) === 1n;
+    const bytesAt = tup + Number(BigInt("0x" + word(tup + 1))) / 32;
+    const blen = Number(BigInt("0x" + word(bytesAt)));
+    const bytes = d.slice((bytesAt + 1) * 64, (bytesAt + 1) * 64 + blen * 2);
+    out.push(success && blen > 0 ? "0x" + bytes : null);
+  }
+  return out;
+}
+
+export async function multicall(calls, { chunk = 150, blockTag = "latest" } = {}) {
+  const out = [];
+  for (let i = 0; i < calls.length; i += chunk) {
+    const part = calls.slice(i, i + chunk);
+    const [r] = await rpcBatch([{ method: "eth_call", params: [{ to: MULTICALL3, data: encodeAggregate3(part) }, blockTag] }]);
+    if (!r || r === "0x") { out.push(...part.map(() => null)); continue; }
+    out.push(...decodeAggregate3(r, part.length));
+  }
+  return out;
+}
