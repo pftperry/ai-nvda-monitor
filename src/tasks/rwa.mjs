@@ -31,6 +31,39 @@ export const STOCK_EVENT = "0x37e7f0db430edc9dd31bc66f25f8449353aa0818f503b90674
 
 const MIN_DEGREE = 3;              // pools a token must anchor before it is worth a getCode call
 const CATALOGUE_VERSION = 2;       // 2: entries carry the pool's initial sqrt price, the fallback valuation price for pools that never traded
+
+/* LONG's own definition of its assets and pools, taken from the public SQL behind
+   its Dune dashboard (queries 8032167 and 8032178, read 14 Sep 2026):
+   - an asset is every LaunchCreated from the two TickerAirlockFactory deployments
+     and the LongLaunchFactory (topic2 = asset, topic3 = numeraire);
+   - a pool is a v4 Initialize with the LONG hook whose pair is (asset, numeraire),
+     or, after Airlock.Migrate(asset, pool), the graduated v2/v3 pool at that address,
+     which holds its own tokens and is read by balance. */
+export const LAUNCH_FACTORIES = ["0x9c88f06b72fcd3cedbef3be7521ee5abd72d0845", "0x22e99278308b393ea1260859b181ad7e78f5eeed", "0x1eef016f22a943abc7dd11422edee9d235942104"];
+export const LAUNCH_CREATED = "0xadc6f1f726f7c710f77ec06adc75f3bb964e5be19581b072c67f7b9b4039267b";
+export const AIRLOCK = "0xeb7c034704ef8dcd2d32324c1545f62fb4ad0862";
+export const AIRLOCK_MIGRATE = "0x2a05bb717043f3a794e94382bf63f2e275ecafc41be9b63c34f16d58da9822ca";
+const topicAddr = (t) => "0x" + t.slice(26).toLowerCase();
+
+/** Every LONG launch (asset → numeraire) and every graduation (asset → v2/v3 pool), cursor-resumed. */
+async function launchRegistry(latest, store, deadline) {
+  const st = (store && store.get("rwaLaunches")) || { v: 1, cursor: GENESIS_BLOCK - 1, launches: {}, migrations: {} };
+  const from = Math.max(GENESIS_BLOCK, st.cursor + 1);
+  if (from <= latest) {
+    let reached = latest, partial = false;
+    for (const f of LAUNCH_FACTORIES) {
+      const r = await getLogsRange({ address: f, topics: [LAUNCH_CREATED] }, from, latest, { chunk: 5_000_000, deadline,
+        onLogs: (logs) => { for (const l of logs) st.launches[topicAddr(l.topics[2])] = { numeraire: topicAddr(l.topics[3]), factory: f, block: parseInt(l.blockNumber, 16) }; } });
+      reached = Math.min(reached, r.reachedBlock ?? latest); if (r.truncated) partial = true;
+    }
+    const m = await getLogsRange({ address: AIRLOCK, topics: [AIRLOCK_MIGRATE] }, from, latest, { chunk: 25_000_000, deadline,
+      onLogs: (logs) => { for (const l of logs) st.migrations[topicAddr(l.topics[1])] = { pool: topicAddr(l.topics[2]), block: parseInt(l.blockNumber, 16) }; } });
+    reached = Math.min(reached, m.reachedBlock ?? latest); if (m.truncated) partial = true;
+    st.cursor = reached; st.partial = partial;
+    if (store) store.set("rwaLaunches", st);
+  }
+  return st;
+}
 const DAILY_TRACKED = [NVDA];      // tokens whose DEX inventory is rebuilt daily from transfers
 const UNIVERSE_WINDOW = 9_000;     // blocks of the stock event scanned per run (~15 min); samples are unioned over a day
 const SUPPLY_SEL = "0x18160ddd";
@@ -277,6 +310,9 @@ export async function indexRwa(latest, tm, opts = {}) {
   if (allStockPools.size) {
     const t4 = Date.now();
     const longIds = new Set([...allStockPools].filter(([, e]) => e.long).map(([id]) => id));
+    /* LONG's own asset list and graduations, for the Dune-equivalent scope. */
+    const reg = await launchRegistry(latest, store, opts.deadline);
+    const launched = new Set(Object.keys(reg.launches));
     let LS = store && store.get("rwaLadderStream");
     if (!LS || LS.v !== 1) LS = { v: 1, cursor: GENESIS_BLOCK - 1, ladders: {}, lastSqrt: {}, events: 0 };
     /* Prices: the newest Swap per pool from this run's census window, layered over the map. */
@@ -321,15 +357,30 @@ export async function indexRwa(latest, tm, opts = {}) {
       }
       if (counted) valued++;
     }
+    /* Graduated pools: assets migrated off v4 whose numeraire is a stock token. The
+       v2/v3 pool holds its own tokens, so its balance IS its inventory. One multicall. */
+    const stockSet = new Set(stocks);
+    const grads = Object.entries(reg.migrations).map(([asset, m]) => ({ asset, pool: m.pool, numeraire: reg.launches[asset]?.numeraire })).filter((g) => g.numeraire && stockSet.has(g.numeraire));
+    let graduatedUsd = 0, graduatedPools = 0;
+    if (grads.length) {
+      const res = await multicall(grads.map((g) => ({ to: g.numeraire, data: BALANCE_SEL + g.pool.slice(2).padStart(64, "0") })));
+      grads.forEach((g, i) => {
+        const amt = res[i] && res[i] !== "0x" ? fmtUnits(BigInt(res[i]), decimals.get(g.numeraire) ?? 18) : 0;
+        const px = anchorUsd.get(g.numeraire); if (!px || !(amt > 0)) return;
+        graduatedUsd += amt * px; perToken[sym(g.numeraire)] = (perToken[sym(g.numeraire)] || 0) + amt * px; graduatedPools++;
+      });
+    }
     const span = latest - GENESIS_BLOCK + 1;
     longTvl = {
-      usd: Math.round(usd),
+      usd: Math.round(usd + graduatedUsd), v4Usd: Math.round(usd), graduatedUsd: Math.round(graduatedUsd),
       pools: valued, poolsWithLiquidity: withLiquidity, poolsUnpriced: unpriced, longStockPools: longIds.size,
+      graduatedPools, graduatedCandidates: grads.length, launches: launched.size, migrations: Object.keys(reg.migrations).length, registryPartial: !!reg.partial,
       backfilledTo: LS.cursor, complete: !LS.partial && LS.cursor >= latest, backfillShare: Math.min(1, (LS.cursor - GENESIS_BLOCK + 1) / span),
       events: LS.events,
       perToken: Object.fromEntries(Object.entries(perToken).map(([k, v]) => [k, Math.round(v)]).sort((a, b) => b[1] - a[1])),
+      method: "LONG's Dune definition: launches from the factories' LaunchCreated, v4 pools valued from their position ladders, graduated pools (Airlock.Migrate) by balance",
     };
-    log(`  stock inventory in LONG pools: $${Math.round(usd).toLocaleString()} across ${valued} pools with stock (${withLiquidity} with liquidity of ${longIds.size} LONG stock pools); ladder stream at block ${LS.cursor.toLocaleString()} (${(100 * longTvl.backfillShare).toFixed(1)}% of history${LS.partial ? ", resumes" : ""}), ${seen.toLocaleString()} events this run, ${secs(t4)}`);
+    log(`  stock inventory in LONG pools: $${Math.round(usd).toLocaleString()} in v4 across ${valued} pools with stock (${withLiquidity} with liquidity of ${longIds.size}) + $${Math.round(graduatedUsd).toLocaleString()} in ${graduatedPools} graduated pools (${launched.size} launches, ${Object.keys(reg.migrations).length} migrations); ladder stream at block ${LS.cursor.toLocaleString()} (${(100 * longTvl.backfillShare).toFixed(1)}% of history${LS.partial ? ", resumes" : ""}), ${seen.toLocaleString()} events this run, ${secs(t4)}`);
   }
 
   /* 5. Totals over the priced set only: an unpriced token contributes no dollars,

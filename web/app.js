@@ -3271,7 +3271,7 @@ function renderRwa() {
       ${tile(`${nv.symbol} captured`, pctLevel(nv.share, 1), `${nf(nv.inDex + nv.inVault, 0)} of ${nf(nv.supply, 0)} ${nv.symbol} on chain · ${pctLevel(nv.dexShare, 1)} in pools, ${pctLevel(nv.vaultShare, 1)} in the vault`)}
       ${tile("Market coverage", cov == null ? "—" : `${T.activeListed} / ${T.activeStocks}`, cov == null ? "stock-event sample pending" : `stock tokens that moved on the chain in the last day have a LONG market (${pctLevel(cov, 0)})`)}
       ${tile("New issuance captured", issuance ? pctLevel(issuance.share, 0) : "—", issuance ? `of $${compact(issuance.dSup)} of stock minted in ${Math.round(issuance.days)}d, $${compact(issuance.dDex)} went into DEX liquidity` : "needs a week of history; supply grows daily")}
-      ${tile("In LONG pools", R.longTvl ? `$${compact(R.longTvl.usd)}` : "—", R.longTvl ? `${pctLevel(T.longShare, 1)} of stock supply · ${(R.longTvl.pools ?? 0).toLocaleString()} LONG pools holding stock${R.longTvl.complete ? ", every position replayed" : ` · ladders ${pctLevel(R.longTvl.backfillShare, 0)} backfilled, a floor until complete`}` : "ladders replay on the next slow run", "", R.longTvl ? "hero" : "")}
+      ${tile("In LONG pools", R.longTvl ? `$${compact(R.longTvl.usd)}` : "—", R.longTvl ? `${pctLevel(T.longShare, 1)} of stock supply · $${compact(R.longTvl.v4Usd ?? R.longTvl.usd)} in ${(R.longTvl.pools ?? 0).toLocaleString()} v4 pools${R.longTvl.graduatedUsd ? ` + $${compact(R.longTvl.graduatedUsd)} in ${R.longTvl.graduatedPools} graduated pools` : ""}${R.longTvl.complete ? " · every position replayed" : ` · ladders ${pctLevel(R.longTvl.backfillShare, 0)} backfilled, a floor until complete`}` : "ladders replay on the next slow run", "", R.longTvl ? "hero" : "")}
       ${tile("In DEX liquidity, all venues", `$${compact(T.dexUsd)}`, `stock tokens held by the pool manager across every pool, LONG's or not`)}
       ${tile("Stock pools", T.poolsAll ? `${T.poolsLong.toLocaleString()} / ${T.poolsAll.toLocaleString()}` : "—", T.poolsAll ? `pools quoting a stock token carry the LONG hook (${pctLevel(T.poolsLong / T.poolsAll, 0)})${T.cataloguePartial ? " · catalogue still filling" : ""}` : "catalogue building")}
       ${(() => { const p = S.prices; const basis = p?.nvdaUsd && p?.nvdaUsdImplied ? p.nvdaUsdImplied / p.nvdaUsd - 1 : null;
@@ -4141,8 +4141,12 @@ function renderMethod() {
       pool's own print. <b>The fee engine</b> streams the buyback contract's AI transfers (in, to the accumulation wallet, into
       pools), the accumulation wallet's outflows, and the revenue wallet's USDG and NVDA flows into daily buckets, resumed from a
       cursor, with live balances as the cross-check (verify walks inflow minus outflow against each balance).
-      <b>Stock in LONG pools</b> replays the position ladders of the most active LONG stock pools and
-      values the stock leg at each pool's last swap price; the dormant tail is not replayed, so it is a floor.</p>
+      <b>Stock in LONG pools</b> follows LONG's own Dune definition (public queries 8032167/8032178): the asset list is every
+      <code>LaunchCreated</code> from the two TickerAirlockFactory deployments and the LongLaunchFactory; v4 pools are every
+      LONG-hook pool quoting a stock, valued from position ladders rebuilt out of one resumable stream of the manager's
+      <code>ModifyLiquidity</code> tape at each pool's last swap price; pools that graduated to v2/v3 through
+      <code>Airlock.Migrate</code> hold their own tokens and are read by balance. Until the stream reaches the head the v4
+      figure is labelled a floor.</p>
 
       <p><b style="color:var(--text-primary)">Cross-checks against LONG's own Dune dashboard</b> (@natan_benish2001, read 14 Sep 2026;
       it identifies LONG pools from the factories' <code>LaunchCreated</code> events and follows pools that graduate to v2/v3,

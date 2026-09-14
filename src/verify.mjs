@@ -450,11 +450,16 @@ if (rwa && rwa.tokens?.length) {
        against the balances' spot. */
     warn("stock inventory in LONG pools fits inside the pool manager's inventory",
       rwa.longTvl.usd <= rwa.totals.dexUsd * 1.05, `$${rwa.longTvl.usd} in LONG pools vs $${Math.round(rwa.totals.dexUsd)} in all pools`);
-    check("LONG-pool ladder stream reports its coverage honestly",
-      rwa.longTvl.pools <= rwa.longTvl.poolsWithLiquidity && rwa.longTvl.poolsWithLiquidity <= rwa.longTvl.longStockPools
-      && rwa.longTvl.backfillShare >= 0 && rwa.longTvl.backfillShare <= 1.000001,
-      `${rwa.longTvl.pools} valued of ${rwa.longTvl.poolsWithLiquidity} with liquidity of ${rwa.longTvl.longStockPools}; ${(rwa.longTvl.backfillShare * 100).toFixed(1)}% of history`);
-    warn("LONG-pool ladder stream has reached the head", rwa.longTvl.complete, `backfilled to block ${rwa.longTvl.backfilledTo}; the figure is a floor until it catches up`);
+    if (rwa.longTvl.poolsWithLiquidity != null) {
+      check("LONG-pool ladder stream reports its coverage honestly",
+        rwa.longTvl.pools <= rwa.longTvl.poolsWithLiquidity && rwa.longTvl.poolsWithLiquidity <= rwa.longTvl.longStockPools
+        && rwa.longTvl.backfillShare >= 0 && rwa.longTvl.backfillShare <= 1.000001,
+        `${rwa.longTvl.pools} valued of ${rwa.longTvl.poolsWithLiquidity} with liquidity of ${rwa.longTvl.longStockPools}; ${(rwa.longTvl.backfillShare * 100).toFixed(1)}% of history`);
+      warn("LONG-pool ladder stream has reached the head", rwa.longTvl.complete, `backfilled to block ${rwa.longTvl.backfilledTo}; the figure is a floor until it catches up`);
+      if (rwa.longTvl.graduatedUsd != null) check("graduated-pool holdings are part of the LONG total",
+        rwa.longTvl.graduatedUsd >= 0 && Math.abs(rwa.longTvl.usd - (rwa.longTvl.v4Usd + rwa.longTvl.graduatedUsd)) <= 2,
+        `$${rwa.longTvl.v4Usd} v4 + $${rwa.longTvl.graduatedUsd} graduated = $${rwa.longTvl.usd}`);
+    } else warn("LONG-pool figure comes from the full ladder stream", false, "artifact predates the stream; rebuilt on the next slow run");
   }
   for (const [tok, rows] of Object.entries(rwa.daily || {})) {
     check(`${rwa.dailyTracked?.[tok] || tok.slice(0, 8)} daily DEX inventory is a running sum that never goes negative`,
