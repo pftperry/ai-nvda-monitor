@@ -70,6 +70,26 @@
     </div>
 
     <div class="card">
+      <h3>Since Robinhood Chain went live</h3>
+      <div class="agenote" data-age="rwa" hidden></div>
+      <p class="sub">Tokenized stock sitting in DEX liquidity on the chain, day by day from the first block, with LONG's portion shaded; and LONG's share of all tokenized-stock trading over the same span. The largest stocks by DEX inventory, valued at today's prices.</p>
+      <div id="rwaSince"></div>
+      <h4 class="subhead">Stock in DEX liquidity, daily</h4>
+      <div class="legend">
+        <span><i style="background:color-mix(in srgb, var(--series-3) 45%, transparent)"></i>All DEX venues</span>
+        <span><i style="background:var(--series-1)"></i>In LONG pools</span>
+      </div>
+      <div class="chart" id="cChainTvl"></div>
+      <h4 class="subhead">LONG's share of DEX stock volume, daily and cumulative</h4>
+      <div class="legend">
+        <span><i style="background:var(--series-1)"></i>That day</span>
+        <span><i style="background:var(--series-2)"></i>Since the chain went live</span>
+      </div>
+      <div class="chart small" id="cVolShare"></div>
+      <div id="readSince"></div>
+    </div>
+
+    <div class="card">
       <h3>Tokenized stock trading that touches LONG liquidity</h3>
       <div class="agenote" data-age="rwa" hidden></div>
       <p class="sub">Every swap on the chain in the census's activity window whose pool holds a stock token, split by whether that pool carries the LONG hook. Counts, so one whale cannot move it; sampled each slow-path run.</p>

@@ -338,6 +338,38 @@ function _groupedBars(host, rows, o) {
   xLabels(f, rows, o.xKey, o.xFmt || dayFmt);
 }
 
+/** One bar per row for a whole, with a part of that same whole shaded inside it
+ *  (same quantity, same scale, so the eye reads the share directly). */
+function _stackedBars(host, rows, o) {
+  if (!rows.length) { host.innerHTML = '<p class="muted" style="padding:20px 0">No data in range.</p>'; return; }
+  const f = frame(host, { height: o.height || 220 });
+  const max = Math.max(1e-9, maxOf(rows.map((r) => r[o.totalKey] || 0)));
+  yAxis(f, 0, max, o.fmt || compact);
+  const bw = f.iw / rows.length;
+  const w = Math.max(1, Math.min(22, bw - (bw > 4 ? 2 : 0.4)));
+  const g = mk("g");
+  rows.forEach((r, i) => {
+    const v = r[o.totalKey] || 0, p = Math.min(v, r[o.partKey] || 0);
+    const cx = f.padL + (i + 0.5) * bw;
+    const h = (v / max) * f.ih, hp = (p / max) * f.ih;
+    if (v > 0) g.appendChild(mk("rect", { x: cx - w / 2, y: f.padT + f.ih - h, width: w, height: Math.max(1, h), fill: o.totalColor || "var(--mid)" }));
+    if (p > 0) g.appendChild(mk("rect", { x: cx - w / 2, y: f.padT + f.ih - hp, width: w, height: Math.max(1, hp), fill: o.partColor || "var(--series-1)" }));
+  });
+  f.svg.appendChild(g);
+  const marker = mk("line", { class: "crosshair", y1: f.padT, y2: f.padT + f.ih, x1: 0, x2: 0, opacity: 0 });
+  f.svg.appendChild(marker);
+  const hit = mk("rect", { x: f.padL, y: f.padT, width: f.iw, height: f.ih, fill: "transparent" });
+  onPointer(hit, host, ({ x, y }) => {
+    const i = Math.max(0, Math.min(rows.length - 1, Math.floor((x - f.padL) / bw)));
+    const r = rows[i]; if (!r) return;
+    const cx = f.padL + (i + 0.5) * bw;
+    marker.setAttribute("x1", cx); marker.setAttribute("x2", cx); marker.setAttribute("opacity", 1);
+    showTip(f, host, cx, y, o.tip(r));
+  }, () => { hideTip(f); marker.setAttribute("opacity", 0); });
+  f.svg.appendChild(hit);
+  xLabels(f, rows, o.xKey, o.xFmt || dayFmt);
+}
+
 /** Bullet gauge: one measured value against reference thresholds. */
 function _bulletGauge(host, { value, max, markers, label, fmt = (v) => pct(v, 1) }) {
   host.innerHTML = "";
@@ -472,6 +504,7 @@ function _depthChart(host, rows, o) {
 const barChart      = wrapChart(_barChart);
 const depthChart    = wrapChart(_depthChart);
 const groupedBars   = wrapChart(_groupedBars);
+const stackedBars   = wrapChart(_stackedBars);
 const bulletGauge   = wrapChart(_bulletGauge);
 const shareBars     = wrapChart(_shareBars);
 
@@ -3234,10 +3267,52 @@ function renderTreasury() {
    would cost to trade size against it. */
 const tile = (lbl, val, note, cls = "", extra = "") => `<div class="ctile ${extra}"><div class="lbl">${lbl}</div><div class="val ${cls}">${val}</div><div class="note">${note}</div></div>`;
 
+/* The two since-inception series: stock in DEX liquidity with LONG's portion, and
+   LONG's share of stock volume. Both from rwa.series (complete days, tracked stocks,
+   today's prices); the card says so rather than pretending to a full census. */
+function renderSince(R, pending) {
+  const Z = R?.series, host = $("#rwaSince");
+  if (!Z?.days?.length) { host.innerHTML = pending; for (const id of ["#cChainTvl", "#cVolShare", "#readSince"]) $(id).innerHTML = ""; return; }
+  const rows = Z.days, last = rows.at(-1), T = Z.totals || {};
+  const firstLong = rows.find((r) => r.longInvUsd > 0) || rows.find((r) => r.allInvUsd > 0);
+  const growth = firstLong && firstLong.allInvUsd > 0 && firstLong !== last ? last.allInvUsd / firstLong.allInvUsd : null;
+  const d30 = rows.find((r) => r.t >= last.t - 30 * 86400);
+  const longShare = last.allInvUsd ? Math.min(1, last.longInvUsd / last.allInvUsd) : null;
+  const peakShare = rows.reduce((m, r) => (r.allInvUsd > 0 ? Math.max(m, Math.min(1, r.longInvUsd / r.allInvUsd)) : m), 0);
+  const catching = (Z.tokensPartial || []).length || Z.hookPartial || Z.rialtoPartial;
+  const xf = (g) => (g >= 10 ? `${g.toFixed(0)}×` : `${g.toFixed(1)}×`);
+  host.innerHTML = `<div class="tiles">
+    ${tile("Stock in DEX liquidity", `$${compact(last.allInvUsd)}`,
+      `${Z.tracked.length} largest stocks, ${pctLevel(Z.coverage, 0)} of the chain's DEX stock value, at ${dayFmt(last.t)}${growth ? ` · <span class="up">${xf(growth)}</span> since LONG launched (${dayFmt(firstLong.t)})` : ""}${d30 && d30 !== last && d30.allInvUsd ? ` · ${pct(last.allInvUsd / d30.allInvUsd - 1, 0)} in 30d` : ""}`, "", "hero")}
+    ${tile("LONG's portion of it", pctLevel(longShare, 1), `$${compact(last.longInvUsd)} in LONG pools, Dune's swap-delta definition · peak ${pctLevel(peakShare, 0)}`)}
+    ${tile("LONG share of DEX stock volume", pctLevel(T.shareDex, 1), `$${compact(T.longVolUsd)} of $${compact(T.dexVolUsd)} traded on any DEX since ${dayFmt(Z.since)}${T.shareDex7d != null ? ` · ${pctLevel(T.shareDex7d, 1)} last 7d` : ""}`)}
+    ${tile("Counting Rialto too", pctLevel(T.shareAll, 1), `of $${compact(T.allVolUsd)} once Robinhood's own venue is added ($${compact(T.rialtoVolUsd)} settled off-DEX), Dune's framing`)}
+    ${tile("LONG stock volume, every stock", `$${compact(T.longAllVolUsd)}`, `user swaps in every LONG stock pool since ${dayFmt(Z.since)}, at today's prices`)}
+  </div>${catching ? `<p class="muted" style="margin:6px 0 0">Streams still catching up (${[...(Z.tokensPartial || []), Z.hookPartial ? "LONG swaps" : null, Z.rialtoPartial ? "Rialto" : null].filter(Boolean).join(", ")}); the figures fill in over the next slow runs.</p>` : ""}`;
+  stackedBars($("#cChainTvl"), rows.filter((r) => r.t >= (rows.find((x) => x.allInvUsd > 0)?.t ?? 0)), {
+    xKey: "t", totalKey: "allInvUsd", partKey: "longInvUsd", totalColor: "color-mix(in srgb, var(--series-3) 45%, transparent)", partColor: "var(--series-1)",
+    fmt: (v) => `$${compact(v)}`,
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>$${compact(r.allInvUsd)} of stock in DEX liquidity</div><div>$${compact(r.longInvUsd)} in LONG pools${r.allInvUsd ? ` · ${pctLevel(Math.min(1, r.longInvUsd / r.allInvUsd), 1)}` : ""}</div>`,
+  });
+  let cl = 0, cd = 0;
+  const vrows = rows.filter((r) => r.dexVolUsd > 0).map((r) => { cl += r.longVolUsd; cd += r.dexVolUsd; return { ...r, cum: cd ? cl / cd : 0, shareDex: r.shareDex ?? 0 }; });
+  if (vrows.length > 1) {
+    multiLine($("#cVolShare"), vrows, {
+      xKey: "t", series: [{ key: "shareDex", color: "var(--series-1)" }, { key: "cum", color: "var(--series-2)" }], zeroBase: true, xFmt: dayFmt, fmt: (v) => pctLevel(v, 0),
+      tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${pctLevel(r.shareDex, 1)} of DEX stock volume via LONG that day</div><div>${pctLevel(r.cum, 1)} cumulative</div><div class="k">$${compact(r.longVolUsd)} of $${compact(r.dexVolUsd)}${r.rialtoVolUsd ? ` · Rialto settled $${compact(r.rialtoVolUsd)} besides` : ""}</div>`,
+    });
+  } else $("#cVolShare").innerHTML = `<p class="muted" style="padding:12px 0">Fills in as the volume streams backfill.</p>`;
+  $("#readSince").innerHTML = takeEl(T.shareDex >= 0.1 ? "pos" : "neu",
+    `Across the chain's ${Z.tracked.length} largest stocks, DEX liquidity has grown to <b>$${compact(last.allInvUsd)}</b>${growth ? ` (${xf(growth)} since LONG launched)` : ""} and LONG holds <b>${pctLevel(longShare, 1)}</b> of it.
+     Since the chain went live, <b>${pctLevel(T.shareDex, 1)}</b> of the stock volume traded on any DEX went through LONG pools (<b>${pctLevel(T.shareAll, 1)}</b> once Robinhood's Rialto venue is counted), ${T.shareDex7d != null ? `<b>${pctLevel(T.shareDex7d, 1)}</b> over the last week` : "the last week pending"}.
+     <span class="muted">Stock units from each token's transfers through the pool manager (all venues) and the hook's own swap event (LONG), valued at today's prices, complete UTC days; the hook's and buyback's fee legs are not counted as volume. Rialto fills that route into the pools are counted once.</span>`);
+}
+
 function renderRwa() {
   const R = S.rwa, D = S.depth;
   const px = marketState().price || 0;
   const pending = `<p class="muted">Built on the slow path; this card fills after the next standard run.</p>`;
+  try { renderSince(R, pending); } catch (e) { console.error("renderSince", e); }
 
   /* ── capture ─────────────────────────────────────────────────────────── */
   if (!R?.tokens?.length) {
@@ -4162,7 +4237,15 @@ function renderMethod() {
       <b>Why Dune's stock TVL reads higher</b> ($12.9M against this site's ~$10M on 14 Sep): Dune sums each pool's
       cumulative numeraire swap deltas, which counts the stock a trader paid in but never subtracts the fee legs the hook
       hands out of the pool afterwards (the buyback contract's leg leaves for good) or liquidity that was later removed.
-      Replaying the positions gives what the pools hold now; the swap-delta sum is an upper bound on it.</p>
+      Replaying the positions gives what the pools hold now; the swap-delta sum is an upper bound on it.
+      <b>Since the chain went live</b> (the two histories on the Investor tab) tracks the fifteen largest stocks by DEX inventory
+      plus NVDA from the chain's first block (30 Apr 2026; a pre-genesis anchor set maps those blocks to days). All-venue
+      inventory is each token's transfers into and out of the pool manager, netted per day (reconciled against the live balance
+      by verify); all-venue volume is the gross of those legs less the hook's and buyback contract's fee legs, plus Rialto's own
+      fill event for fills Robinhood settled itself (its pool-routed fills pass through one router pair and are counted once).
+      LONG's side is the hook's per-swap event: stock amounts as volume, buyback legs excluded; pool-perspective running sums as
+      "held", which is Dune's definition and so an upper bound like theirs. Everything is valued at today's prices, so a bar's
+      height moves with the stock like a balance sheet would, and only complete UTC days are drawn.</p>
 
       <p><b style="color:var(--text-primary)">Cross-checks against LONG's own Dune dashboard</b> (@natan_benish2001, read 14 Sep 2026;
       it identifies LONG pools from the factories' <code>LaunchCreated</code> events and follows pools that graduate to v2/v3,

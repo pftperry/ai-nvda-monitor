@@ -3,6 +3,7 @@ import { POOL_MANAGER, COMMUNITY_VAULT, LONG_HOOK, LONG_BUYBACK, AI, USDG, NVDA,
 import { TOPICS, decodeTransfer, decodeInitialize, decodeSwap, decodeModifyLiquidity, fmtUnits } from "../decode.mjs";
 import { multicall, resolveTokens } from "../tokens.mjs";
 import { ladderRawAmounts } from "./depth.mjs";
+import { TimeMap } from "../timemap.mjs";
 
 /**
  * The real-world-asset ledger: how much of Robinhood Chain's tokenized stock
@@ -500,6 +501,153 @@ export async function indexRwa(latest, tm, opts = {}) {
     log(`  stock inventory in LONG pools: $${Math.round(usd).toLocaleString()} in v4 across ${valued} pools with stock (${withLiquidity} with liquidity of ${longIds.size}) + $${Math.round(graduatedUsd).toLocaleString()} in ${graduatedPools} graduated pools (${launched.size} launches, ${Object.keys(reg.migrations).length} migrations); ladder stream at block ${LS.cursor.toLocaleString()} (${(100 * longTvl.backfillShare).toFixed(1)}% of history${LS.partial ? ", resumes" : ""}), ${seen.toLocaleString()} events this run, ${secs(t4)}`);
   }
 
+  /* 4c. Two histories since the chain went live, for the growth charts.
+        (a) Every tracked stock token's flow through the pool manager, from its own
+            Transfer logs: the running net is the stock in DEX liquidity on every
+            venue; the gross, less legs whose counterparty is the hook or the
+            buyback contract (fee legs, not trades), is the stock leg of every DEX
+            trade -- chain-wide DEX stock volume without scanning the Swap tape.
+            Legs whose counterparty is Rialto's router are tagged: Rialto fills that
+            route into the pool manager appear in both streams and are netted.
+        (b) Rialto's own fill event (topic2 token in, topic3 token out; data word 1
+            amount in, word 4 amount out; the venue that is not a DEX).
+        (c) LONG's side from the hook's per-swap event: the stock amount is LONG's
+            stock volume (Dune's definition; buyback legs flagged), and its running
+            pool-perspective sum is Dune's "stock held in LONG pools".
+        Per day, per stock, in stock units; valued at today's prices when published
+        (stated on the page). Tracked = the fifteen largest stocks by DEX inventory
+        plus NVDA, frozen at first build so the history stays comparable. Streamed
+        and cursor-resumed; the first pass wants a deep run. The shared timemap
+        starts at AI genesis (14 Jul); the chain's first block is 30 Apr, so a
+        pre-genesis anchor set is built once and kept with the state. */
+  let series = null;
+  if (allStockPools.size && timeLeft()) {
+    const t5 = Date.now();
+    let F = store && store.get("rwaFlow");
+    if (!F || F.v !== 2) F = { v: 2, anchors: null, tracked: null, tokens: {}, hook: { cursor: GENESIS_BLOCK - 1, days: {} }, rialto: { cursor: -1, days: {} } };
+    if (!F.anchors) { const early = new TimeMap([]); await early.build(0, GENESIS_BLOCK, 250_000); F.anchors = early.toJSON(); }
+    const tmx = new TimeMap([...F.anchors, ...tm.toJSON()]);
+    const dayOf = (b) => tmx.dayBucket(b);
+    if (!F.tracked) {
+      const ranked = [...stocks].filter((a) => anchorUsd.get(a)).sort((x, y) => (dexRaw(y) > dexRaw(x) ? 1 : dexRaw(y) < dexRaw(x) ? -1 : 0));
+      F.tracked = [...new Set([NVDA, ...ranked.slice(0, 15)])];
+    }
+    const tracked = new Set(F.tracked);
+    const px = (tok) => anchorUsd.get(tok) || 0;
+    const addDay = (map, d, key, field, v) => { const row = (map[d] ||= {}); const cell = (row[key] ||= {}); cell[field] = (cell[field] || 0) + v; };
+    for (const tok of F.tracked) {
+      if (!timeLeft()) break;
+      const st = (F.tokens[tok] ||= { cursor: -1, days: {} });
+      const from = st.cursor + 1; if (from > latest) continue;
+      const dec = decimals.get(tok) ?? 18;
+      const snapshot = JSON.stringify(st.days);
+      const fold = (sign) => (logs) => {
+        for (const l of logs) {
+          const t = decodeTransfer(l); if (t.from === t.to) continue;
+          const d = dayOf(t.block); if (d == null) continue;
+          const v = fmtUnits(t.value, dec), cp = sign > 0 ? t.from : t.to;
+          addDay(st.days, d, "x", "net", sign * v); addDay(st.days, d, "x", "gross", v);
+          if (RIALTO_ROUTERS.has(cp)) addDay(st.days, d, "x", "rialto", v);
+          else if (cp === LONG_BUYBACK || cp === LONG_HOOK) addDay(st.days, d, "x", "fee", v);
+        }
+      };
+      const rIn = await getLogsRange({ address: tok, topics: [TOPICS.TRANSFER, null, padAddr(POOL_MANAGER)] }, from, latest, { deadline: opts.deadline, onLogs: fold(1), chunk: 200_000 });
+      const reach = rIn.reachedBlock ?? latest;
+      if (reach < from) { st.days = JSON.parse(snapshot); st.partial = true; continue; }
+      const rOut = await getLogsRange({ address: tok, topics: [TOPICS.TRANSFER, padAddr(POOL_MANAGER), null] }, from, reach, { deadline: opts.deadline + 120_000, onLogs: fold(-1), chunk: 200_000 });
+      if (rOut.truncated) { st.days = JSON.parse(snapshot); st.partial = true; continue; }   // keep in/out consistent: drop the attempt
+      st.cursor = reach; st.partial = !!rIn.truncated;
+    }
+    if (timeLeft()) {
+      const Rl = F.rialto, from = Rl.cursor + 1;
+      if (from <= latest) {
+        const r = await getLogsRange({ address: RIALTO, topics: [RIALTO_FILL] }, from, latest, { chunk: 100_000, deadline: opts.deadline,
+          onLogs: (logs) => {
+            for (const l of logs) {
+              if (l.topics.length < 4) continue;
+              const a = topicAddr(l.topics[2]), b = topicAddr(l.topics[3]);
+              const stock = tracked.has(a) ? a : tracked.has(b) ? b : null; if (!stock) continue;
+              const d = dayOf(parseInt(l.blockNumber, 16)); if (d == null) continue;
+              addDay(Rl.days, d, stock, "vol", fmtUnits(BigInt("0x" + word(l.data, stock === a ? 1 : 4)), decimals.get(stock) ?? 18));
+            }
+          } });
+        Rl.cursor = r.reachedBlock ?? latest; Rl.partial = !!r.truncated;
+      }
+    }
+    if (timeLeft()) {
+      const H = F.hook, from = H.cursor + 1;
+      if (from <= latest) {
+        const r = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, from, latest, { chunk: 100_000, deadline: opts.deadline,
+          onLogs: (logs) => {
+            for (const l of logs) {
+              const e = allStockPools.get(l.topics[3]); if (!e) continue;
+              const d = dayOf(parseInt(l.blockNumber, 16)); if (d == null) continue;
+              const { token, side } = e.stocks[0], dec = decimals.get(token) ?? 18;
+              const amt = int256(word(l.data, side === 0 ? 3 : 4));
+              const units = fmtUnits(abs(amt), dec);
+              addDay(H.days, d, token, "vol", units);
+              if (topicAddr(l.topics[1]) !== LONG_BUYBACK) addDay(H.days, d, token, "volUser", units);
+              addDay(H.days, d, token, "delta", fmtUnits(amt, dec));   // raw sign; the pool perspective is settled below
+            }
+          } });
+        H.cursor = r.reachedBlock ?? latest; H.partial = !!r.truncated;
+      }
+    }
+    if (store) store.set("rwaFlow", F);
+
+    /* Publish. Which sign of the hook's amount is the pool's gain is settled by the
+       data: pools cannot hold negative stock, so the running sum across every
+       tracked stock is positive under the right sign. */
+    let rawSum = 0;
+    for (const row of Object.values(F.hook.days)) for (const [tok, c] of Object.entries(row)) rawSum += (c.delta || 0) * px(tok);
+    const poolSign = rawSum < 0 ? -1 : 1;
+    const dayKeys = new Set();
+    for (const st of Object.values(F.tokens)) for (const d of Object.keys(st.days)) dayKeys.add(Number(d));
+    for (const d of Object.keys(F.hook.days)) dayKeys.add(Number(d));
+    for (const d of Object.keys(F.rialto.days)) dayKeys.add(Number(d));
+    const today = tm.dayBucket(latest);
+    const days = [...dayKeys].filter((d) => d < today).sort((a, b) => a - b);   // complete days only
+    const cumAll = {}, cumLong = {};
+    const rows = days.map((d) => {
+      let allInv = 0, dexVol = 0, feeLegs = 0, rialtoDex = 0, longInv = 0, longVol = 0, longUser = 0, longAllUser = 0, rialtoVol = 0;
+      for (const [tok, st] of Object.entries(F.tokens)) {
+        const c = st.days[d]?.x; if (!c) continue;
+        cumAll[tok] = (cumAll[tok] || 0) + c.net; dexVol += c.gross * px(tok); feeLegs += (c.fee || 0) * px(tok); rialtoDex += (c.rialto || 0) * px(tok);
+      }
+      for (const tok of Object.keys(cumAll)) allInv += Math.max(0, cumAll[tok]) * px(tok);
+      for (const [tok, c] of Object.entries(F.hook.days[d] || {})) {
+        cumLong[tok] = (cumLong[tok] || 0) + poolSign * (c.delta || 0);
+        longAllUser += (c.volUser || 0) * px(tok);
+        if (tracked.has(tok)) { longVol += (c.vol || 0) * px(tok); longUser += (c.volUser || 0) * px(tok); }
+      }
+      for (const tok of Object.keys(cumLong)) if (tracked.has(tok)) longInv += Math.max(0, cumLong[tok]) * px(tok);
+      for (const [tok, c] of Object.entries(F.rialto.days[d] || {})) rialtoVol += (c.vol || 0) * px(tok);
+      const dexUser = Math.max(0, dexVol - feeLegs);                 // trades only: the hook's and buyback's fee legs are not volume
+      const rialtoOnly = Math.max(0, rialtoVol - rialtoDex);         // fills Rialto settled itself, not the ones it routed into the pools
+      const R = (v) => Math.round(v);
+      return { t: d, allInvUsd: R(allInv), longInvUsd: R(longInv), dexVolUsd: R(dexUser), rialtoVolUsd: R(rialtoOnly), allVolUsd: R(dexUser + rialtoOnly),
+        longVolUsd: R(longUser), longGrossVolUsd: R(longVol), longAllVolUsd: R(longAllUser),
+        shareDex: dexUser > 0 ? longUser / dexUser : null, shareAll: dexUser + rialtoOnly > 0 ? longUser / (dexUser + rialtoOnly) : null };
+    });
+    const sum = (k) => rows.reduce((s, r) => s + (r[k] || 0), 0);
+    const last7 = rows.slice(-7);
+    const coveredUsd = F.tracked.reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
+    const totalDexUsd = stocks.reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
+    const reconcile = F.tracked.map((a) => ({ symbol: sym(a), cumNet: Math.round((cumAll[a] || 0) * 1e4) / 1e4, onChain: Math.round(Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * 1e4) / 1e4, complete: F.tokens[a]?.cursor === latest && !F.tokens[a]?.partial }));
+    series = {
+      days: rows, tracked: F.tracked.map((a) => sym(a)), since: rows[0]?.t ?? null,
+      coverage: totalDexUsd > 0 ? coveredUsd / totalDexUsd : null,
+      tokensPartial: F.tracked.filter((a) => F.tokens[a]?.partial || (F.tokens[a]?.cursor ?? -1) < latest).map((a) => sym(a)),
+      hookCursor: F.hook.cursor, hookPartial: !!F.hook.partial, rialtoCursor: F.rialto.cursor, rialtoPartial: !!F.rialto.partial, poolSign,
+      reconcile, pricedAt: "today",
+      totals: { dexVolUsd: sum("dexVolUsd"), rialtoVolUsd: sum("rialtoVolUsd"), allVolUsd: sum("allVolUsd"), longVolUsd: sum("longVolUsd"), longAllVolUsd: sum("longAllVolUsd"),
+        shareDex: sum("dexVolUsd") > 0 ? sum("longVolUsd") / sum("dexVolUsd") : null, shareAll: sum("allVolUsd") > 0 ? sum("longVolUsd") / sum("allVolUsd") : null,
+        shareDex7d: last7.reduce((s, r) => s + r.dexVolUsd, 0) > 0 ? last7.reduce((s, r) => s + r.longVolUsd, 0) / last7.reduce((s, r) => s + r.dexVolUsd, 0) : null },
+      note: "tracked stocks only (the fifteen largest by DEX inventory plus NVDA, frozen at first build); LONG figures follow Dune's definition (hook swap event; buyback legs excluded from volume, included in held); all values at today's prices",
+    };
+    log(`  flow histories: ${rows.length} complete day(s) since ${rows[0] ? new Date(rows[0].t * 1000).toISOString().slice(0, 10) : "none"}, ${F.tracked.length} stocks tracked (${series.coverage ? (100 * series.coverage).toFixed(0) : "?"}% of DEX stock value), hook at ${F.hook.cursor.toLocaleString()}${F.hook.partial ? " (resumes)" : ""}, Rialto at ${F.rialto.cursor.toLocaleString()}${F.rialto.partial ? " (resumes)" : ""}, ${series.tokensPartial.length} token stream(s) still catching up, pool sign ${poolSign}, ${secs(t5)}`);
+  }
+
   /* 5. Totals over the priced set only: an unpriced token contributes no dollars,
         and mixing a token count with a dollar share would be meaningless. */
   const priced = tokens.filter((t) => t.priceUsd);
@@ -553,7 +701,7 @@ export async function indexRwa(latest, tm, opts = {}) {
     classifier: { ...STOCK_CODE, event: STOCK_EVENT, note: "Robinhood tokenized-stock beacon proxy: same bytecode and beacon as NVDA; emits the stock transfer event" },
     minDegree: MIN_DEGREE,
     universe: { activeTokens: Object.keys(uni.active).length, samples: uni.samples, blocksSampled: uni.blocksSampled, partial: uni.partial },
-    tokens, totals, swapShare, longTvl, history,
+    tokens, totals, swapShare, longTvl, series, history,
     dailyTracked: Object.fromEntries(DAILY_TRACKED.map((t) => [t, sym(t)])),
     daily,
     dailyPartial: Object.fromEntries(DAILY_TRACKED.map((t) => [t, !!dexState[t]?.partial])),
