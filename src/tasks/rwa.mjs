@@ -379,10 +379,18 @@ export async function indexRwa(latest, tm, opts = {}) {
           gradSwaps++; gradUsd += fmtUnits(amt, dec) * px;
         }
       }
+      /* Rialto is a 130-byte forwarder that is never itself a party to the USDG
+         transfer; Dune takes, per transaction sent to it, the largest USDG transfer in
+         that transaction. Same here: its own per-trade event names the transactions,
+         and the window's USDG transfers are folded per transaction to their maximum. */
       if (timeLeft()) {
-        for (const topics of [[TOPICS.TRANSFER, padAddr(RIALTO), null], [TOPICS.TRANSFER, null, padAddr(RIALTO)]]) {
-          const rl = await getLogsRange({ address: USDG, topics }, winFrom, latest, { chunk: 70_000, deadline: opts.deadline });
-          for (const l of rl) { if (rialtoTxs.has(l.transactionHash)) continue; rialtoTxs.add(l.transactionHash); rialtoUsd += fmtUnits(BigInt(l.data), 6); }
+        const rlogs = await getLogsRange({ address: RIALTO }, winFrom, latest, { chunk: 70_000, deadline: opts.deadline });
+        for (const l of rlogs) rialtoTxs.add(l.transactionHash);
+        if (rialtoTxs.size) {
+          const maxByTx = new Map();
+          await getLogsRange({ address: USDG, topics: [TOPICS.TRANSFER] }, winFrom, latest, { chunk: 20_000, deadline: opts.deadline,
+            onLogs: (logs) => { for (const l of logs) { if (!rialtoTxs.has(l.transactionHash)) continue; const v = fmtUnits(BigInt(l.data), 6); if (v > (maxByTx.get(l.transactionHash) || 0)) maxByTx.set(l.transactionHash, v); } } });
+          for (const v of maxByTx.values()) rialtoUsd += v;
         }
       }
     }

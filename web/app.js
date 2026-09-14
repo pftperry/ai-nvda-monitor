@@ -4157,8 +4157,12 @@ function renderMethod() {
       <code>LaunchCreated</code> from the two TickerAirlockFactory deployments and the LongLaunchFactory; v4 pools are every
       LONG-hook pool quoting a stock, valued from position ladders rebuilt out of one resumable stream of the manager's
       <code>ModifyLiquidity</code> tape at each pool's last swap price; pools that graduated to v2/v3 through
-      <code>Airlock.Migrate</code> hold their own tokens and are read by balance. Until the stream reaches the head the v4
-      figure is labelled a floor.</p>
+      <code>Airlock.Migrate</code> hold their own tokens and are read by balance (one migration has ever happened, before AI
+      launched, so this leg is currently nil). Until the stream reaches the head the v4 figure is labelled a floor.
+      <b>Why Dune's stock TVL reads higher</b> ($12.9M against this site's ~$10M on 14 Sep): Dune sums each pool's
+      cumulative numeraire swap deltas, which counts the stock a trader paid in but never subtracts the fee legs the hook
+      hands out of the pool afterwards (the buyback contract's leg leaves for good) or liquidity that was later removed.
+      Replaying the positions gives what the pools hold now; the swap-delta sum is an upper bound on it.</p>
 
       <p><b style="color:var(--text-primary)">Cross-checks against LONG's own Dune dashboard</b> (@natan_benish2001, read 14 Sep 2026;
       it identifies LONG pools from the factories' <code>LaunchCreated</code> events and follows pools that graduate to v2/v3,
