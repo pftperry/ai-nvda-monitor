@@ -2165,14 +2165,26 @@ function renderMultiple(feeSeries) {
 
   const sortedM = series.map((x) => x.mult).sort((a, b) => a - b);
   const median = sortedM.length ? sortedM[Math.floor(sortedM.length / 2)] : null;
+  /* The splitter legs are the narrow definition of what AI earns. The fee engine
+     (buyback contract) takes in several times as much AI, and what it keeps is
+     protocol-held rather than burned or locked. Both multiples, labelled. */
+  const rv = S.revenue?.daily?.length ? completeDays(S.revenue.daily).slice(-7) : [];
+  const engineNet = rv.length === 7 ? sumOf(rv, (d) => d.aiToBuyback - d.aiBuybackToPools - (d.aiBuybackElsewhere || 0)) : null;
+  const feeWk = feeSeries.slice(-7).reduce((s, d) => s + d.fee, 0);
+  const supplyNow = b.totalSupply || (b.genesisSupply - (b.burned || 0));
+  const broad = engineNet != null && feeWk + engineNet > 0 ? supplyNow / (((feeWk + engineNet) / 7) * 365) : null;
   $("#takeMultiple").innerHTML = takeEl(chg == null ? "" : chg <= 0 ? "pos" : "neg",
     now == null ? "No fee history yet."
     : `AI trades at <b>${now.toFixed(1)}× its annualised fee run-rate</b>${chg == null ? "" :
         `, ${chg > 0 ? "up" : "down"} ${pctLevel(Math.abs(chg), 0)} on the week — ${chg > 0 ? "more expensive" : "cheaper"} than seven days ago`}.
        The counterintuitive part: <b>this number does not move when the price moves.</b> Fees are earned in AI, so
        revenue and market cap rise and fall together and the ratio cancels. You cannot buy this dip on cash flow —
-       only more volume through fee-bearing pools can re-rate it.`);
-  return { now, median };
+       only more volume through fee-bearing pools can re-rate it.
+       ${broad != null ? `<br><b>The wider definition:</b> the splitter legs above are ${compact(feeWk / 7)} AI a day; the protocol's buyback contract
+       netted <b>${compact(engineNet / 7)} AI a day</b> on top over the same seven days (taken in, less what it sold back into pools). Counting that
+       AI as accrual, the multiple is <b>${broad.toFixed(1)}×</b>. It is protocol-held rather than burned or locked, so it is a weaker
+       claim than the splitter legs; on the Investor tab under "Mechanical AI buying".` : ""}`);
+  return { now, median, broad };
 }
 
 /**

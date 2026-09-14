@@ -15,50 +15,62 @@ import { multicall } from "../tokens.mjs";
  *   - sells non-AI legs into the same pool for AI where the pool is AI-paired --
  *     949 such swaps across 132 pools in thirty-five minutes -- which is a
  *     mechanical AI purchase on every launched-token trade,
- *   - forwards ~95% of the AI to an EOA that had never sent any out, keeping ~5%,
- *   - forwards stock-paired legs as USDG and NVDA to a second EOA.
- * The AI accumulator held 5.0M AI and the revenue EOA $10.5M of USDG when found,
- * against $1.3M ever received by the platform fee wallet: this is where most of
- * the money is. Measured here as daily flows, streamed from Transfer logs and
- * resumed from a cursor, with live balances as the cross-check.
+ *   - forwards most of the AI to an EOA that had never sent any out, keeping some,
+ *   - and, on other pools, sends AI INTO pools: the AI fee leg sold for the stock or
+ *     USDG side, which is then forwarded to a second EOA (the revenue wallet).
+ * Which of those two behaviours dominates, and when it changed, is exactly what
+ * the daily series below is for. The AI accumulator held 5.0M AI and the revenue
+ * EOA $10.5M of USDG when found, against $1.3M ever received by the platform fee
+ * wallet: this is where most of the money is.
+ *
+ * Each filter is streamed from Transfer logs into daily buckets and resumed from
+ * ITS OWN cursor, so a run that finishes two scans and runs out of budget on the
+ * third keeps exactly the work it did and never counts a day twice.
  */
-const DAY_FIELDS = ["aiToBuyback", "aiBuybackToAccum", "aiBuybackToPools", "aiAccumOut", "usdgToRevenue", "usdgToRevenueFromBuyback", "usdgRevenueOut", "nvdaToRevenue"];
+const STATE_VERSION = 2;
+const FILTERS = {
+  aiToBuyback:      { filter: { address: AI, topics: [TOPICS.TRANSFER, null, padAddr(LONG_BUYBACK)] }, dec: 18 },
+  aiFromBuyback:    { filter: { address: AI, topics: [TOPICS.TRANSFER, padAddr(LONG_BUYBACK), null] }, dec: 18, split: (t) => (t.to === LONG_AI_ACCUMULATOR ? "aiBuybackToAccum" : t.to === POOL_MANAGER ? "aiBuybackToPools" : "aiBuybackElsewhere") },
+  aiAccumOut:       { filter: { address: AI, topics: [TOPICS.TRANSFER, padAddr(LONG_AI_ACCUMULATOR), null] }, dec: 18 },
+  usdgToRevenue:    { filter: { address: USDG, topics: [TOPICS.TRANSFER, null, padAddr(LONG_REVENUE_WALLET)] }, dec: 6, split: (t) => (t.from === LONG_BUYBACK ? "usdgToRevenueFromBuyback" : "usdgToRevenueOther") },
+  usdgRevenueOut:   { filter: { address: USDG, topics: [TOPICS.TRANSFER, padAddr(LONG_REVENUE_WALLET), null] }, dec: 6 },
+  nvdaToRevenue:    { filter: { address: NVDA, topics: [TOPICS.TRANSFER, null, padAddr(LONG_REVENUE_WALLET)] }, dec: 18 },
+};
+const DAY_FIELDS = ["aiToBuyback", "aiBuybackToAccum", "aiBuybackToPools", "aiBuybackElsewhere", "aiAccumOut", "usdgToRevenueFromBuyback", "usdgToRevenueOther", "usdgRevenueOut", "nvdaToRevenue"];
 
 export async function indexRevenue(latest, tm, opts = {}) {
   const log = opts.log || console.log;
   const store = opts.store;
-  const prev = (store && store.get("revenue")) || { cursor: GENESIS_BLOCK - 1, daily: {} };
-  const daily = {};
-  for (const [d, r] of Object.entries(prev.daily)) daily[d] = { ...r };
-  const from = Math.max(GENESIS_BLOCK, prev.cursor + 1);
-  const bump = (block, key, v) => {
-    const d = tm.dayBucket(block); if (!d) return;
-    const row = (daily[d] ||= Object.fromEntries(DAY_FIELDS.map((k) => [k, 0])));
-    row[key] = (row[key] || 0) + v;
-  };
-  let reached = latest, partial = false;
-  const scan = async (filter, dec, fold) => {
-    if (from > latest) return;
-    const r = await getLogsRange(filter, from, latest, { chunk: 400_000, deadline: opts.deadline, onLogs: (logs) => { for (const l of logs) fold(decodeTransfer(l), fmtUnits(decodeTransfer(l).value, dec)); } });
-    reached = Math.min(reached, r.reachedBlock ?? latest);
-    if (r.truncated) partial = true;
-  };
+  let state = store && store.get("revenue");
+  if (!state || state.v !== STATE_VERSION) state = { v: STATE_VERSION, filters: {} };
   const t0 = Date.now();
-  await scan({ address: AI, topics: [TOPICS.TRANSFER, null, padAddr(LONG_BUYBACK)] }, 18, (t, v) => bump(t.block, "aiToBuyback", v));
-  await scan({ address: AI, topics: [TOPICS.TRANSFER, padAddr(LONG_BUYBACK), null] }, 18, (t, v) => {
-    if (t.to === LONG_AI_ACCUMULATOR) bump(t.block, "aiBuybackToAccum", v);
-    else if (t.to === POOL_MANAGER) bump(t.block, "aiBuybackToPools", v);
-  });
-  await scan({ address: AI, topics: [TOPICS.TRANSFER, padAddr(LONG_AI_ACCUMULATOR), null] }, 18, (t, v) => bump(t.block, "aiAccumOut", v));
-  await scan({ address: USDG, topics: [TOPICS.TRANSFER, null, padAddr(LONG_REVENUE_WALLET)] }, 6, (t, v) => { bump(t.block, "usdgToRevenue", v); if (t.from === LONG_BUYBACK) bump(t.block, "usdgToRevenueFromBuyback", v); });
-  await scan({ address: USDG, topics: [TOPICS.TRANSFER, padAddr(LONG_REVENUE_WALLET), null] }, 6, (t, v) => bump(t.block, "usdgRevenueOut", v));
-  await scan({ address: NVDA, topics: [TOPICS.TRANSFER, null, padAddr(LONG_REVENUE_WALLET)] }, 18, (t, v) => bump(t.block, "nvdaToRevenue", v));
-
-  /* If any scan was cut short, keep the earlier cursor for all of them: a day
-     with inflows scanned and outflows not would misstate the balance walk. */
-  const cursor = partial ? Math.min(reached, latest) : latest;
-  if (store) store.set("revenue", { cursor: partial ? Math.max(prev.cursor, reached) : latest, daily });
-  log(`  fee engine: scanned ${from.toLocaleString()}..${cursor.toLocaleString()} in ${((Date.now() - t0) / 1000).toFixed(0)}s${partial ? " (budget; resumes)" : ""}`);
+  const notes = [];
+  for (const [name, spec] of Object.entries(FILTERS)) {
+    const st = (state.filters[name] ||= { cursor: GENESIS_BLOCK - 1, byDay: {} });
+    const from = Math.max(GENESIS_BLOCK, st.cursor + 1);
+    if (from > latest) continue;
+    if (opts.deadline && Date.now() > opts.deadline) { notes.push(`${name} waits`); continue; }
+    const byDay = st.byDay;
+    const r = await getLogsRange(spec.filter, from, latest, {
+      chunk: 400_000, deadline: opts.deadline,
+      onLogs: (logs) => {
+        for (const l of logs) {
+          const t = decodeTransfer(l);
+          const d = tm.dayBucket(t.block); if (!d) continue;
+          const key = spec.split ? spec.split(t) : name;
+          const row = (byDay[d] ||= {});
+          row[key] = (row[key] || 0) + fmtUnits(t.value, spec.dec);
+        }
+      },
+    });
+    st.cursor = r.reachedBlock ?? latest;
+    st.partial = !!r.truncated;
+    notes.push(`${name} to ${st.cursor.toLocaleString()}${st.partial ? " (budget)" : ""}`);
+  }
+  if (store) store.set("revenue", state);
+  const partial = Object.values(state.filters).some((s) => s.partial || s.cursor < latest);
+  const cursor = Math.min(...Object.values(state.filters).map((s) => s.cursor));
+  log(`  fee engine: ${notes.join(", ")} in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 
   /* Live balances, one multicall. */
   const bal = (tok, who) => ({ to: tok, data: "0x70a08231" + who.slice(2).padStart(64, "0") });
@@ -73,19 +85,30 @@ export async function indexRevenue(latest, tm, opts = {}) {
     revenue: { usdg: n(r[4], 6), nvda: n(r[5], 18), ai: n(r[6], 18) },
   };
 
-  const series = Object.entries(daily).map(([d, row]) => ({ t: Number(d), ...Object.fromEntries(DAY_FIELDS.map((k) => [k, +(row[k] || 0).toFixed(4)])) })).sort((a, b) => a.t - b.t);
+  /* Merge the per-filter day maps into one series. */
+  const days = new Map();
+  for (const st of Object.values(state.filters)) for (const [d, row] of Object.entries(st.byDay)) {
+    const out = days.get(Number(d)) || { t: Number(d) };
+    for (const [k, v] of Object.entries(row)) out[k] = (out[k] || 0) + v;
+    days.set(Number(d), out);
+  }
+  const series = [...days.values()].sort((a, b) => a.t - b.t)
+    .map((row) => ({ t: row.t, ...Object.fromEntries(DAY_FIELDS.map((k) => [k, +(row[k] || 0).toFixed(4)])) }));
   const sum = (k) => series.reduce((s, x) => s + (x[k] || 0), 0);
   const totals = Object.fromEntries(DAY_FIELDS.map((k) => [k, +sum(k).toFixed(2)]));
+  totals.usdgToRevenue = +(totals.usdgToRevenueFromBuyback + totals.usdgToRevenueOther).toFixed(2);
   return {
     updatedAt: Math.floor(Date.now() / 1000),
     cursor, partial,
+    filterCursors: Object.fromEntries(Object.entries(state.filters).map(([k, s]) => [k, { cursor: s.cursor, partial: !!s.partial }])),
     addresses: { buyback: LONG_BUYBACK, accumulator: LONG_AI_ACCUMULATOR, revenue: LONG_REVENUE_WALLET },
     fields: {
       aiToBuyback: "AI received by the buyback contract (fee legs in AI, and AI it bought by selling other fee legs)",
       aiBuybackToAccum: "AI the buyback contract forwarded to the accumulation EOA",
-      aiBuybackToPools: "AI the buyback contract paid into pools (its own swaps' input side)",
+      aiBuybackToPools: "AI the buyback contract paid into pools: AI fee legs sold for the other side",
+      aiBuybackElsewhere: "AI the buyback contract sent anywhere else",
       aiAccumOut: "AI sent out of the accumulation EOA (none as of 14 Sep 2026)",
-      usdgToRevenue: "USDG received by the revenue EOA, any sender", usdgToRevenueFromBuyback: "of which from the buyback contract",
+      usdgToRevenueFromBuyback: "USDG into the revenue EOA from the buyback contract", usdgToRevenueOther: "USDG into the revenue EOA from any other sender",
       usdgRevenueOut: "USDG sent out of the revenue EOA", nvdaToRevenue: "NVDA received by the revenue EOA",
     },
     totals, balances, daily: series,
