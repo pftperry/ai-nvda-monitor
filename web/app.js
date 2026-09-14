@@ -4148,9 +4148,11 @@ function renderMethod() {
       it identifies LONG pools from the factories' <code>LaunchCreated</code> events and follows pools that graduate to v2/v3,
       prices with Chainlink, and counts Robinhood's Rialto venue in "all stock trading"). Dune: <b>16.4%</b> LONG share of all
       tokenized-stock trading volume since 1 Jun, <b>37.0%</b> among launchpad-token pairs, <b>30.1%</b> of stock traders,
-      <b>$12.9M</b> of stock TVL in LONG pools, <b>$1.18B</b> cumulative LONG stock volume. This site's two-hour window read
-      14–16% by dollars the same night, and its pool-manager inventory ($54M, every venue) is the ceiling of which Dune's
-      LONG-only figure is a part. Where the two disagree, Dune's launch list is the more exact definition of "LONG".</p>
+      <b>$12.9M</b> of stock TVL in LONG pools, <b>$1.18B</b> cumulative LONG stock volume, and per stock: <b>15.6%</b> of all NVDA on
+      the chain held in LONG pools (13.5% in AI/NVDA alone), AMC 27.4%, HIMS 22.6%, MU 16.6%, AAPL 13.5%, MSTR 13.6%, SPCX 11.2%.
+      This site's two-hour window read 14–16% of stock volume by dollars the same night; its pool-manager inventory ($54M, every venue)
+      is the ceiling of which Dune's LONG-only figure is a part, and its replay of the 200 most active LONG stock pools ($8.8M) is a floor
+      under it. Where the two disagree, Dune's launch list is the more exact definition of "LONG".</p>
 
       <p><b style="color:var(--text-primary)">Holders.</b> Every AI transfer since genesis is replayed into a balance per
       address and snapshotted every four hours; balances must sum to supply exactly before anything is published. On
