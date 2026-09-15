@@ -492,7 +492,7 @@ if (!fast && !flag("no-launchpad")) {
          from stock volume with the same swap streams. */
       let perps = null, perpPools = new Map();
       try {
-        ({ perps, pools: perpPools } = await indexPerps(latest, tm, { store, anchorUsd: anchors, deadline: Date.now() + opt("perps-budget", deep ? 300 : 120) * 1000 }));
+        ({ perps, pools: perpPools } = await indexPerps(latest, tm, { store, anchorUsd: anchors, deadline: Date.now() + opt("perps-budget", deep ? 600 : 240) * 1000 }));
       } catch (e) { softFail("LongX perps", e, "the previous perps block stays in place"); perps = readData("rwa.json")?.perps ?? null; }
       const rwa = await indexRwa(latest, tm, {
         store, pools: census.pools, symbols, decimals, anchorUsd: anchors, perpPools,

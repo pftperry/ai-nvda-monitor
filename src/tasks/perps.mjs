@@ -1,4 +1,4 @@
-import { rpc, getLogsRange, padAddr } from "../rpc.mjs";
+import { rpc, rpcBatch, getLogsRange, padAddr } from "../rpc.mjs";
 import { USDG, GENESIS_BLOCK } from "../config.mjs";
 import { TOPICS, decodeTransfer, fmtUnits } from "../decode.mjs";
 import { multicall, resolveTokens } from "../tokens.mjs";
@@ -28,6 +28,9 @@ import { stockPools } from "./rwa.mjs";
  * catalogue built here to bucket those pools' volume apart from the stock volume.
  */
 export const LIGHTER_BRIDGE = "0x94bab9693ba2f6358507effcbd372b0660afff9d";
+/* Lighter's own plumbing on this chain: its router is the bridge's largest feeder
+   (about $26M) and is neither a vault nor a mystery. */
+export const KNOWN_INFRA = { "0x8062df5b3220ad1f528365650a3eb3e8c7b0dad1": "Lighter router" };
 export const VAULT_CODE_PREFIX = "0x60806040819052635c60da";
 const VAULT_CODE_BYTES = 291;
 const ZERO_TOPIC = "0x" + "0".repeat(64);
@@ -72,20 +75,31 @@ export async function indexPerps(latest, tm, opts = {}) {
   const cands = [...new Set([...Object.keys(B.senders), ...Object.keys(B.receivers)])];
   B.names ||= {};
   const str = (h) => { try { if (!h || h === "0x") return ""; if (h.length === 66) return Buffer.from(h.slice(2), "hex").toString(); const off = parseInt(h.slice(2, 66), 16) * 2, len = parseInt(h.slice(2 + off, 2 + off + 64), 16) * 2; return Buffer.from(h.slice(2 + off + 64, 2 + off + 64 + len), "hex").toString(); } catch { return ""; } };
-  for (const a of cands) {
-    if (B.code[a] !== undefined || !timeLeft()) continue;
-    const c = await rpc("eth_getCode", [a, "latest"]).catch(() => "0x");
-    if (!c || c === "0x") { B.code[a] = false; continue; }                       // a wallet
-    const proxy = c.startsWith(VAULT_CODE_PREFIX) && (c.length - 2) / 2 === VAULT_CODE_BYTES;
-    const name = clean(str(await rpc("eth_call", [{ to: a, data: "0x06fdde03" }, "latest"]).catch(() => "0x")));
-    const sym = clean(str(await rpc("eth_call", [{ to: a, data: "0x95d89b41" }, "latest"]).catch(() => "0x")));
-    B.names[a] = { name, sym, bytes: (c.length - 2) / 2 };
-    B.code[a] = proxy || /\b(long|pre ipo)\b/i.test(name) ? true : "contract";
+  /* Thousands of depositors' wallets sit among the counterparties, so the code
+     lookups go out as JSON-RPC batches (measured: one call each ate a whole
+     300-second budget). A wallet is empty code or an EIP-7702 delegation
+     (0xef0100 + address, 23 bytes); only real contracts get a name lookup. */
+  const unknown = cands.filter((a) => B.code[a] === undefined);
+  for (let i = 0; i < unknown.length && timeLeft(); i += 40) {
+    const part = unknown.slice(i, i + 40);
+    const codes = await rpcBatch(part.map((a) => ({ method: "eth_getCode", params: [a, "latest"] }))).catch(() => part.map(() => null));
+    const contracts = [];
+    part.forEach((a, k) => { const c = codes[k]; if (c == null) return; if (c === "0x" || c.startsWith("0xef0100")) B.code[a] = false; else contracts.push([a, c]); });
+    if (!contracts.length) continue;
+    const names = await multicall(contracts.flatMap(([a]) => [{ to: a, data: "0x06fdde03" }, { to: a, data: "0x95d89b41" }])).catch(() => contracts.flatMap(() => [null, null]));
+    contracts.forEach(([a, c], k) => {
+      const proxy = c.startsWith(VAULT_CODE_PREFIX) && (c.length - 2) / 2 === VAULT_CODE_BYTES;
+      const name = clean(str(names[k * 2])), sym = clean(str(names[k * 2 + 1]));
+      B.names[a] = { name, sym, bytes: (c.length - 2) / 2 };
+      B.code[a] = KNOWN_INFRA[a] ? "infra" : proxy || /\b(long|pre ipo)\b/i.test(name) ? true : "contract";
+    });
   }
   if (store) store.set("perpsBridge", B);
   const vaults = cands.filter((a) => B.code[a] === true).sort();
   const unattributed = cands.filter((a) => B.code[a] === "contract" && B.senders[a]).map((a) => ({ address: a, inUsd: Math.round(B.senders[a]), outUsd: Math.round(B.receivers[a] || 0), name: B.names[a]?.name || "", bytes: B.names[a]?.bytes })).sort((x, y) => y.inUsd - x.inUsd);
   const otherIn = unattributed.reduce((s, u) => s + u.inUsd, 0);
+  const infra = cands.filter((a) => B.code[a] === "infra").map((a) => ({ address: a, label: KNOWN_INFRA[a], inUsd: Math.round(B.senders[a] || 0), outUsd: Math.round(B.receivers[a] || 0) }));
+  const unclassified = cands.filter((a) => B.code[a] === undefined).length;
 
   /* 3. Share supply, pending USDG, symbols. */
   const meta = vaults.length ? await resolveTokens(vaults, { log: () => {} }) : new Map();
@@ -153,13 +167,13 @@ export async function indexPerps(latest, tm, opts = {}) {
     /* `lighter` is LongX's slice of the bridge: vault deposits less vault withdrawals.
        `bridgeAll` is the whole chain's traffic through the same contract, for scale. */
     lighter: { depositedUsd: Math.round(vaults.reduce((s, a) => s + (B.senders[a] || 0), 0)), withdrawnUsd: Math.round(vaults.reduce((s, a) => s + (B.receivers[a] || 0), 0)),
-      netUsd: Math.round(vaults.reduce((s, a) => s + (B.senders[a] || 0) - (B.receivers[a] || 0), 0)), unattributed: unattributed.slice(0, 5), unattributedUsd: Math.round(otherIn), cursor: B.cursor, partial: !!B.partial },
+      netUsd: Math.round(vaults.reduce((s, a) => s + (B.senders[a] || 0) - (B.receivers[a] || 0), 0)), unattributed: unattributed.slice(0, 5), unattributedUsd: Math.round(otherIn), infra, unclassified, cursor: B.cursor, partial: !!B.partial },
     bridgeAll: { depositedUsd: Math.round(inAll), withdrawnUsd: Math.round(outAll), netUsd: Math.round(inAll - outAll) },
     vaults: vaultRows,
     valueUsd: vaultRows.reduce((s, v) => s + (v.valueUsd || 0), 0), priced: vaultRows.filter((v) => v.priceUsd != null).length,
     pools: { all: pools.size, long: [...pools.values()].filter((p) => p.long).length },
     daily, sharesPartial: !!Sh.partial,
   };
-  log(`  LongX perps: ${vaults.length} vault(s) [${vaultRows.map((v) => v.symbol).join(", ")}], USDG to Lighter $${out.lighter.depositedUsd.toLocaleString()} in / $${out.lighter.withdrawnUsd.toLocaleString()} out (net $${out.lighter.netUsd.toLocaleString()}${otherIn ? `, plus $${Math.round(otherIn).toLocaleString()} from non-vault senders` : ""}), shares worth $${Math.round(out.valueUsd).toLocaleString()} (${out.priced}/${vaults.length} priced), ${out.pools.long} LONG pools of ${out.pools.all} quoting a share, ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  log(`  LongX perps: ${vaults.length} vault(s) [${vaultRows.map((v) => v.symbol).join(", ")}], USDG to Lighter $${out.lighter.depositedUsd.toLocaleString()} in / $${out.lighter.withdrawnUsd.toLocaleString()} out (net $${out.lighter.netUsd.toLocaleString()}${otherIn ? `, plus $${Math.round(otherIn).toLocaleString()} from ${unattributed.length} unattributed contract(s)` : ""}${unclassified ? `, ${unclassified} counterpart(ies) still unclassified` : ""}), shares worth $${Math.round(out.valueUsd).toLocaleString()} (${out.priced}/${vaults.length} priced), ${out.pools.long} LONG pools of ${out.pools.all} quoting a share, ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   return { perps: out, pools };
 }

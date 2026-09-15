@@ -458,7 +458,8 @@ if (rwa && rwa.tokens?.length) {
     warn("every LongX vault share has a price", P.priced === P.vaults.length, `${P.priced} of ${P.vaults.length} priced from spot pools`);
     warn("no unattributed contracts feed the Lighter bridge", !(P.lighter.unattributed || []).length,
       (P.lighter.unattributed || []).map((u) => `${u.address.slice(0, 10)} ${u.name || "unnamed"} $${u.inUsd}`).join("; "));
-    warn("perps streams have reached the head", !P.lighter.partial && !P.sharesPartial, "catching up");
+    warn("perps streams have reached the head and every bridge counterparty is classified", !P.lighter.partial && !P.sharesPartial && !P.lighter.unclassified,
+      `${P.lighter.unclassified || 0} unclassified; streams ${P.lighter.partial || P.sharesPartial ? "catching up" : "at the head"}`);
   }
   if (rwa.series) {
     const Z = rwa.series, todayStart = Math.floor(Date.now() / 86400000) * 86400;
