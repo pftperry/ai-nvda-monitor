@@ -4347,7 +4347,16 @@ function renderMethod() {
       anything else with code is shown as unattributed. USDG on Lighter via LongX is the vaults' deposits into the bridge
       less what came back; daily deposits and withdrawals are share mints and burns valued at the shares' spot-pool prices
       (the vaults publish no NAV on chain, so Dune prices them the same way). Pools quoting a vault share are catalogued
-      like stock pools and bucketed apart in both swap streams, so no perps volume reaches any stock figure.</p>
+      like stock pools and bucketed apart in both swap streams, so no perps volume reaches any stock figure.
+      <b>What the developer has said publicly</b> (read from the founder's X account, 14 Jul–15 Sep 2026, posts and
+      replies; his descriptions, this site's measurements): a 0.1% creator fee and 25–50% of protocol fees recycled
+      into liquidity in daily cycles (25–26 Jul), which is the hook's re-added leg above; community mode sends 80% of NVDA
+      fees to the vault and splits AI fees half burn, half vault (31 Jul), which is the splitter's 80/20 and 40/40/20;
+      since mid-September AI-paired pools are used as the AI "sink" instead of direct buybacks (13 Sep), which is why leg A on
+      AI-paired pools lands in the accumulation wallet; the stock reserve is meant to be put to work as LP and yield
+      (8 Aug, 6 Sep), which the revenue wallet has not yet done; Robinhood pauses stock-token minting and redemption over
+      weekends (30–31 Aug), so weekend stock activity is DEX-only and weekend share readings run high; and the team's
+      "$1.4B" counts stock legs only, with LongX perps added to its dashboard separately from 14 Sep, the same split used here.</p>
 
       <p><b style="color:var(--text-primary)">Cross-checks against LONG's own Dune dashboard</b> (@natan_benish2001, read 14 Sep 2026;
       it identifies LONG pools from the factories' <code>LaunchCreated</code> events and follows pools that graduate to v2/v3,
