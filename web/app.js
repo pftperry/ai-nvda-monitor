@@ -4307,6 +4307,14 @@ function renderMethod() {
       pool's own print. <b>The fee engine</b> streams the buyback contract's AI transfers (in, to the accumulation wallet, into
       pools), the accumulation wallet's outflows, and the revenue wallet's USDG and NVDA flows into daily buckets, resumed from a
       cursor, with live balances as the cross-check (verify walks inflow minus outflow against each balance).
+      <b>The fee structure, read from live transactions (15 Sep 2026):</b> there are two layers. Per swap, the hook takes two
+      legs in the launched token, about 0.5% each on AI-paired pools (SIT, AGI) and about 1% each on AI/NVDA: one goes to the
+      buyback contract, which sells 95% of it into the pool at once (for AI on AI-paired pools, sent to the accumulation
+      wallet; for NVDA or USDG on the stock and USDG pools, sent to the revenue wallet) and keeps 5%; the other goes to the hook
+      and is re-added as liquidity. Separately, the LP fees earned by the hook's own positions are collected to the fee
+      splitter, which over the last 30 days sent NVDA 80% to the community vault and 20% to the platform wallet, and AI 40% to
+      the vault, 40% burned and 20% to the platform wallet (1,175 NVDA and 1.71M AI to the vault, 1.71M AI burned). The revenue
+      wallet's only outflows to date are $372K of USDG to four wallets in round amounts; it has bought nothing.
       <b>Stock in LONG pools</b> follows LONG's own Dune definition (public queries 8032167/8032178): the asset list is every
       <code>LaunchCreated</code> from the two TickerAirlockFactory deployments and the LongLaunchFactory; v4 pools are every
       LONG-hook pool quoting a stock, valued from position ladders rebuilt out of one resumable stream of the manager's
