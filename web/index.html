@@ -99,6 +99,22 @@
       <div id="readSwaps"></div>
     </div>
 
+    <h2 class="section-title">LongX perps</h2>
+    <div class="card">
+      <h3>LongX perps on Lighter, counted separately</h3>
+      <div class="agenote" data-age="rwa" hidden></div>
+      <p class="sub">LongX runs leveraged vaults (NVDA 3x Long, OPENAI 1x Long, and the first-generation Pre-IPO tokens) whose shares live on this chain and whose positions live on Lighter. Depositors send USDG to a vault, the vault mints shares and forwards the USDG to Lighter's bridge; withdrawals come back the same way. Nothing here is in any stock number above.</p>
+      <div id="perpsTiles"></div>
+      <div class="scroll"><table id="tPerps"></table></div>
+      <h4 class="subhead">Deposits and withdrawals, daily, from share mints and burns at today's prices</h4>
+      <div class="legend">
+        <span><i style="background:var(--buy)"></i>Deposited</span>
+        <span><i style="background:var(--sell)"></i>Withdrawn</span>
+      </div>
+      <div class="chart small" id="cPerps"></div>
+      <div id="readPerps"></div>
+    </div>
+
     <h2 class="section-title">Liquidity</h2>
     <div class="grid g2">
       <div class="card">

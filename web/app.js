@@ -3342,12 +3342,50 @@ function renderRwaKpis(R, D, pending) {
      <span class="muted">Each number is measured further down this tab; the Valuation tab prices it.</span>`);
 }
 
+/* LongX perps: the vaults' USDG on Lighter, what depositors hold, and the LONG pools
+   anchored to vault shares. Read from rwa.perps (perps.mjs) plus the perps buckets
+   rwa keeps apart from the stock figures. */
+function renderPerps(R, pending) {
+  const P = R?.perps, host = $("#perpsTiles");
+  if (!P?.vaults) { host.innerHTML = pending; for (const id of ["#tPerps", "#cPerps", "#readPerps"]) $(id).innerHTML = ""; return; }
+  const L = P.lighter, sw = R.swapShare?.perps, ZT = R.series?.totals;
+  const mint24 = P.vaults.reduce((s, v) => s + (v.priceUsd ? v.mint24h * v.priceUsd : 0), 0), burn24 = P.vaults.reduce((s, v) => s + (v.priceUsd ? v.burn24h * v.priceUsd : 0), 0);
+  const win = R.swapShare?.windowHours ? `${R.swapShare.windowHours}h` : "window";
+  host.innerHTML = `<div class="tiles three">
+    ${tile("USDG on Lighter via LongX", `$${compact(L.netUsd)}`, `$${compact(L.depositedUsd)} sent to Lighter's bridge by the vaults since ${dayFmt(P.since)}, $${compact(L.withdrawnUsd)} came back${L.partial ? " · stream catching up" : ""}`, "", "hero")}
+    ${tile("What depositors hold", P.priced ? `$${compact(P.valueUsd)}` : "—", P.priced ? `${P.vaults.length} vault share token${P.vaults.length === 1 ? "" : "s"} at their on-chain spot prices (${P.priced} priced) · $${compact(P.vaults.reduce((s, v) => s + (v.pendingUsdg || 0), 0))} USDG waiting in the vaults` : "shares await a price from their spot pools")}
+    ${tile("Deposits, last complete day", `$${compact(mint24)}`, `shares minted at today's prices · $${compact(burn24)} burned`)}
+    ${tile("LONG pools on vault shares", (P.pools?.long ?? 0).toLocaleString(), `launches anchored to a vault share instead of a stock, of ${(P.pools?.all ?? 0).toLocaleString()} pools quoting one`)}
+    ${tile(`Perps volume through LONG, ${win}`, sw ? `$${compact(sw.longUsd)}` : "—", sw ? `${sw.longSwaps.toLocaleString()} swaps in share-anchored LONG pools · $${compact(sw.usd)} across every venue quoting a share` : "swap stream pending")}
+    ${tile("Perps volume since launch", ZT?.perpVolUsd ? `$${compact(ZT.perpUserVolUsd)}` : "—", ZT?.perpVolUsd ? `user swaps in share-anchored LONG pools since ${dayFmt(ZT.perpsSince)}${ZT.perpsPartial ? " · stream catching up" : ""}` : "hook stream rebuilds on the next deep run")}
+  </div>${L.unattributed?.length ? `<p class="muted" style="margin:6px 0 0">Other contracts also feed the same bridge ($${compact(L.unattributedUsd)}; largest ${L.unattributed[0].address.slice(0, 10)}…${L.unattributed[0].name ? `, "${L.unattributed[0].name}"` : ""}); they are not counted as LongX until identified. Lighter's bridge as a whole took $${compact(P.bridgeAll.depositedUsd)} in and $${compact(P.bridgeAll.withdrawnUsd)} out over the same span.</p>` : ""}`;
+  table($("#tPerps"), [
+    { h: "Vault", f: (v) => `<b>${v.symbol}</b>${v.name ? ` <span class="muted">${v.name}</span>` : ""}` },
+    { h: "Shares", f: (v) => nf(v.supply, 0) },
+    { h: "Price", f: (v) => (v.priceUsd != null ? `$${v.priceUsd.toFixed(3)}` : `<span class="muted">—</span>`) },
+    { h: "Value", f: (v) => (v.valueUsd != null ? `$${compact(v.valueUsd)}` : `<span class="muted">—</span>`) },
+    { h: "To Lighter", f: (v) => `$${compact(v.depositedUsd)}` },
+    { h: "Back", f: (v) => `$${compact(v.withdrawnUsd)}` },
+    { h: "Minted 24h", f: (v) => nf(v.mint24h, 0) },
+    { h: "LONG pools", f: (v) => v.longPools.toLocaleString() },
+  ], P.vaults);
+  const rows = (P.daily || []).filter((d) => d.mintUsd || d.burnUsd);
+  if (rows.length > 1) groupedBars($("#cPerps"), rows.slice(-60), { xKey: "t", keys: ["mintUsd", "burnUsd"], colors: ["var(--buy)", "var(--sell)"], fmt: (v) => `$${compact(v)}`,
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>$${compact(d.mintUsd)} deposited (shares minted)</div><div>$${compact(d.burnUsd)} withdrawn (shares burned)</div><div class="k">$${compact(d.netMintUsd)} net since launch · bridge, all users: $${compact(d.bridgeInUsd)} in / $${compact(d.bridgeOutUsd)} out</div>` });
+  else $("#cPerps").innerHTML = `<p class="muted" style="padding:12px 0">Fills in as the share streams backfill.</p>`;
+  $("#readPerps").innerHTML = takeEl("neu",
+    `LongX's vaults have placed <b>$${compact(L.netUsd)}</b> of USDG on Lighter net of withdrawals, and depositors hold <b>${P.priced ? `$${compact(P.valueUsd)}` : "—"}</b> of vault shares at spot.
+     ${sw ? `Over the last ${win}, <b>$${compact(sw.longUsd)}</b> traded in the ${(P.pools?.long ?? 0).toLocaleString()} LONG pools anchored to those shares.` : ""}
+     <span class="muted">Vaults are recognised by their shared proxy bytecode or a name that says Long or Pre IPO; the bridge is Lighter's for the whole chain, so only the vaults' own transfers count. Shares are priced from their spot pools; the vaults publish no NAV on chain.</span>`);
+}
+
 function renderRwa() {
   const R = S.rwa, D = S.depth;
   const px = marketState().price || 0;
   const pending = `<p class="muted">Built on the slow path; this card fills after the next standard run.</p>`;
   try { renderRwaKpis(R, D, pending); } catch (e) { console.error("renderRwaKpis", e); }
   try { renderSince(R, pending); } catch (e) { console.error("renderSince", e); }
+  try { renderPerps(R, pending); } catch (e) { console.error("renderPerps", e); }
 
   /* ── capture ─────────────────────────────────────────────────────────── */
   if (!R?.tokens?.length) {
@@ -4292,7 +4330,16 @@ function renderMethod() {
       inside the manager moves no token, so transfer-basis volume misses those legs while the hook's event records them.
       Inventory is unaffected (the manager's balance only moves by transfer), but a since-inception volume share needs the
       same event on both sides, and the chain-wide Swap tape runs to tens of millions of events, so that share is published
-      only as an upper bound, and the measured-window share (same event on both sides) stands as the headline.</p>
+      only as an upper bound, and the measured-window share (same event on both sides) stands as the headline.
+      <b>LongX perps</b> are measured from this chain alone (<code>perps.mjs</code>). A deposit transaction shows the
+      mechanics: USDG goes to a vault's share contract, a keeper mints shares and the vault forwards the USDG to one
+      address, Lighter's deposit bridge (<code>0x94ba…ff9d</code>), which is shared by the whole chain (about $80M in over
+      three weeks, mostly Lighter's own router and wallets). So LongX vaults are recognised, not listed: any counterparty
+      of the bridge with the leveraged vaults' 291-byte proxy bytecode or an ERC-20 name containing "Long" or "Pre IPO";
+      anything else with code is shown as unattributed. USDG on Lighter via LongX is the vaults' deposits into the bridge
+      less what came back; daily deposits and withdrawals are share mints and burns valued at the shares' spot-pool prices
+      (the vaults publish no NAV on chain, so Dune prices them the same way). Pools quoting a vault share are catalogued
+      like stock pools and bucketed apart in both swap streams, so no perps volume reaches any stock figure.</p>
 
       <p><b style="color:var(--text-primary)">Cross-checks against LONG's own Dune dashboard</b> (@natan_benish2001, read 14 Sep 2026;
       it identifies LONG pools from the factories' <code>LaunchCreated</code> events and follows pools that graduate to v2/v3,

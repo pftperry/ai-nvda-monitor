@@ -164,7 +164,7 @@ async function dexInventoryDaily(token, latest, tm, prior, opts) {
  * which side the stock sits on. Initialize indexes both currencies, so this is two
  * filtered scans per token, append-only and resumed from a cursor.
  */
-async function stockPools(token, latest, prior, opts) {
+export async function stockPools(token, latest, prior, opts) {
   const state = prior && prior.cursor ? { cursor: prior.cursor, pools: [...prior.pools] } : { cursor: GENESIS_BLOCK - 1, pools: [] };
   const from = Math.max(GENESIS_BLOCK, state.cursor + 1);
   if (from > latest) return state;
@@ -348,12 +348,18 @@ export async function indexRwa(latest, tm, opts = {}) {
     let SW = store && store.get("rwaSwapHours");
     if (!SW || SW.v !== 1) SW = { v: 1, cursor: null, first: null, hours: {} };
     const hourOf = (b) => tm.hourBucket(b);
-    const bucket = (h) => (SW.hours[h] ||= { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, perToken: {} });
+    const bucket = (h) => { const b = (SW.hours[h] ||= { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, perToken: {} }); for (const k of ["perpSwaps", "perpLongSwaps", "perpUsd", "perpLongUsd"]) b[k] ??= 0; return b; };
     const stockUsd = (e, a0, a1) => { for (const { token, side } of e.stocks) { const px = anchorUsd.get(token); if (!px) continue; return fmtUnits(abs(side === 0 ? a0 : a1), decimals.get(token) ?? 18) * px; } return 0; };
+    /* LongX vault-share pools (perps) are bucketed apart, never into the stock
+       figures: Dune's convention, and the honest one. */
+    const perpPools = opts.perpPools || new Map();
+    const perpUsd = (p, a0, a1) => { const px = anchorUsd.get(p.share); return px ? fmtUnits(abs(p.side === 0 ? a0 : a1), decimals.get(p.share) ?? 18) * px : 0; };
     const foldSwaps = (logs) => {
       for (const l of logs) {
         const h = hourOf(parseInt(l.blockNumber, 16)); if (h == null) continue;
         const B = bucket(h); B.chainSwaps++;
+        const pp = perpPools.get(l.topics[1]);
+        if (pp) { const s = decodeSwap(l), usd = perpUsd(pp, s.amount0, s.amount1); B.perpSwaps++; B.perpUsd += usd; if (pp.long) { B.perpLongSwaps++; B.perpLongUsd += usd; } continue; }
         const e = allStockPools.get(l.topics[1]); if (!e) continue;
         B.stockSwaps++; if (e.long) B.longSwaps++; if (e.long && e.ai) B.aiPaired++;
         const s = decodeSwap(l), usd = stockUsd(e, s.amount0, s.amount1);
@@ -406,7 +412,7 @@ export async function indexRwa(latest, tm, opts = {}) {
     const firstHour = hourOf(SW.first);
     const hoursCovered = Math.max(0, Math.round((endHour - Math.max(startHour, firstHour)) / 3600) + 1);
     const inWin = Object.entries(SW.hours).map(([k, B]) => [Number(k), B]).filter(([h]) => h >= startHour && h <= endHour).sort((x, y) => x[0] - y[0]);
-    const tot = { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0 };
+    const tot = { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, perpSwaps: 0, perpLongSwaps: 0, perpUsd: 0, perpLongUsd: 0 };
     const per = new Map();
     for (const [, B] of inWin) {
       for (const k of Object.keys(tot)) tot[k] += B[k] || 0;
@@ -425,6 +431,7 @@ export async function indexRwa(latest, tm, opts = {}) {
         rialtoUsd: Math.round(tot.rialtoUsd), rialtoTxs: tot.rialtoFills, denominatorUsd: Math.round(denominatorUsd),
         share: denominatorUsd > 0 ? tot.hookUsd / denominatorUsd : null,
       },
+      perps: { swaps: tot.perpSwaps, longSwaps: tot.perpLongSwaps, usd: Math.round(tot.perpUsd), longUsd: Math.round(tot.perpLongUsd), pools: perpPools.size, longPools: [...perpPools.values()].filter((p) => p.long).length },
       hourly: inWin.map(([h, B]) => ({ t: h, usdAll: Math.round(B.usdAll), usdLong: Math.round(B.usdLong), hookUsd: Math.round(B.hookUsd), rialtoUsd: Math.round(B.rialtoUsd), stockSwaps: B.stockSwaps, longSwaps: B.longSwaps,
         share: B.usdAll + B.rialtoUsd > 0 ? B.hookUsd / (B.usdAll + B.rialtoUsd) : null })),
       perToken: [...per].map(([t, r]) => ({ token: t, symbol: sym(t), all: r.all, long: r.long, share: r.all ? r.long / r.all : null,
@@ -582,6 +589,26 @@ export async function indexRwa(latest, tm, opts = {}) {
         H.cursor = r.reachedBlock ?? latest; H.partial = !!r.truncated;
       }
     }
+    /* LongX perps volume since launch, from the same hook event, kept in its own
+       stream so the stock figures above never include it (a share-anchored pool is
+       not a stock pool; a swap in one is not stock volume). */
+    const perpPools = opts.perpPools || new Map();
+    if (perpPools.size && timeLeft()) {
+      const P = (F.perps ||= { cursor: GENESIS_BLOCK - 1, days: {} }), from = P.cursor + 1;
+      if (from <= latest) {
+        const r = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, from, latest, { chunk: 100_000, deadline: opts.deadline,
+          onLogs: (logs) => {
+            for (const l of logs) {
+              const p = perpPools.get(l.topics[3]); if (!p) continue;
+              const d = dayOf(parseInt(l.blockNumber, 16)); if (d == null) continue;
+              const units = fmtUnits(abs(int256(word(l.data, p.side === 0 ? 3 : 4))), decimals.get(p.share) ?? 18);
+              addDay(P.days, d, p.share, "vol", units);
+              if (topicAddr(l.topics[1]) !== LONG_BUYBACK) addDay(P.days, d, p.share, "volUser", units);
+            }
+          } });
+        P.cursor = r.reachedBlock ?? latest; P.partial = !!r.truncated;
+      }
+    }
     if (timeLeft()) {
       const Rl = F.rialto, from = Rl.cursor + 1;
       if (from <= latest) {
@@ -702,6 +729,8 @@ export async function indexRwa(latest, tm, opts = {}) {
         longVolUsd: R(longUser), longGrossVolUsd: R(longVol), longAllVolUsd: R(longAllUser),
         shareDex: dexUser > 0 ? Math.min(1, longUser / dexUser) : null, shareAll: dexUser + rialtoOnly > 0 ? Math.min(1, longUser / (dexUser + rialtoOnly)) : null };
     });
+    /* Perps volume since launch rides on its own stream (F.perps), keyed by share. */
+    for (const r of rows) { let v = 0, u = 0; for (const [tok, c] of Object.entries(F.perps?.days?.[r.t] || {})) { v += (c.vol || 0) * px(tok); u += (c.volUser || 0) * px(tok); } r.perpVolUsd = Math.round(v); r.perpUserVolUsd = Math.round(u); }
     const sum = (k) => rows.reduce((s, r) => s + (r[k] || 0), 0);
     const last7 = rows.slice(-7);
     const coveredUsd = universe.filter(complete).reduce((s, a) => s + Number(dexRaw(a)) / 10 ** (decimals.get(a) ?? 18) * px(a), 0);
@@ -728,7 +757,7 @@ export async function indexRwa(latest, tm, opts = {}) {
       totals: { dexVolUsd: sum("dexVolUsd"), rialtoVolUsd: sum("rialtoVolUsd"), allVolUsd: sum("allVolUsd"), longVolUsd: sum("longVolUsd"), longAllVolUsd: sum("longAllVolUsd"),
         shareDex: sum("dexVolUsd") > 0 ? Math.min(1, sum("longVolUsd") / sum("dexVolUsd")) : null, shareAll: sum("allVolUsd") > 0 ? Math.min(1, sum("longVolUsd") / sum("allVolUsd")) : null,
         shareDex7d: last7.reduce((s, r) => s + r.dexVolUsd, 0) > 0 ? Math.min(1, last7.reduce((s, r) => s + r.longVolUsd, 0) / last7.reduce((s, r) => s + r.dexVolUsd, 0)) : null,
-        covered: covered.size },
+        covered: covered.size, perpVolUsd: sum("perpVolUsd"), perpUserVolUsd: sum("perpUserVolUsd"), perpsPartial: !!F.perps?.partial, perpsSince: F.perps ? (rows.find((r) => r.perpVolUsd > 0)?.t ?? null) : null },
       note: "per-day series cover the stock tokens whose transfer stream has reached the head (coverage = their share of DEX stock value); LONG all-stock volume is complete on its own; LONG figures follow Dune's definition (hook swap event; buyback legs excluded from volume, included in held); transfer-basis volume shares are upper bounds (intra-manager hops move no token); all values at today's prices",
     };
     log(`  flow histories: ${rows.length} complete day(s) since ${rows[0] ? new Date(rows[0].t * 1000).toISOString().slice(0, 10) : "none"}, ${universe.length} stock tokens (streams at the head for ${series.coverage ? (100 * series.coverage).toFixed(0) : "?"}% of DEX stock value), hook at ${F.hook.cursor.toLocaleString()}${F.hook.partial ? " (resumes)" : ""}, Rialto at ${F.rialto.cursor.toLocaleString()}${F.rialto.partial ? " (resumes)" : ""}, ${series.tokensPartial.length} token stream(s) still catching up, pool sign ${poolSign}, ${secs(t5)}`);

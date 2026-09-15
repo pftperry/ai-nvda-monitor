@@ -448,6 +448,18 @@ if (rwa && rwa.tokens?.length) {
       `${rwa.universe.blocksSampled.toLocaleString()} blocks over ${rwa.universe.samples} sample(s)`);
   }
   check("capture history is ordered", rwa.history.every((h, i, a) => i === 0 || h.t > a[i - 1].t));
+  if (rwa.perps) {
+    const P = rwa.perps;
+    check("LongX vaults are recognised and their bridge flows add up",
+      Array.isArray(P.vaults) && P.lighter.depositedUsd >= 0 && P.lighter.withdrawnUsd >= 0 && Math.abs(P.lighter.netUsd - (P.lighter.depositedUsd - P.lighter.withdrawnUsd)) <= 1
+      && P.lighter.depositedUsd <= P.bridgeAll.depositedUsd + 1 && P.lighter.withdrawnUsd <= P.bridgeAll.withdrawnUsd + 1,
+      `${P.vaults.length} vault(s); $${P.lighter.depositedUsd} to Lighter, $${P.lighter.withdrawnUsd} back, of $${P.bridgeAll.depositedUsd}/$${P.bridgeAll.withdrawnUsd} bridge-wide`);
+    check("vault share rows are sane", P.vaults.every((v) => (v.supply == null || v.supply >= 0) && v.mint24h >= 0 && v.burn24h >= 0 && v.longPools <= v.pools));
+    warn("every LongX vault share has a price", P.priced === P.vaults.length, `${P.priced} of ${P.vaults.length} priced from spot pools`);
+    warn("no unattributed contracts feed the Lighter bridge", !(P.lighter.unattributed || []).length,
+      (P.lighter.unattributed || []).map((u) => `${u.address.slice(0, 10)} ${u.name || "unnamed"} $${u.inUsd}`).join("; "));
+    warn("perps streams have reached the head", !P.lighter.partial && !P.sharesPartial, "catching up");
+  }
   if (rwa.series) {
     const Z = rwa.series, todayStart = Math.floor(Date.now() / 86400000) * 86400;
     check("since-inception history is ordered, complete days only",

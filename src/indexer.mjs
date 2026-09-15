@@ -16,6 +16,7 @@ import { indexBurns } from "./tasks/burns.mjs";
 import { indexPrices } from "./tasks/prices.mjs";
 import { indexTreasury } from "./tasks/treasury.mjs";
 import { indexRwa } from "./tasks/rwa.mjs";
+import { indexPerps } from "./tasks/perps.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
@@ -486,11 +487,19 @@ if (!fast && !flag("no-launchpad")) {
          spent its whole budget downloading them and had nothing left for the pool
          catalogue, so the share reads as a two-hour sample, kept as a series. */
       const rwaDeadline = Date.now() + opt("rwa-budget", deep ? 2400 : 480) * 1000;
+      /* LongX perps first (cheap: the Lighter bridge's USDG flow, vault share mints
+         and burns, and the share-pool catalogue), so rwa can keep perps volume apart
+         from stock volume with the same swap streams. */
+      let perps = null, perpPools = new Map();
+      try {
+        ({ perps, pools: perpPools } = await indexPerps(latest, tm, { store, anchorUsd: anchors, deadline: Date.now() + opt("perps-budget", deep ? 300 : 120) * 1000 }));
+      } catch (e) { softFail("LongX perps", e, "the previous perps block stays in place"); perps = readData("rwa.json")?.perps ?? null; }
       const rwa = await indexRwa(latest, tm, {
-        store, pools: census.pools, symbols, decimals, anchorUsd: anchors,
+        store, pools: census.pools, symbols, decimals, anchorUsd: anchors, perpPools,
         swaps: { counts: rank.counts, volume: rank.volume, last: rank.last, blocks: Math.round(C.BLOCKS_PER_DAY / 12), total: rank.swaps, truncated: rank.truncated },
         prior: readData("rwa.json"), deadline: rwaDeadline,
       });
+      rwa.perps = perps;
       writeData("rwa.json", rwa);
     } catch (e) {
       softFail("stock capture", e, "the previous rwa.json stays in place");
