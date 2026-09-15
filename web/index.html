@@ -32,7 +32,7 @@
 
 <nav class="tabs">
   <div class="inner" role="tablist">
-    <button class="tab" role="tab" id="tab-investor"  aria-controls="p-investor"  aria-selected="true">Investor</button>
+    <button class="tab" role="tab" id="tab-investor"  aria-controls="p-investor"  aria-selected="true">RWA</button>
     <button class="tab" role="tab" id="tab-valuation" aria-controls="p-valuation" aria-selected="false">Valuation</button>
     <button class="tab" role="tab" id="tab-flow"      aria-controls="p-flow"      aria-selected="false">Tape</button>
     <button class="tab" role="tab" id="tab-float"     aria-controls="p-float"     aria-selected="false">Supply &amp; Holders</button>
@@ -49,11 +49,15 @@
   <div id="boot" class="loading">Loading on-chain data…</div>
   <div id="bootErr"></div>
 
-  <!-- ───────────────────────── Investor: the RWA liquidity platform ───────────────────────── -->
+  <!-- ───────────────────────── RWA: the tokenized-stock liquidity platform ───────────────────────── -->
   <section class="panel" id="p-investor" role="tabpanel" aria-labelledby="tab-investor" hidden>
-    <div id="sinceLast" hidden></div>
-    <div id="ratingDemand"></div>
-    <div id="liveStrip"></div>
+    <div class="card">
+      <h3>LONG on Robinhood Chain, at a glance</h3>
+      <div class="agenote" data-age="rwa" hidden></div>
+      <p class="sub">The six numbers that say whether LONG is becoming the venue for tokenized stocks: how much of the chain's stock it holds, how much of the stock liquidity it runs, how much stock trades through it, its share of all stock trading, its coverage of the stock list, and how much of its liquidity the protocol itself owns. All measured from the chain's event logs.</p>
+      <div id="rwaKpis"></div>
+      <div id="readKpis"></div>
+    </div>
 
     <h2 class="section-title">Capture</h2>
     <div class="card">
@@ -165,6 +169,9 @@
 
   <!-- ───────────────────────── Valuation: Coulou's frame ───────────────────────── -->
   <section class="panel" id="p-valuation" role="tabpanel" aria-labelledby="tab-valuation" hidden>
+    <div id="sinceLast" hidden></div>
+    <div id="ratingDemand"></div>
+    <div id="liveStrip"></div>
     <div id="rating"></div>
     <div id="verdict"></div>
 

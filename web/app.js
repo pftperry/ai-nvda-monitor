@@ -2216,7 +2216,7 @@ function renderMultiple(feeSeries) {
        ${broad != null ? `<br><b>The wider definition:</b> the splitter legs above are ${compact(feeWk / 7)} AI a day; the protocol's buyback contract
        netted <b>${compact(engineNet / 7)} AI a day</b> on top over the same seven days (taken in, less what it sold back into pools). Counting that
        AI as accrual, the multiple is <b>${broad.toFixed(1)}×</b>. It is protocol-held rather than burned or locked, so it is a weaker
-       claim than the splitter legs; on the Investor tab under "Mechanical AI buying".` : ""}`);
+       claim than the splitter legs; on the RWA tab under "Mechanical AI buying".` : ""}`);
   return { now, median, broad };
 }
 
@@ -2653,21 +2653,12 @@ function renderCockpit(structure, demand) {
     </div>`;
   }).join("");
 
-  /* Two homes. The Investor tab (the platform view) carries the market tiles, the
-     Demand dial and the combined reading; the Valuation tab carries the Structure
-     dial with Coulou's inputs and credit. Same computation, split by audience. */
+  /* The market tiles open the Valuation tab (the user moved them off the RWA tab,
+     which now carries only the platform's own numbers); the dials, inputs and
+     Coulou's credit follow directly beneath them in #rating. */
   rerender($("#ratingDemand"), `
     <div class="rating">
       <div class="cockpit">${tiles.map((t) => `<div class="ctile"${t.id ? ` id="${t.id}"` : ""}>${t.spark || ""}<div class="lbl">${t.lbl}</div><div class="val ${t.cls || ""}">${t.val}</div><div class="note">${t.note}</div></div>`).join("")}</div>
-      <div class="dials one">
-        ${dial("Demand", Dx, { up: "buying", flat: "balanced", down: "selling", na: "unranked" })}
-      </div>
-      <div class="reading ${read.tone}"><b>${read.title}.</b> ${read.body} <span class="muted">Structure is scored on the Valuation tab.</span></div>
-      <details data-k="dinputs"><summary>The ${Dx.n} demand inputs</summary>
-        <div class="components">${rows(demand)}</div>
-        <div class="coverage">Each input is a trailing-7-day level ranked inside AI's own last ${RATING.windowDays} days: 0 is typical for this
-          asset lately, ±1 is the edge of that range. Equal weights (the live tail at half).</div>
-      </details>
     </div>`);
   rerender($("#rating"), `
     <div class="rating">
@@ -3318,10 +3309,44 @@ function renderSince(R, pending) {
      <span class="muted">Inventory from each token's transfers through the pool manager (exact: the manager's balance only moves by transfer); LONG's volume from the hook's swap event; today's prices, complete UTC days. A since-inception volume share needs the same event on both sides, and the chain-wide Swap tape is tens of millions of events, so the transfer-basis share is published only as an upper bound.</span>`);
 }
 
+/* The six numbers at the top of the RWA tab: the ones an institution, or Robinhood
+   itself, would watch to decide whether LONG is the venue for tokenized stocks. Each
+   is drawn from a card further down; this is the summary, not a new measurement. */
+function renderRwaKpis(R, D, pending) {
+  const host = $("#rwaKpis");
+  if (!R?.tokens?.length) { host.innerHTML = pending; $("#readKpis").innerHTML = ""; return; }
+  const T = R.totals, L = R.longTvl, ss = R.swapShare, Z = R.series, ZT = Z?.totals;
+  const dexShare = L && T.dexUsd ? L.usd / T.dexUsd : null;
+  const cov = T.activeStocks ? T.activeListed / T.activeStocks : null;
+  const own = D?.tvlUsd && D.hookTvlUsd != null ? D.hookTvlUsd / D.tvlUsd : null;
+  const comp = (D?.compounding || []).slice(1);
+  const now = Math.floor(Date.now() / 1000), d7 = sumOf(comp.filter((r) => r.t >= now - 8 * 86400 && r.t < Math.floor(now / 86400) * 86400), (r) => r.addUsd);
+  const win = ss?.windowHours ? `${ss.windowHours}h` : "window";
+  host.innerHTML = `<div class="tiles three">
+    ${tile("Tokenized stock held by LONG", L && T.longShare != null ? pctLevel(T.longShare, 1) : "—",
+      L ? `of every stock token on the chain, in LONG's pools and vault · $${compact(L.usd + T.vaultUsd)} of $${compact(T.supplyUsd)}` : "position replay pending", "", "hero")}
+    ${tile("Stock liquidity LONG runs", L ? `$${compact(L.usd)}` : "—",
+      L ? `in LONG pools${dexShare != null ? ` · <b>${pctLevel(dexShare, 0)}</b> of the $${compact(T.dexUsd)} of stock liquidity on every DEX venue` : ""}` : "position replay pending", "", "hero")}
+    ${tile("Stock volume through LONG", ss?.dune ? `$${compact(ss.dune.longUsd)}` : "—",
+      ss?.dune ? `last ${win}${ZT?.longAllVolUsd ? ` · <b>$${compact(ZT.longAllVolUsd)}</b> since launch${Z.since ? "" : ""}` : ""}` : "swap stream pending", "", "hero")}
+    ${tile("Share of all stock trading", ss?.dune?.share != null ? pctLevel(ss.dune.share, 1) : "—",
+      ss?.dune?.share != null ? `by dollars, every DEX venue plus Rialto, last ${win} · <b>${pctLevel(ss.share, 0)}</b> of stock swaps by count` : "swap stream pending", "", "hero")}
+    ${tile("Stocks with a LONG market", cov == null ? "—" : `${T.activeListed} / ${T.activeStocks}`,
+      cov == null ? "stock-event sample pending" : `of the stocks that traded on the chain in the last day (${pctLevel(cov, 0)})${T.poolsAll ? ` · ${pctLevel(T.poolsLong / T.poolsAll, 0)} of all stock pools carry the LONG hook` : ""}`, "", "hero")}
+    ${tile("Liquidity the protocol owns", own == null ? "—" : pctLevel(own, 0),
+      own == null ? "ladders pending" : `of AI's liquidity is the protocol's own position, so it cannot be pulled${d7 ? ` · $${compact(d7)} of fees folded back in over 7d` : ""}`, "", "hero")}
+  </div>`;
+  $("#readKpis").innerHTML = takeEl(T.longShare >= 0.05 && (ss?.dune?.share ?? 0) >= 0.15 ? "pos" : "neu",
+    `LONG holds <b>${pctLevel(T.longShare, 1)}</b> of the tokenized stock on Robinhood Chain and runs <b>${dexShare != null ? pctLevel(dexShare, 0) : "—"}</b> of its DEX stock liquidity;
+     over the last ${win} it carried <b>${ss?.dune?.share != null ? pctLevel(ss.dune.share, 1) : "—"}</b> of all stock trading by dollars and <b>${ss ? pctLevel(ss.share, 0) : "—"}</b> of stock swaps by count, with a market for <b>${cov == null ? "—" : `${T.activeListed} of ${T.activeStocks}`}</b> stocks that traded.
+     <span class="muted">Each number is measured further down this tab; the Valuation tab prices it.</span>`);
+}
+
 function renderRwa() {
   const R = S.rwa, D = S.depth;
   const px = marketState().price || 0;
   const pending = `<p class="muted">Built on the slow path; this card fills after the next standard run.</p>`;
+  try { renderRwaKpis(R, D, pending); } catch (e) { console.error("renderRwaKpis", e); }
   try { renderSince(R, pending); } catch (e) { console.error("renderSince", e); }
 
   /* ── capture ─────────────────────────────────────────────────────────── */
@@ -3530,7 +3555,7 @@ function renderRwa() {
 
 /* ── The fee engine ──────────────────────────────────────────────────────
    The buyback contract, the AI it accumulates and the USDG it routes to the
-   revenue wallet. Two homes: the Investor tab reads it as mechanical AI demand,
+   revenue wallet. Two homes: the RWA tab reads it as mechanical AI demand,
    the Treasury tab reads it as where the platform's money actually goes. */
 function renderRevenue() {
   const R = S.revenue;
@@ -4205,7 +4230,7 @@ function renderMethod() {
   const m = S.meta, b = S.burns;
   $("#methodBody").innerHTML = `
     <div style="font-size:13px;line-height:1.65;color:var(--text-secondary)">
-      <p><b style="color:var(--text-primary)">The two dials, and their credit.</b> The Investor View opens with two
+      <p><b style="color:var(--text-primary)">The two dials, and their credit.</b> The Valuation tab opens with the market tiles and two
       dials rather than one word. <b>Structure</b> scores the inputs identified in
       <a href="https://x.com/okay_lets_ride/status/2098082744899190788" target="_blank" rel="noopener noreferrer">Coulou’s
       “AI – Valuation Report”</a> (@okay_lets_ride, 10 Sep 2026) — fee revenue, main-pool capture, AI-pair share,
@@ -4217,7 +4242,7 @@ function renderMethod() {
       taken over the pair rather than a threshold over a sum. The site does not use the report’s scenario values or
       weights, and the result is neither the report’s conclusion nor the site owner’s investment view.</p>
 
-      <p><b style="color:var(--text-primary)">The platform view.</b> The Investor tab measures LONG's own thesis: be the
+      <p><b style="color:var(--text-primary)">The platform view.</b> The RWA tab measures LONG's own thesis: be the
       liquidity layer for tokenized stocks on Robinhood Chain. <b>Stock tokens</b> are identified by bytecode, not name:
       Robinhood's tokenized equities share one 283-byte proxy template, so every anchor token in the LONG census is
       checked against it once. <b>Capture</b> is the share of each stock's on-chain supply held by the v4 pool manager
@@ -4254,7 +4279,7 @@ function renderMethod() {
       cumulative numeraire swap deltas, which counts the stock a trader paid in but never subtracts the fee legs the hook
       hands out of the pool afterwards (the buyback contract's leg leaves for good) or liquidity that was later removed.
       Replaying the positions gives what the pools hold now; the swap-delta sum is an upper bound on it.
-      <b>Since the chain went live</b> (the two histories on the Investor tab) covers every identified stock token from the
+      <b>Since the chain went live</b> (the two histories on the RWA tab) covers every identified stock token from the
       chain's first block (30 Apr 2026; a pre-genesis anchor set maps those blocks to days). All-venue inventory is each
       token's transfers into and out of the pool manager, streamed in address batches and netted per day (reconciled against
       the live balance by verify); all-venue volume is the gross of those legs less the hook's and buyback contract's fee legs, plus Rialto's own
