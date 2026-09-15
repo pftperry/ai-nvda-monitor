@@ -95,10 +95,10 @@ export async function indexPerps(latest, tm, opts = {}) {
     });
   }
   if (store) store.set("perpsBridge", B);
-  const vaults = cands.filter((a) => B.code[a] === true).sort();
-  const unattributed = cands.filter((a) => B.code[a] === "contract" && B.senders[a]).map((a) => ({ address: a, inUsd: Math.round(B.senders[a]), outUsd: Math.round(B.receivers[a] || 0), name: B.names[a]?.name || "", bytes: B.names[a]?.bytes })).sort((x, y) => y.inUsd - x.inUsd);
+  const vaults = cands.filter((a) => B.code[a] === true && !KNOWN_INFRA[a]).sort();
+  const unattributed = cands.filter((a) => B.code[a] === "contract" && !KNOWN_INFRA[a] && B.senders[a]).map((a) => ({ address: a, inUsd: Math.round(B.senders[a]), outUsd: Math.round(B.receivers[a] || 0), name: B.names[a]?.name || "", bytes: B.names[a]?.bytes })).sort((x, y) => y.inUsd - x.inUsd);
   const otherIn = unattributed.reduce((s, u) => s + u.inUsd, 0);
-  const infra = cands.filter((a) => B.code[a] === "infra").map((a) => ({ address: a, label: KNOWN_INFRA[a], inUsd: Math.round(B.senders[a] || 0), outUsd: Math.round(B.receivers[a] || 0) }));
+  const infra = cands.filter((a) => KNOWN_INFRA[a]).map((a) => ({ address: a, label: KNOWN_INFRA[a], inUsd: Math.round(B.senders[a] || 0), outUsd: Math.round(B.receivers[a] || 0) }));
   const unclassified = cands.filter((a) => B.code[a] === undefined).length;
 
   /* 3. Share supply, pending USDG, symbols. */

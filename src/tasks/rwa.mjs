@@ -594,9 +594,18 @@ export async function indexRwa(latest, tm, opts = {}) {
        not a stock pool; a swap in one is not stock volume). */
     const perpPools = opts.perpPools || new Map();
     if (perpPools.size && timeLeft()) {
-      const P = (F.perps ||= { cursor: GENESIS_BLOCK - 1, days: {} }), from = P.cursor + 1;
+      /* Perps began on 31 Aug 2026, so the replay starts a little before that rather
+         than at genesis, and it gets a bounded slice of what is left (measured: run
+         to the deadline, it starved every stock stream and the liquidity history
+         fell back to "backfilling" on the live site). The stock streams below take
+         the rest. */
+      const eraBlock = Math.max(GENESIS_BLOCK, tmx.blockAt(Date.UTC(2026, 7, 25) / 1000) ?? GENESIS_BLOCK);
+      const P = (F.perps ||= { cursor: eraBlock - 1, days: {} });
+      if (P.cursor < eraBlock - 1) P.cursor = eraBlock - 1;
+      const from = P.cursor + 1;
+      const perpsDeadline = Math.min(opts.deadline || Infinity, Date.now() + Math.min(600_000, 0.4 * ((opts.deadline || Date.now() + 600_000) - Date.now())));
       if (from <= latest) {
-        const r = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, from, latest, { chunk: 100_000, deadline: opts.deadline,
+        const r = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, from, latest, { chunk: 100_000, deadline: perpsDeadline,
           onLogs: (logs) => {
             for (const l of logs) {
               const p = perpPools.get(l.topics[3]); if (!p) continue;
