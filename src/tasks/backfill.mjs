@@ -60,14 +60,19 @@ export async function indexBackingBackfill(latest, tm, opts = {}) {
   let BF = store && store.get("backingBackfill");
   if (!BF || BF.v !== 2) BF = { v: 2, pools: {} };
   let streamed = 0, done = 0;
-  for (const p of pairs) {
+  /* Cohort pools first (small tapes, and the test is worthless without them), then
+     the tracked pairs; no single pool may take more than a third of what is left,
+     so AI's tape cannot starve the rest. Cursors resume next run regardless. */
+  const order = [...pairs.filter((p) => p.cohort), ...pairs.filter((p) => !p.cohort)];
+  for (const p of order) {
     if (!timeLeft()) break;
     const P = (BF.pools[p.poolId] ||= { cursor: Math.max(LONG_GENESIS_BLOCK, p.createdBlock || LONG_GENESIS_BLOCK) - 1, days: {} });
     P.first ??= P.cursor + 1;
     if (P.cursor + 1 > latest) { done++; continue; }
     const snap = JSON.stringify(P.days);
+    const slice = Math.min(deadline, Date.now() + Math.max(45_000, (deadline - Date.now()) * (p.cohort ? 0.15 : 0.34)));
     const r = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.SWAP, p.poolId] }, P.cursor + 1, latest, {
-      chunk: 300_000, deadline,
+      chunk: 300_000, deadline: slice,
       onLogs: (logs) => {
         for (const l of logs) {
           const s = decodeSwap(l), blk = parseInt(l.blockNumber, 16), d = tm.dayBucket(blk); if (d == null) continue;
