@@ -491,6 +491,11 @@ if (rwa && rwa.tokens?.length) {
       check("backfill dollar prices, where present, are positive and consistent with the stock close", pd.every((o) => o.days.every((d) => d.priceUsd == null || (d.priceUsd > 0 && d.stockUsd > 0 && Math.abs(d.priceUsd - d.priceInStock * d.stockUsd) <= 1e-9 * Math.max(1, d.priceUsd)))));
       warn("backfill has a dollar leg for most pair-days", (F.usdDays || 0) >= 0.8 * pd.reduce((s, o) => s + o.days.length, 0), `${F.usdDays || 0} of ${pd.reduce((s, o) => s + o.days.length, 0)} pair-days priced in dollars`);
     }
+    if (K.scoreTest) {
+      const T = K.scoreTest;
+      check("score retest covers both samples with a history row for this week", T.pairDays > 0 && T.all?.cohort?.tape && T.all?.survivors?.tape && Array.isArray(T.history) && T.history.length > 0);
+      warn("score retest has out-of-sample pair-days (dated after the terms were fixed)", T.oos?.pairDays > 0, `none yet; the first reading arrives a week after ${new Date(T.designedAt * 1000).toISOString().slice(0, 10)}`);
+    }
     if (K.stockPx?.stocks) {
       const S = Object.values(K.stockPx.stocks);
       check("stock closes are ordered daily series of positive dollar prices", S.every((s) => s.close.every(([t, v], i) => v > 0 && (i === 0 || t === s.close[i - 1][0] + 86400))));

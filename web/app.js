@@ -3540,6 +3540,25 @@ function pctRank(vals, v) {
 /* Column tint: one hue, intensity by percentile within the visible rows, so the eye
    finds the strong cells without a second colour meaning anything. */
 function tint(q) { return q == null ? "" : `background:color-mix(in srgb, var(--series-1) ${(4 + 34 * q).toFixed(0)}%, transparent)`; }
+/* The weekly retest card: one row per score and sample, the top band's up-rate
+   against the base rate at one week, rank correlation at one and four weeks, and the
+   out-of-sample block for pair-days dated after the terms were fixed. */
+function renderScoreTest(T) {
+  const host = $("#scoreTest");
+  if (!T?.all) { host.innerHTML = `<p class="muted">The retest is built on the deep path; it appears after the next deep run.</p>`; return; }
+  const P = (v, d = 0) => v == null ? "—" : `${(100 * v).toFixed(d)}%`;
+  const R = (v) => v == null ? "—" : `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}`;
+  const row = (label, b, cls = "") => { const w = b?.[7], m = b?.[28]; return `<tr class="${cls}"><td>${label}</td><td class="r mono">${w?.n ?? "—"}</td><td class="r mono">${R(w?.rho)}</td><td class="r mono"><b>${P(w?.topUp)}</b> <span class="muted">vs ${P(w?.baseUp)}</span></td><td class="r mono">${P(w?.topMed)}</td><td class="r mono">${R(m?.rho)}</td></tr>`; };
+  const oos = T.oos, oosN = oos?.pairDays || 0;
+  const oosLine = oosN ? `Since ${dayFmt(oos.since)}, when the terms were fixed: <b>${oosN}</b> pair-days the score never saw. Tape score 75+ up ${P(oos.all.tape[7]?.topUp)} of following weeks against a base of ${P(oos.all.tape[7]?.baseUp)} (${oos.all.tape[7]?.topN ?? 0} pair-days in the band); standing 70+ up ${P(oos.all.standing[7]?.topUp)}.` : `Since ${dayFmt(oos.since)}, when the terms were fixed, no pair-day has a week of follow-up yet; the first out-of-sample reading arrives on ${dayFmt(oos.since + 8 * 86400)}.`;
+  const hist = (T.history || []).filter((h) => h.oosTape?.topUp != null);
+  host.innerHTML = `<div class="scroll"><table class="rank"><thead><tr><th>Score · sample</th><th class="r">Pair-days</th><th class="r" title="Spearman rank correlation of the score with the next 7 days' dollar return">Rank corr. 7d</th><th class="r">Top band up next week</th><th class="r">Top band median week</th><th class="r">Rank corr. 28d</th></tr></thead><tbody>
+    ${row("Tape score · launch cohort", T.all.cohort.tape)}${row("Tape score · survivors", T.all.survivors.tape)}${row("Standing · launch cohort", T.all.cohort.standing, "muted")}${row("Standing · survivors", T.all.survivors.standing, "muted")}
+  </tbody></table></div>
+  <p style="margin:10px 0 0">${oosLine}</p>
+  ${hist.length >= 2 ? `<p class="muted" style="margin:6px 0 0">Out-of-sample top-band up-rate by week: ${hist.map((h) => `${P(h.oosTape.topUp)}`).join(" · ")}</p>` : ""}
+  <p class="muted" style="margin:6px 0 0">Top band is 75+ for the tape score and 70+ for standing. Dollar returns are mid prices; in-sample figures are flattered because the tape score was designed on this tape. Retested ${dayFmt(T.at)}.</p>`;
+}
 function renderBacking() {
   const R = S.rwa, B = R?.backing, host = $("#tBacking");
   if (!B?.rows?.length) { host.innerHTML = `<tr><td class="muted">Built on the slow path; this table fills after the next standard run.</td></tr>`; $("#backingKpis").innerHTML = ""; $("#readBacking").innerHTML = ""; $("#backingFoot").innerHTML = ""; return; }
@@ -3610,6 +3629,7 @@ function renderBacking() {
      ${byShare.length ? `The largest holders of their stock's tokenized supply are ${byShare.map((r) => `<b>${r.symbol}</b> (${pctLevel(r.stockShare, 0)} of all ${r.anchorSymbol})`).join(" and ")}; share carries no score weight because a higher share preceded weaker weeks in every cut of the test.` : ""}
      ${ai ? `AI holds the most stock in absolute terms, <b>$${compact(ai.stockUsd)}</b> of NVDA, and <b>${cents(ai.backing)}</b> per dollar of its cap.` : ""}
      <span class="muted">Tape score is points from 50 and Standing is the thesis profile as percentile ranks (definitions below); shading is percentile rank among the rows shown, one hue, for reading only. Trend columns come from each pool's own daily swap tape, complete UTC days, traded days only; price changes are in dollars (USDG), the pair's price in its stock times that day's stock close. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; turnover is the last complete day's. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
+  renderScoreTest(R.scoreTest);
   const bind = (sel, attr, set) => { const seg = $(sel); if (seg.dataset.bound) return; seg.dataset.bound = "1";
     seg.addEventListener("click", (ev) => { const b = ev.target.closest(`button[${attr}]`); if (!b) return; set(b.getAttribute(attr)); for (const o of seg.querySelectorAll("button")) o.setAttribute("aria-pressed", o === b ? "true" : "false"); renderBacking(); }); };
   bind("#backingSort", "data-k", (v) => { backingSort = v; });

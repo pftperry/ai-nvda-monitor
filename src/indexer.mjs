@@ -20,6 +20,7 @@ import { indexPerps } from "./tasks/perps.mjs";
 import { indexStockSupply } from "./tasks/stocksupply.mjs";
 import { indexBackingBackfill, cohortPairs } from "./tasks/backfill.mjs";
 import { indexStockPrices } from "./tasks/stockpx.mjs";
+import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
@@ -529,6 +530,10 @@ if (!fast && !flag("no-launchpad")) {
             rwa.stockPx = await indexStockPrices(latest, tm, { store, stocks: pxStocks, usdgPools: census.usdgPools, rank, decimals, deadline: Date.now() + opt("stockpx-budget", deep ? 240 : 90) * 1000 });
           } catch (e) { softFail("stock closes", e, "the previous closes stay in place"); rwa.stockPx = readData("rwa.json")?.stockPx ?? null; }
           rwa.backing.backfill = await indexBackingBackfill(latest, tm, { store, pairs: pxPairs, stockPx: rwa.stockPx, deadline: bfStart + bfBudget });
+          /* The retest of both scores against the dollar tape, every run (pure
+             arithmetic over the published days), with one history row per week. */
+          try { rwa.scoreTest = runScoreTest(rwa.backing.backfill, { prior: readData("rwa.json")?.scoreTest }); }
+          catch (e) { softFail("score retest", e, "the previous retest stays in place"); rwa.scoreTest = readData("rwa.json")?.scoreTest ?? null; }
         } catch (e) { softFail("backing backfill", e, "the previous backfill stays in place"); rwa.backing.backfill = readData("rwa.json")?.backing?.backfill ?? null; }
       }
       writeData("rwa.json", rwa);
