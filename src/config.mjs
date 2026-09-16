@@ -109,8 +109,14 @@ export const AI_NVDA_POOL = "0xcbdfea90430a30ee4469c9902e120a77e7c7e4711d5643671
 /** Deepest AI/USDG venue, per Dexscreener cross-check. */
 export const AI_USDG_POOL = "0x7aebd80541bfaaf23dbb6e99ce13d4d31c1a84c91414f971eadbff7db5f85995";
 
-/** First block of AI's existence; nothing before this is worth scanning. */
+/** First block of AI's existence; AI-specific streams start here. */
 export const GENESIS_BLOCK = 9_721_433;
+/* The first pool ever initialised with the LONG hook: block 734,616, 1 Jul 2026
+   13:31 UTC, two weeks before AI and the public launch on 14 Jul. About nine
+   thousand LONG pools were created between the two, including pairs that still
+   hold stock (ASTEROID/SPCX opened an hour before AI), so LONG-wide streams start
+   here, and the ones that began at AI's genesis owe one pass over the earlier range. */
+export const LONG_GENESIS_BLOCK = 734_616;
 
 /** v4 dynamic-fee sentinel. A pool with this fee defers its rate to the hook per swap. */
 export const DYNAMIC_FEE_FLAG = 0x800000;

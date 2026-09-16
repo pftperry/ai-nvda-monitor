@@ -1,4 +1,4 @@
-import { POOL_MANAGER, LONG_HOOK, GENESIS_BLOCK, AI, USDG, LAUNCHPAD } from "../config.mjs";
+import { POOL_MANAGER, LONG_HOOK, GENESIS_BLOCK, LONG_GENESIS_BLOCK, AI, USDG, LAUNCHPAD } from "../config.mjs";
 import { getLogsRange, rpcBatch } from "../rpc.mjs";
 import { TOPICS, decodeInitialize, decodeSwap, priceFromSqrt } from "../decode.mjs";
 
@@ -30,9 +30,13 @@ import { TOPICS, decodeInitialize, decodeSwap, priceFromSqrt } from "../decode.m
  */
 export async function censusLongPools(latest, prior, opts = {}) {
   const log = opts.log || console.log;
-  const from = prior?.cursor ? Math.max(GENESIS_BLOCK, prior.cursor + 1) : GENESIS_BLOCK;
+  const from = prior?.cursor ? Math.max(LONG_GENESIS_BLOCK, prior.cursor + 1) : LONG_GENESIS_BLOCK;
   const pools = new Map();
   for (const p of prior?.pools || []) pools.set(p.id, p);
+  /* A census that began at AI's genesis owes one pass over LONG's earlier weeks
+     (about nine thousand pools were created before AI existed). Read once, then
+     remembered as `pre`. */
+  const preRange = prior?.cursor && !prior.pre ? [LONG_GENESIS_BLOCK, GENESIS_BLOCK - 1] : null;
   /* The same pass also indexes every pool that pairs something with USDG, whatever
      its hook. Anchors are real-world assets -- NVDA, AMC, HIMS -- and each needs a
      dollar price before the tokens anchored to it can be valued; USDG is a dollar
@@ -44,9 +48,12 @@ export async function censusLongPools(latest, prior, opts = {}) {
   const logs = from > latest ? [] : await getLogsRange(
     { address: POOL_MANAGER, topics: [TOPICS.INITIALIZE] },
     from, latest, { chunk: opts.chunk ?? 300_000, deadline: opts.deadline });
+  const pre = preRange ? await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.INITIALIZE] }, preRange[0], preRange[1], { chunk: 500_000, deadline: opts.deadline }) : null;
+  const preDone = !preRange || !pre.truncated;
+  if (pre) log(`  census: pre-genesis pass read ${pre.length.toLocaleString()} pool creations from LONG's first block${pre.truncated ? " (budget reached, resumes next run)" : ""}`);
 
   let seen = 0;
-  for (const l of logs) {
+  for (const l of [...(pre || []), ...logs]) {
     seen++;
     const p = decodeInitialize(l);
     if (p.currency0 === USDG || p.currency1 === USDG) {
@@ -77,7 +84,7 @@ export async function censusLongPools(latest, prior, opts = {}) {
   });
   log(`  keeping ${keptUsdg.length} USDG pools that can price an anchor, of ${usdg.size} seen`);
 
-  return { cursor, partial: !!logs.truncated, pools: [...pools.values()], usdgPools: keptUsdg };
+  return { cursor, partial: !!logs.truncated, pre: prior?.pre ? true : preDone, pools: [...pools.values()], usdgPools: keptUsdg };
 }
 
 /**

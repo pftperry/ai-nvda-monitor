@@ -1,5 +1,5 @@
 import { rpc, getLogsRange, padAddr } from "../rpc.mjs";
-import { POOL_MANAGER, COMMUNITY_VAULT, LONG_HOOK, LONG_BUYBACK, AI, USDG, NVDA, GENESIS_BLOCK, BLOCKS_PER_DAY } from "../config.mjs";
+import { POOL_MANAGER, COMMUNITY_VAULT, LONG_HOOK, LONG_BUYBACK, AI, USDG, NVDA, GENESIS_BLOCK, LONG_GENESIS_BLOCK, BLOCKS_PER_DAY } from "../config.mjs";
 import { TOPICS, decodeTransfer, decodeInitialize, decodeSwap, decodeModifyLiquidity, fmtUnits } from "../decode.mjs";
 import { multicall, resolveTokens } from "../tokens.mjs";
 import { ladderRawAmounts } from "./depth.mjs";
@@ -100,19 +100,25 @@ const abs = (v) => (v < 0n ? -v : v);
 
 /** Every LONG launch (asset → numeraire) and every graduation (asset → v2/v3 pool), cursor-resumed. */
 async function launchRegistry(latest, store, deadline) {
-  const st = (store && store.get("rwaLaunches")) || { v: 1, cursor: GENESIS_BLOCK - 1, launches: {}, migrations: {} };
-  const from = Math.max(GENESIS_BLOCK, st.cursor + 1);
-  if (from <= latest) {
-    let reached = latest, partial = false;
+  const st = (store && store.get("rwaLaunches")) || { v: 1, cursor: LONG_GENESIS_BLOCK - 1, pre: true, launches: {}, migrations: {} };
+  const scan = async (from, to) => {
+    let reached = to, partial = false;
     for (const f of LAUNCH_FACTORIES) {
-      const r = await getLogsRange({ address: f, topics: [LAUNCH_CREATED] }, from, latest, { chunk: 5_000_000, deadline,
+      const r = await getLogsRange({ address: f, topics: [LAUNCH_CREATED] }, from, to, { chunk: 5_000_000, deadline,
         onLogs: (logs) => { for (const l of logs) st.launches[topicAddr(l.topics[2])] = { numeraire: topicAddr(l.topics[3]), factory: f, block: parseInt(l.blockNumber, 16) }; } });
-      reached = Math.min(reached, r.reachedBlock ?? latest); if (r.truncated) partial = true;
+      reached = Math.min(reached, r.reachedBlock ?? to); if (r.truncated) partial = true;
     }
-    const m = await getLogsRange({ address: AIRLOCK, topics: [AIRLOCK_MIGRATE] }, from, latest, { chunk: 25_000_000, deadline,
+    const m = await getLogsRange({ address: AIRLOCK, topics: [AIRLOCK_MIGRATE] }, from, to, { chunk: 25_000_000, deadline,
       onLogs: (logs) => { for (const l of logs) st.migrations[topicAddr(l.topics[1])] = { pool: topicAddr(l.topics[2]), block: parseInt(l.blockNumber, 16) }; } });
-    reached = Math.min(reached, m.reachedBlock ?? latest); if (m.truncated) partial = true;
-    st.cursor = reached; st.partial = partial;
+    reached = Math.min(reached, m.reachedBlock ?? to); if (m.truncated) partial = true;
+    return { reached, partial };
+  };
+  /* A registry that began at AI's genesis owes one pass over LONG's earlier weeks. */
+  if (!st.pre) { const r = await scan(LONG_GENESIS_BLOCK, GENESIS_BLOCK - 1); if (!r.partial) st.pre = true; if (store) store.set("rwaLaunches", st); }
+  const from = Math.max(LONG_GENESIS_BLOCK, st.cursor + 1);
+  if (from <= latest) {
+    const r = await scan(from, latest);
+    st.cursor = r.reached; st.partial = r.partial;
     if (store) store.set("rwaLaunches", st);
   }
   return st;
@@ -165,23 +171,30 @@ async function dexInventoryDaily(token, latest, tm, prior, opts) {
  * filtered scans per token, append-only and resumed from a cursor.
  */
 export async function stockPools(token, latest, prior, opts) {
-  const state = prior && prior.cursor ? { cursor: prior.cursor, pools: [...prior.pools] } : { cursor: GENESIS_BLOCK - 1, pools: [] };
-  const from = Math.max(GENESIS_BLOCK, state.cursor + 1);
-  if (from > latest) return state;
-  const asC0 = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.INITIALIZE, null, padAddr(token)] }, from, latest, { chunk: 25_000_000, deadline: opts.deadline });
-  const asC1 = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.INITIALIZE, null, null, padAddr(token)] }, from, latest, { chunk: 25_000_000, deadline: opts.deadline });
-  const reached = Math.min(asC0.reachedBlock ?? latest, asC1.reachedBlock ?? latest);
+  const state = prior && prior.cursor ? { cursor: prior.cursor, pre: !!prior.pre, pools: [...prior.pools] } : { cursor: LONG_GENESIS_BLOCK - 1, pre: true, pools: [] };
   const seen = new Set(state.pools.map((p) => p.id));
-  for (const l of [...asC0, ...asC1]) {
-    if (parseInt(l.blockNumber, 16) > reached) continue;
-    const p = decodeInitialize(l);
-    if (seen.has(p.poolId)) continue;
-    seen.add(p.poolId);
-    /* Kept small: NVDA alone quotes ten thousand pools. */
-    state.pools.push({ id: p.poolId, long: p.hooks === LONG_HOOK, ai: p.currency0 === AI || p.currency1 === AI, side: p.currency0 === token ? 0 : 1, p0: p.sqrtPriceX96.toString() });
+  const scan = async (from, to) => {
+    const asC0 = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.INITIALIZE, null, padAddr(token)] }, from, to, { chunk: 25_000_000, deadline: opts.deadline });
+    const asC1 = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.INITIALIZE, null, null, padAddr(token)] }, from, to, { chunk: 25_000_000, deadline: opts.deadline });
+    const reached = Math.min(asC0.reachedBlock ?? to, asC1.reachedBlock ?? to);
+    for (const l of [...asC0, ...asC1]) {
+      if (parseInt(l.blockNumber, 16) > reached) continue;
+      const p = decodeInitialize(l);
+      if (seen.has(p.poolId)) continue;
+      seen.add(p.poolId);
+      /* Kept small: NVDA alone quotes ten thousand pools. */
+      state.pools.push({ id: p.poolId, long: p.hooks === LONG_HOOK, ai: p.currency0 === AI || p.currency1 === AI, side: p.currency0 === token ? 0 : 1, p0: p.sqrtPriceX96.toString() });
+    }
+    return { reached, partial: !!(asC0.truncated || asC1.truncated) };
+  };
+  /* A catalogue that began at AI's genesis owes one pass over LONG's earlier weeks. */
+  if (!state.pre) { const r = await scan(LONG_GENESIS_BLOCK, GENESIS_BLOCK - 1); if (!r.partial) state.pre = true; }
+  const from = Math.max(LONG_GENESIS_BLOCK, state.cursor + 1);
+  if (from <= latest) {
+    const r = await scan(from, latest);
+    state.cursor = r.reached;
+    state.partial = r.partial;
   }
-  state.cursor = reached;
-  state.partial = !!(asC0.truncated || asC1.truncated);
   state.v = CATALOGUE_VERSION;
   return state;
 }
@@ -468,25 +481,33 @@ export async function indexRwa(latest, tm, opts = {}) {
     const t4 = Date.now();
     const longIds = new Set([...allStockPools].filter(([, e]) => e.long).map(([id]) => id));
     let LS = store && store.get("rwaLadderStream");
-    if (!LS || LS.v !== 1) LS = { v: 1, cursor: GENESIS_BLOCK - 1, ladders: {}, lastSqrt: {}, events: 0 };
+    if (!LS || LS.v !== 1) LS = { v: 1, cursor: LONG_GENESIS_BLOCK - 1, pre: true, ladders: {}, lastSqrt: {}, events: 0 };
     /* Prices: the newest Swap per pool from this run's census window, layered over the map. */
     if (opts.swaps?.last) for (const [id, l] of opts.swaps.last) if (longIds.has(id)) LS.lastSqrt[id] = decodeSwap(l).sqrtPriceX96.toString();
-    const from = LS.cursor + 1;
     let seen = 0;
+    const fold = (logs) => {
+      for (const l of logs) {
+        const id = l.topics[1]; if (!longIds.has(id)) continue;
+        const m = decodeModifyLiquidity(l);
+        const lad = (LS.ladders[id] ||= {});
+        lad[m.tickLower] = (BigInt(lad[m.tickLower] || 0) + m.liquidityDelta).toString();
+        lad[m.tickUpper] = (BigInt(lad[m.tickUpper] || 0) - m.liquidityDelta).toString();
+        seen++;
+      }
+    };
+    /* A ladder stream that began at AI's genesis owes one pass over LONG's earlier
+       weeks: pools created then still hold stock (ASTEROID/SPCX, an hour before AI).
+       Folded once, in order, before the head is extended; remembered as `pre`. */
+    if (!LS.pre && timeLeft()) {
+      const r = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.MODIFY_LIQUIDITY] }, LS.preCursor ?? LONG_GENESIS_BLOCK, GENESIS_BLOCK - 1, { chunk: 400_000, deadline: opts.deadline, onLogs: fold });
+      const reach = r.reachedBlock ?? GENESIS_BLOCK - 1;
+      if (reach >= (LS.preCursor ?? LONG_GENESIS_BLOCK)) LS.preCursor = reach + 1;
+      if (!r.truncated && reach >= GENESIS_BLOCK - 1) LS.pre = true;
+      log(`  ladder stream: pre-genesis pass ${LS.pre ? "complete" : `at block ${reach.toLocaleString()} (resumes)`}, ${seen.toLocaleString()} events folded`);
+    }
+    const from = LS.cursor + 1;
     if (from <= latest && timeLeft()) {
-      const r = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.MODIFY_LIQUIDITY] }, from, latest, {
-        chunk: 200_000, deadline: opts.deadline,
-        onLogs: (logs) => {
-          for (const l of logs) {
-            const id = l.topics[1]; if (!longIds.has(id)) continue;
-            const m = decodeModifyLiquidity(l);
-            const lad = (LS.ladders[id] ||= {});
-            lad[m.tickLower] = (BigInt(lad[m.tickLower] || 0) + m.liquidityDelta).toString();
-            lad[m.tickUpper] = (BigInt(lad[m.tickUpper] || 0) - m.liquidityDelta).toString();
-            seen++;
-          }
-        },
-      });
+      const r = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.MODIFY_LIQUIDITY] }, from, latest, { chunk: 200_000, deadline: opts.deadline, onLogs: fold });
       LS.cursor = r.reachedBlock ?? latest;
       LS.partial = !!r.truncated;
       LS.events += seen;
@@ -653,21 +674,29 @@ export async function indexRwa(latest, tm, opts = {}) {
        streams (a few million and well under a million logs) and they are the
        numerator, so they must not wait behind the stock streams. */
     if (timeLeft()) {
-      const H = F.hook, from = H.cursor + 1;
-      if (from <= latest) {
-        const r = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, from, latest, { chunk: 100_000, deadline: opts.deadline,
-          onLogs: (logs) => {
-            for (const l of logs) {
-              const e = allStockPools.get(l.topics[3]); if (!e) continue;
-              const d = dayOf(parseInt(l.blockNumber, 16)); if (d == null) continue;
-              const { token, side } = e.stocks[0], dec = decimals.get(token) ?? 18;
-              const amt = int256(word(l.data, side === 0 ? 3 : 4));
-              const units = fmtUnits(abs(amt), dec);
-              addDay(H.days, d, token, "vol", units);
-              if (topicAddr(l.topics[1]) !== LONG_BUYBACK) addDay(H.days, d, token, "volUser", units);
-              addDay(H.days, d, token, "delta", fmtUnits(amt, dec));   // raw sign; the pool perspective is settled below
-            }
-          } });
+      const H = F.hook;
+      const foldHookFlow = (logs) => {
+        for (const l of logs) {
+          const e = allStockPools.get(l.topics[3]); if (!e) continue;
+          const d = dayOf(parseInt(l.blockNumber, 16)); if (d == null) continue;
+          const { token, side } = e.stocks[0], dec = decimals.get(token) ?? 18;
+          const amt = int256(word(l.data, side === 0 ? 3 : 4));
+          const units = fmtUnits(abs(amt), dec);
+          addDay(H.days, d, token, "vol", units);
+          if (topicAddr(l.topics[1]) !== LONG_BUYBACK) addDay(H.days, d, token, "volUser", units);
+          addDay(H.days, d, token, "delta", fmtUnits(amt, dec));   // raw sign; the pool perspective is settled below
+        }
+      };
+      /* A hook stream that began at AI's genesis owes one pass over LONG's earlier weeks. */
+      if (!H.pre) {
+        const r = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, H.preCursor ?? LONG_GENESIS_BLOCK, GENESIS_BLOCK - 1, { chunk: 250_000, deadline: opts.deadline, onLogs: foldHookFlow });
+        const reach = r.reachedBlock ?? GENESIS_BLOCK - 1;
+        if (reach >= (H.preCursor ?? LONG_GENESIS_BLOCK)) H.preCursor = reach + 1;
+        if (!r.truncated && reach >= GENESIS_BLOCK - 1) H.pre = true;
+      }
+      const from = H.cursor + 1;
+      if (from <= latest && timeLeft()) {
+        const r = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, from, latest, { chunk: 100_000, deadline: opts.deadline, onLogs: foldHookFlow });
         H.cursor = r.reachedBlock ?? latest; H.partial = !!r.truncated;
       }
     }
