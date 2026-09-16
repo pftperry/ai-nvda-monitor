@@ -3448,7 +3448,7 @@ let backingSort = "score", backingAll = false, backingTier = "all";
 /* Size floor for the default view: a $40K token with $17K of stock behind it has a
    fine ratio and no market. Pairs below both floors are kept behind a toggle. */
 const BACKING_MIN_CAP = 1e6, BACKING_MIN_STOCK = 1e5;
-/* The screen. Gates are thresholds on measured columns; a row's tier is whichever it
+/* The screen. Gates are thresholds on measured columns; a row's label is whichever it
    clears, with flags for the shapes that fail in a telling way. Turnover is the last
    day's user volume through the pair's pools over its market cap. */
 function backingTierOf(r) {
@@ -3470,6 +3470,16 @@ function ownRank(hist, key) {
   for (const v of pts) if (v < cur) below++;
   return below / (pts.length - 1);
 }
+/* Three-day changes from the pair's daily backfill (complete UTC days from the pool's
+   own swap tape): swaps yesterday against three days earlier, and the pool's stock
+   level likewise. These are the two measures that led price in the same direction in
+   both the launch cohort and the survivors; the levels did not. */
+function backingChanges(days) {
+  const d = (days || []).filter((x) => x.swaps > 0);
+  if (d.length < 4) return { dSwaps3: null, unitsGrowth3: null };
+  const a = d.at(-1), b = d.at(-4);
+  return { dSwaps3: b.swaps > 0 ? a.swaps / b.swaps - 1 : null, unitsGrowth3: b.units > 0 && a.units > 0 ? a.units / b.units - 1 : null };
+}
 /* Percentile of a value within a list (0 = lowest, 1 = highest). */
 function pctRank(vals, v) {
   const xs = vals.filter((x) => x != null && isFinite(x));
@@ -3478,15 +3488,9 @@ function pctRank(vals, v) {
   return below / (xs.length - 1);
 }
 /* Column tint: one hue, intensity by percentile within the visible rows, so the eye
-   finds the strong cells without a second colour meaning anything. `inv` flips it for
-   columns where low is strong. */
-function tint(q, inv = false) {
-  if (q == null) return "";
-  const s = inv ? 1 - q : q;
-  return `background:color-mix(in srgb, var(--series-1) ${(4 + 34 * s).toFixed(0)}%, transparent)`;
-}
-/* Turnover fit: 1 inside the 1%–50% band, falling to 0 at 0% and at 100%+. A loop
-   (over 100%) scores nothing, a parked token nothing. */
+   finds the strong cells without a second colour meaning anything. */
+function tint(q) { return q == null ? "" : `background:color-mix(in srgb, var(--series-1) ${(4 + 34 * q).toFixed(0)}%, transparent)`; }
+/* Turnover fit: 1 inside the 1%–50% band, falling to 0 at 0% and at 100%+. */
 function turnoverFit(t) {
   if (t == null) return null;
   if (t >= 0.01 && t <= 0.5) return 1;
@@ -3494,44 +3498,49 @@ function turnoverFit(t) {
   if (t < 1) return Math.max(0, (1 - t) / 0.5);
   return 0;
 }
-/* Screen score, 0–100: a weighted sum of percentile ranks within the visible rows,
-   so it is relative to the field shown and moves as the field moves. Weights are
-   written under the table. */
-const SCORE_W = { stockShare: 3, backing: 2, fit: 2, swaps24h: 1, stockUsd: 1 };
+/* Screen score, 0–100: a weighted sum of percentile ranks within the visible rows.
+   Weights follow the backtest of 16 Sep 2026 (971 pair-days, 55 pairs: a launch
+   cohort selected on first-week activity plus today's survivors): the two changes
+   that led price in both samples carry the weight; the levels, which pointed
+   opposite ways in the two samples, are kept as small terms since they define the
+   profile; raw activity, which preceded weaker weeks in both samples, carries none. */
+const SCORE_W = { dSwaps3: 3, unitsGrowth3: 2, fit: 1, stockShare: 1, backing: 1, stockUsd: 1 };
 function screenScores(rows) {
-  const cols = { stockShare: rows.map((r) => r.stockShare), backing: rows.map((r) => r.backing), swaps24h: rows.map((r) => r.swaps24h), stockUsd: rows.map((r) => r.stockUsd) };
+  const cols = Object.fromEntries(["stockShare", "backing", "stockUsd", "dSwaps3", "unitsGrowth3"].map((k) => [k, rows.map((r) => r[k])]));
   const W = Object.values(SCORE_W).reduce((a, b) => a + b, 0);
   for (const r of rows) {
-    const q = { stockShare: pctRank(cols.stockShare, r.stockShare), backing: pctRank(cols.backing, r.backing), swaps24h: pctRank(cols.swaps24h, r.swaps24h), stockUsd: pctRank(cols.stockUsd, r.stockUsd), fit: turnoverFit(r.turnover) };
+    const q = { stockShare: pctRank(cols.stockShare, r.stockShare), backing: pctRank(cols.backing, r.backing), stockUsd: pctRank(cols.stockUsd, r.stockUsd), dSwaps3: pctRank(cols.dSwaps3, r.dSwaps3), unitsGrowth3: pctRank(cols.unitsGrowth3, r.unitsGrowth3), fit: turnoverFit(r.turnover), swaps24h: pctRank(rows.map((x) => x.swaps24h), r.swaps24h), vol: pctRank(rows.map((x) => x.vol24hUsd), r.vol24hUsd) };
     r.q = q;
-    r.score = Math.round(100 * Object.entries(SCORE_W).reduce((s, [k, w]) => s + w * (q[k] ?? 0), 0) / W);
+    /* a missing change (pair too young for a 3-day read) scores the middle, not the bottom */
+    r.score = Math.round(100 * Object.entries(SCORE_W).reduce((s, [k, w]) => s + w * (q[k] ?? 0.5), 0) / W);
   }
 }
 function renderBacking() {
   const R = S.rwa, B = R?.backing, host = $("#tBacking");
   if (!B?.rows?.length) { host.innerHTML = `<tr><td class="muted">Built on the slow path; this table fills after the next standard run.</td></tr>`; $("#backingKpis").innerHTML = ""; $("#readBacking").innerHTML = ""; $("#backingFoot").innerHTML = ""; return; }
-  const hist = B.history || {};
+  const hist = B.history || {}, bf = B.backfill?.pools || {};
   const all = B.rows.filter((r) => r.mcapUsd > 0 && r.backing != null).map((r) => {
     const turnover = r.mcapUsd > 0 && r.vol24hUsd != null ? r.vol24hUsd / r.mcapUsd : null;
-    const row = { ...r, turnover };
+    const row = { ...r, turnover, ...backingChanges(bf[r.asset]?.days) };
     row.tier = backingTierOf(row);
     row.own = ownRank(hist[r.asset], "backing");
     return row;
   });
   const major = all.filter((r) => r.mcapUsd >= BACKING_MIN_CAP || r.stockUsd >= BACKING_MIN_STOCK);
   let rows = (backingAll ? all : major).slice();
-  screenScores(rows);                       // scores are relative to the rows shown before the tier filter
+  screenScores(rows);
   if (backingTier !== "all") rows = rows.filter((r) => r.tier.k === backingTier);
   const key = backingSort;
-  rows.sort((a, b) => (b[key] ?? -1) - (a[key] ?? -1) || b.score - a.score);
+  rows.sort((a, b) => (b[key] ?? -1e9) - (a[key] ?? -1e9) || b.score - a.score);
   const ai = all.find((r) => r.symbol === "AI"), top = rows[0];
   const venues = major.filter((r) => r.tier.k === "venue"), chal = major.filter((r) => r.tier.k === "challenger");
   const hours = B.windowHours ?? 24, histDays = B.historySince ? Math.max(0, (Date.now() / 1000 - B.historySince) / 86400) : 0;
   const stockTotal = sumOf(rows, (r) => r.stockUsd), volTotal = sumOf(rows, (r) => r.vol24hUsd);
+  const pc = (v, d = 0) => v == null ? "—" : `${v >= 0 ? "+" : "−"}${(100 * Math.abs(v)).toFixed(d)}%`;
   $("#backingKpis").innerHTML = `<div class="tiles three">
     ${tile("Pairs holding 10%+ of their stock", venues.length, venues.length ? venues.map((r) => `${r.symbol}/${r.anchorSymbol}`).join(", ") : `none yet with cushion and daily trading${hours < 20 ? ` (turnover needs a full day; ${hours}h so far)` : ""}`, "", "hero")}
     ${tile("Well-backed, active pairs", chal.length, chal.length ? chal.map((r) => `${r.symbol}/${r.anchorSymbol}`).join(", ") : `none yet${hours < 20 ? ` (${hours}h of volume so far)` : ""}`)}
-    ${top ? tile("Top of the screen", `${top.symbol} / ${top.anchorSymbol}`, `score ${top.score} · ${(100 * top.backing).toFixed(1)}¢ of ${top.anchorSymbol} per $1 of cap, ${pctLevel(top.stockShare || 0, 0)} of all tokenized ${top.anchorSymbol}${ai && ai !== top ? ` · AI scores ${ai.score ?? "—"}` : ""} · $${compact(stockTotal)} of stock behind the ${rows.length} pairs shown, $${compact(volTotal)} traded in ${hours}h`) : ""}
+    ${top ? tile("Top of the screen", `${top.symbol} / ${top.anchorSymbol}`, `score ${top.score} · swaps ${pc(top.dSwaps3)} and stock in pool ${pc(top.unitsGrowth3)} over 3 days · ${(100 * top.backing).toFixed(1)}¢ of ${top.anchorSymbol} per $1 of cap${ai && ai !== top ? ` · AI scores ${ai.score ?? "—"}` : ""}`) : ""}
   </div>`;
   const cents = (v) => `${(100 * v).toFixed(v >= 0.1 ? 0 : 1)}¢`;
   const col = (k) => rows.map((r) => r[k]);
@@ -3540,31 +3549,34 @@ function renderBacking() {
   const ownCell = (r) => r.own == null ? `<span class="muted">${histDays < 7 ? `since ${dayFmt(B.historySince)}` : "—"}</span>` : `<span style="${tint(r.own)}" class="pill">${pctLevel(r.own, 0)}</span>`;
   const th = (k, label, cls = "", title = "") => `<th class="${cls}${backingSort === k ? " on" : ""}" data-k="${k}" title="${title}">${label}</th>`;
   host.innerHTML = `<thead><tr>
-      <th class="r">#</th><th>Pair</th>${th("score", "Score", "r", "weighted percentile ranks, see the method below")}${th("mcapUsd", "Market cap", "r")}${th("stockUsd", "Stock in pools", "r")}${th("backing", "Stock per $1 cap", "r", "cents of stock behind each dollar of market cap")}${th("stockShare", "Share of stock", "r", "share of the stock's whole tokenized supply held in the pair")}${th("vol24hUsd", `Volume ${hours}h`, "r")}${th("swaps24h", "Swaps", "r")}${th("turnover", "Turnover", "r", "volume over market cap; the screen wants 1% to 50% a day")}<th>Own 30d</th>
+      <th class="r">#</th><th>Pair</th>${th("score", "Score", "r", "weighted percentile ranks, see the definitions below")}${th("dSwaps3", "Swaps, 3d change", "r", "yesterday's swaps against three days earlier, from the pool's own tape")}${th("unitsGrowth3", "Stock in pool, 3d change", "r", "the pool's stock level against three days earlier")}${th("mcapUsd", "Market cap", "r")}${th("stockUsd", "Stock in pools", "r")}${th("backing", "Stock per $1 cap", "r", "cents of stock behind each dollar of market cap")}${th("stockShare", "Share of stock", "r", "share of the stock's whole tokenized supply held in the pair")}${th("vol24hUsd", `Volume ${hours}h`, "r")}${th("swaps24h", "Swaps", "r")}${th("turnover", "Turnover", "r", "volume over market cap; the screen wants 1% to 50% a day")}<th>Own 30d</th>
     </tr></thead><tbody>` +
     rows.map((r, i) => `<tr>
       <td class="r muted mono">${i + 1}</td>
       <td class="pair"><b>${r.symbol}</b> <span class="muted">on ${r.anchorSymbol}</span>${r.pools > 1 ? ` <span class="muted">· ${r.pools} pools</span>` : ""}${r.tier.l ? ` <span class="badge tier ${r.tier.k}">${r.tier.l}</span>` : ""}</td>
       <td class="r mono score" style="${tint(pctRank(col("score"), r.score))}"><b>${r.score}</b></td>
+      <td class="r mono" style="${tint(r.q.dSwaps3)}">${pc(r.dSwaps3)}</td>
+      <td class="r mono" style="${tint(r.q.unitsGrowth3)}">${pc(r.unitsGrowth3, 1)}</td>
       <td class="r mono">$${compact(r.mcapUsd)}</td>
       <td class="r mono" style="${tint(r.q.stockUsd)}">$${compact(r.stockUsd)}</td>
       <td class="r mono num" style="${tint(r.q.backing)}">${bar(r.backing, maxB, "g")}${cents(r.backing)}</td>
       <td class="r mono num" style="${tint(r.q.stockShare)}">${bar(r.stockShare, maxS, "b")}${r.stockShare == null ? "—" : pctLevel(r.stockShare, r.stockShare < 0.1 ? 1 : 0)}</td>
-      <td class="r mono" style="${tint(pctRank(col("vol24hUsd"), r.vol24hUsd))}">$${compact(r.vol24hUsd)}</td>
+      <td class="r mono" style="${tint(r.q.vol)}">$${compact(r.vol24hUsd)}</td>
       <td class="r mono" style="${tint(r.q.swaps24h)}">${(r.swaps24h || 0).toLocaleString()}</td>
-      <td class="r mono" style="${tint(r.q.fit == null ? null : r.q.fit)}">${r.turnover == null ? "—" : pctLevel(r.turnover, r.turnover < 0.1 ? 1 : 0)}</td>
+      <td class="r mono" style="${tint(r.q.fit)}">${r.turnover == null ? "—" : pctLevel(r.turnover, r.turnover < 0.1 ? 1 : 0)}</td>
       <td class="own">${spark((hist[r.asset] || []).map((p) => p[1]), "var(--series-1)")}${ownCell(r)}</td>
     </tr>`).join("") + `</tbody>`;
   $("#backingFoot").innerHTML = all.length > major.length ? `<p class="muted" style="margin:10px 0 0"><button class="linklike" id="backingToggle">${backingAll ? `Show only the ${major.length} pairs above the size floor` : `Show all ${all.length} pairs, including the ${all.length - major.length} below the size floor`}</button></p>` : "";
   $("#backingToggle").onclick = () => { backingAll = !backingAll; renderBacking(); };
   for (const h of host.querySelectorAll("th[data-k]")) h.onclick = () => { backingSort = h.dataset.k; for (const o of $("#backingSort").querySelectorAll("button")) o.setAttribute("aria-pressed", o.dataset.k === backingSort ? "true" : "false"); renderBacking(); };
   const byShare = major.slice().sort((a, b) => (b.stockShare || 0) - (a.stockShare || 0)).slice(0, 2);
+  const rising = major.filter((r) => r.dSwaps3 > 0.25 && r.unitsGrowth3 > 0).sort((a, b) => b.score - a.score).slice(0, 3);
   $("#readBacking").innerHTML = takeEl(venues.length ? "pos" : "neu",
-    `${venues.length ? `<b>${venues.map((r) => r.symbol).join(", ")}</b> hold over a tenth of their stock's tokenized supply, carry at least 2¢ of stock per dollar of market cap, and turn over between 1% and 50% of that cap a day.` : `No pair holds a tenth of its stock with that cushion and daily trading on today's numbers${hours < 20 ? `, with only ${hours}h of per-pair volume measured so far` : ""}.`}
-     ${chal.length ? `<b>${chal.map((r) => r.symbol).join(", ")}</b> are well-backed and active: smaller, with roughly twice the cushion, trading every day.` : ""}
+    `${rising.length ? `Swaps and stock in the pool are both rising over three days for <b>${rising.map((r) => r.symbol).join(", ")}</b>, the two measures that led price in the same direction in both the launch cohort and the survivors.` : `No pair shows swaps and stock in the pool both rising over the last three days.`}
+     ${venues.length ? `<b>${venues.map((r) => r.symbol).join(", ")}</b> hold over a tenth of their stock's tokenized supply, carry at least 2¢ of stock per dollar of market cap, and turn over between 1% and 50% of that cap a day.` : ""}
      ${byShare.length ? `The largest holders of their stock's tokenized supply are ${byShare.map((r) => `<b>${r.symbol}</b> (${pctLevel(r.stockShare, 0)} of all ${r.anchorSymbol})`).join(" and ")}.` : ""}
      ${ai ? `AI holds the most stock in absolute terms, <b>$${compact(ai.stockUsd)}</b> of NVDA, and <b>${cents(ai.backing)}</b> per dollar of its cap.` : ""}
-     <span class="muted">Score is a weighted sum of each pair's percentile rank among the rows shown: share of stock ×3, stock per dollar of cap ×2, turnover inside the 1%–50% band ×2, swaps ×1, stock in pools ×1. Shading is that percentile, one hue; the turnover cell shades by fit to the band, not by size. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; volume and swaps from the hook's own event, buyback legs excluded. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
+     <span class="muted">Score weights follow the 16 Sep 2026 backtest (see the definitions below): 3-day change in swaps ×3, 3-day change in stock in the pool ×2, turnover inside the 1%–50% band ×1, share of stock ×1, stock per dollar of cap ×1, stock in pools ×1; raw activity carries no weight. Shading is percentile rank among the rows shown, one hue. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; volume and swaps from the hook's own event, buyback legs excluded; 3-day changes from the pool's daily swap tape. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
   const bind = (sel, attr, set) => { const seg = $(sel); if (seg.dataset.bound) return; seg.dataset.bound = "1";
     seg.addEventListener("click", (ev) => { const b = ev.target.closest(`button[${attr}]`); if (!b) return; set(b.getAttribute(attr)); for (const o of seg.querySelectorAll("button")) o.setAttribute("aria-pressed", o === b ? "true" : "false"); renderBacking(); }); };
   bind("#backingSort", "data-k", (v) => { backingSort = v; });
