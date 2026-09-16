@@ -418,3 +418,11 @@ details.method p { font-size: 12px; color: var(--text-secondary); line-height: 1
 #tBacking .pill { display: inline-block; padding: 2px 6px; border-radius: 3px; font: 600 11px var(--mono); }
 #tBacking th:nth-child(2), #tBacking td:nth-child(2) { position: sticky; left: 0; background: var(--surface-1); z-index: 1; box-shadow: 2px 0 0 var(--border); }
 #tBacking tbody tr:hover td:nth-child(2) { background: var(--surface-2); }
+
+/* Segment controls wrap on narrow screens instead of clipping their last buttons */
+@media (max-width: 720px) {
+  .seg { flex-wrap: wrap; max-width: 100%; border-radius: 6px; }
+  .seg button { flex: 1 1 auto; border-right: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); margin: 0 -1px -1px 0; }
+  .seg button:last-child { border-right: 1px solid var(--border-strong); }
+  .controls .muted { flex: 1 1 100%; }
+}
