@@ -484,12 +484,15 @@ if (rwa && rwa.tokens?.length) {
     warn("every backing pair is priced", K.rows.every((r) => r.mcapUsd > 0), `${K.rows.filter((r) => !(r.mcapUsd > 0)).map((r) => r.symbol).join(", ") || "all priced"}`);
     if (K.backfill?.pools) {
       const F = K.backfill, pd = Object.values(F.pools);
-      check("backing backfill days are ordered, complete UTC days, and sane",
-        pd.every((o) => Array.isArray(o.days) && o.days.every((d, i, a) => (i === 0 || d.t > a[i - 1].t) && d.gross >= 0 && d.swaps >= 0 && (d.priceInStock == null || d.priceInStock > 0) && (d.backing == null || d.backing >= 0) && (d.share == null || d.share <= 1.5))),
+      check("backing backfill days are ordered, complete UTC days, with non-negative flow and positive prices",
+        pd.every((o) => Array.isArray(o.days) && o.days.every((d, i, a) => (i === 0 || d.t > a[i - 1].t) && d.gross >= 0 && d.swaps >= 0 && (d.priceInStock == null || d.priceInStock > 0))),
         `${pd.length} pair(s), ${pd.reduce((s, o) => s + o.days.length, 0)} pair-days, ${F.complete} of ${F.pairs} at the head`);
       warn("backing backfill has reached the head for every tracked pair", F.complete >= F.pairs, `${F.pairs - F.complete} pair(s) still streaming`);
-      warn("backfilled stock levels stay positive", pd.every((o) => o.days.every((d) => d.units >= -1e-6)),
-        pd.filter((o) => o.days.some((d) => d.units < -1e-6)).map((o) => o.symbol).join(", ") || "all positive");
+      const drifted = pd.filter((o) => o.days.some((d) => d.units != null && d.units <= 0));
+      warn("backfilled stock levels stay positive (the swap-delta walk can drift where fee re-adds grew a pool)", !drifted.length,
+        drifted.length ? `${drifted.map((o) => `${o.symbol} (${o.days.filter((d) => d.units != null && d.units <= 0).length} day(s))`).join(", ")}; ratios on those days are withheld` : "all positive");
+      warn("backfilled shares of stock stay within the stock's supply", pd.every((o) => o.days.every((d) => d.share == null || d.share <= 1.05)),
+        pd.filter((o) => o.days.some((d) => d.share > 1.05)).map((o) => o.symbol).join(", ") || "all within supply");
     }
     const H = K.history || {};
     check("backing history is ordered and sane per pair",

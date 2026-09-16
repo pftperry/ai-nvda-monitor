@@ -83,7 +83,10 @@ export async function indexBackingBackfill(latest, tm, opts = {}) {
       const priceInStock = p1per0 == null ? null : stockIs0 ? (p1per0 > 0 ? 1 / p1per0 : null) : p1per0;
       const mcapInStock = priceInStock && p.supply > 0 ? priceInStock * p.supply : null;
       rows.push({ t, units: level == null ? null : +level.toFixed(4), net: +D.net.toFixed(4), gross: +D.gross.toFixed(4), swaps: D.swaps, priceInStock, mcapInStock,
-        backing: level != null && mcapInStock > 0 ? level / mcapInStock : null, share: level != null && p.stockSupply > 0 ? level / p.stockSupply : null, turnover: mcapInStock > 0 ? D.gross / mcapInStock : null });
+        /* The swap-delta walk can drift below zero where the hook's own fee re-adds
+           (liquidity events, not swaps) grew the pool; a non-positive level is a
+           sign the walk has lost the thread, so ratios built on it are withheld. */
+        backing: level != null && level > 0 && mcapInStock > 0 ? level / mcapInStock : null, share: level != null && level > 0 && p.stockSupply > 0 ? level / p.stockSupply : null, turnover: mcapInStock > 0 ? D.gross / mcapInStock : null });
       if (level != null) level -= D.net;   // the level at the previous day's close
     }
     rows.reverse();
