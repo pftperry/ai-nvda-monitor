@@ -19,6 +19,7 @@ import { indexRwa } from "./tasks/rwa.mjs";
 import { indexPerps } from "./tasks/perps.mjs";
 import { indexStockSupply } from "./tasks/stocksupply.mjs";
 import { indexBackingBackfill, cohortPairs } from "./tasks/backfill.mjs";
+import { indexStockPrices } from "./tasks/stockpx.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
@@ -520,7 +521,14 @@ if (!fast && !flag("no-launchpad")) {
           const trackedPools = new Set(tracked.map((r) => r.poolId));
           const bfBudget = opt("backfill-budget", deep ? 900 : 240) * 1000, bfStart = Date.now();
           const cohort = (await cohortPairs(census.pools, stockRows, latest, tm, { store, count: 40, minAgeDays: 30, minWeekSwaps: 50, probe: 600, deadline: bfStart + Math.round(bfBudget * 0.3) })).filter((c) => !trackedPools.has(c.poolId));
-          rwa.backing.backfill = await indexBackingBackfill(latest, tm, { store, pairs: [...tracked, ...cohort], deadline: bfStart + bfBudget });
+          const pxPairs = [...tracked, ...cohort];
+          /* Daily dollar closes for every stock behind those pairs, so the backfill can
+             be read in USDG as well as in shares of the stock. */
+          try {
+            const pxStocks = [...new Map(pxPairs.map((p) => [p.anchor, { token: p.anchor, symbol: p.anchorSymbol, decimals: p.stockDecimals }])).values()];
+            rwa.stockPx = await indexStockPrices(latest, tm, { store, stocks: pxStocks, usdgPools: census.usdgPools, rank, decimals, deadline: Date.now() + opt("stockpx-budget", deep ? 240 : 90) * 1000 });
+          } catch (e) { softFail("stock closes", e, "the previous closes stay in place"); rwa.stockPx = readData("rwa.json")?.stockPx ?? null; }
+          rwa.backing.backfill = await indexBackingBackfill(latest, tm, { store, pairs: pxPairs, stockPx: rwa.stockPx, deadline: bfStart + bfBudget });
         } catch (e) { softFail("backing backfill", e, "the previous backfill stays in place"); rwa.backing.backfill = readData("rwa.json")?.backing?.backfill ?? null; }
       }
       writeData("rwa.json", rwa);

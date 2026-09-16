@@ -488,6 +488,13 @@ if (rwa && rwa.tokens?.length) {
         pd.every((o) => Array.isArray(o.days) && o.days.every((d, i, a) => (i === 0 || d.t > a[i - 1].t) && d.gross >= 0 && d.swaps >= 0 && (d.priceInStock == null || d.priceInStock > 0))),
         `${pd.length} pair(s), ${pd.reduce((s, o) => s + o.days.length, 0)} pair-days, ${F.complete} of ${F.pairs} at the head`);
       warn("backing backfill has reached the head for every tracked pair", F.complete >= F.pairs, `${F.pairs - F.complete} pair(s) still streaming`);
+      check("backfill dollar prices, where present, are positive and consistent with the stock close", pd.every((o) => o.days.every((d) => d.priceUsd == null || (d.priceUsd > 0 && d.stockUsd > 0 && Math.abs(d.priceUsd - d.priceInStock * d.stockUsd) <= 1e-9 * Math.max(1, d.priceUsd)))));
+      warn("backfill has a dollar leg for most pair-days", (F.usdDays || 0) >= 0.8 * pd.reduce((s, o) => s + o.days.length, 0), `${F.usdDays || 0} of ${pd.reduce((s, o) => s + o.days.length, 0)} pair-days priced in dollars`);
+    }
+    if (K.stockPx?.stocks) {
+      const S = Object.values(K.stockPx.stocks);
+      check("stock closes are ordered daily series of positive dollar prices", S.every((s) => s.close.every(([t, v], i) => v > 0 && (i === 0 || t === s.close[i - 1][0] + 86400))));
+      warn("stock closes have reached the head for every stock", S.every((s) => !s.partial), `${S.filter((s) => s.partial).length} still streaming`);
       const drifted = pd.filter((o) => o.days.some((d) => d.units != null && d.units <= 0));
       warn("backfilled stock levels stay positive (the swap-delta walk can drift where fee re-adds grew a pool)", !drifted.length,
         drifted.length ? `${drifted.map((o) => `${o.symbol} (${o.days.filter((d) => d.units != null && d.units <= 0).length} day(s))`).join(", ")}; ratios on those days are withheld` : "all positive");

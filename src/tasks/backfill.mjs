@@ -2,6 +2,7 @@ import { getLogsRange } from "../rpc.mjs";
 import { POOL_MANAGER, LONG_GENESIS_BLOCK } from "../config.mjs";
 import { TOPICS, decodeSwap } from "../decode.mjs";
 import { multicall, resolveTokens } from "../tokens.mjs";
+import { closeLookup } from "./stockpx.mjs";
 
 /**
  * Backfill of the backing table, per pair, from the pool's own Swap tape.
@@ -117,7 +118,9 @@ export async function indexBackingBackfill(latest, tm, opts = {}) {
   /* Publish: per pair, complete UTC days with the running swap-delta level from
      creation, the day's close in the stock, market cap in stock, and backing. */
   const todayStart = Math.floor(Date.now() / 1000 / DAY) * DAY;
+  const close = closeLookup(opts.stockPx);   // stock token, day → USD close; null where no history yet
   const out = {};
+  let usdDays = 0;
   for (const p of pairs) {
     const P = BF.pools[p.poolId]; if (!P) continue;
     const keys = Object.keys(P.days).map(Number).sort((a, b) => a - b).filter((t) => t < todayStart);
@@ -132,7 +135,12 @@ export async function indexBackingBackfill(latest, tm, opts = {}) {
       const p1per0 = sq ? sq * sq * 10 ** ((stockIs0 ? sdec : dec) - (stockIs0 ? dec : sdec)) : null;
       const priceInStock = p1per0 == null ? null : stockIs0 ? (p1per0 > 0 ? 1 / p1per0 : null) : p1per0;
       const mcapInStock = priceInStock && p.supply > 0 ? priceInStock * p.supply : null;
+      /* The dollar leg: the stock's close that day, so the pair's price and cap can be
+         read in USDG, which is what a holder banks; null until the close history exists. */
+      const usd = close(p.anchor, t);
+      if (usd) usdDays++;
       rows.push({ t, units: +level.toFixed(4), net: +D.net.toFixed(4), gross: +D.gross.toFixed(4), swaps: D.swaps, priceInStock, mcapInStock,
+        stockUsd: usd || null, priceUsd: usd && priceInStock ? priceInStock * usd : null, mcapUsd: usd && mcapInStock ? mcapInStock * usd : null,
         backing: level > 0 && mcapInStock > 0 ? level / mcapInStock : null, share: level > 0 && p.stockSupply > 0 ? level / p.stockSupply : null, turnover: mcapInStock > 0 ? D.gross / mcapInStock : null });
     }
     /* Today's exact figure from the position replay, for scale against the swap-delta level. */
@@ -140,8 +148,8 @@ export async function indexBackingBackfill(latest, tm, opts = {}) {
     out[p.asset] = { symbol: p.symbol, anchorSymbol: p.anchorSymbol, poolId: p.poolId, cohort: !!p.cohort, cursor: P.cursor, partial: !atHead, from: P.first, createdBlock: p.createdBlock ?? null,
       unitsNow: p.stockUnits ?? null, unitsDeltaNow: atHead ? +(level + todayNet).toFixed(4) : null, days: rows };
   }
-  const summary = { pairs: pairs.length, tracked: pairs.filter((p) => !p.cohort).length, cohort: pairs.filter((p) => p.cohort).length, complete: done, streamedThisRun: streamed, secs: Math.round((Date.now() - t0) / 1000),
-    method: "each pair's main LONG pool's Swap events from the pool's creation, folded into UTC days: pool-perspective stock delta summed into a running level (Dune's swap-delta definition, an upper bound), gross stock traded, swap count, closing sqrtPrice; prices in the stock; the asset's supply is today's; the cohort is a deterministic sample of LONG stock pairs launched at least thirty days ago, chosen by pool id" };
+  const summary = { pairs: pairs.length, tracked: pairs.filter((p) => !p.cohort).length, cohort: pairs.filter((p) => p.cohort).length, complete: done, streamedThisRun: streamed, usdDays, secs: Math.round((Date.now() - t0) / 1000),
+    method: "each pair's main LONG pool's Swap events from the pool's creation, folded into UTC days: pool-perspective stock delta summed into a running level (Dune's swap-delta definition, an upper bound), gross stock traded, swap count, closing sqrtPrice; prices in the stock, and in dollars where the stock's daily close is known (Chainlink feed or deepest USDG pool); the asset's supply is today's; the cohort is a deterministic sample of LONG stock pairs launched at least thirty days ago, chosen by pool id" };
   log(`  backing backfill: ${done} of ${pairs.length} pair(s) at the head (${summary.tracked} tracked, ${summary.cohort} cohort), ${streamed.toLocaleString()} swaps folded this run, ${Object.values(out).reduce((s, o) => s + o.days.length, 0)} pair-days published, ${summary.secs}s`);
   return { ...summary, pools: out };
 }
