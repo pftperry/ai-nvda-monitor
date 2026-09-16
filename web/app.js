@@ -3484,7 +3484,12 @@ function backingTrends(days) {
     swWk: pwk && sum(pwk, "swaps") > 0 ? sum(wk, "swaps") / sum(pwk, "swaps") - 1 : null,
     dSw3: n >= 4 && d[n - 4].swaps > 0 ? a.swaps / d[n - 4].swaps - 1 : null,
     dU7: n >= 8 && d[n - 8].units > 0 && a.units > 0 ? a.units / d[n - 8].units - 1 : null,
-    pr7: n >= 8 && d[n - 8].priceInStock > 0 ? a.priceInStock / d[n - 8].priceInStock - 1 : null,
+    /* price changes in dollars (USDG), the pair's price in its stock times the stock's
+       close that day; the in-stock change is kept for the read-out */
+    pr7: n >= 8 && d[n - 8].priceUsd > 0 && a.priceUsd > 0 ? a.priceUsd / d[n - 8].priceUsd - 1 : null,
+    pr28: n >= 29 && d[n - 29].priceUsd > 0 && a.priceUsd > 0 ? a.priceUsd / d[n - 29].priceUsd - 1 : null,
+    pr7Stock: n >= 8 && d[n - 8].priceInStock > 0 ? a.priceInStock / d[n - 8].priceInStock - 1 : null,
+    priceUsdClose: a && a.priceUsd > 0 ? a.priceUsd : null,
     dayTurnover: a && a.turnover != null ? a.turnover : null,
   };
 }
@@ -3574,7 +3579,7 @@ function renderBacking() {
   const th = (k, label, cls = "", title = "") => `<th class="${cls}${backingSort === k ? " on" : ""}" data-k="${k}" title="${title}">${label}</th>`;
   const q = (k, v) => tint(pctRank(col(k), v));
   host.innerHTML = `<thead><tr>
-      <th class="r">#</th><th>Pair</th>${th("score", "Tape score", "r", "points from a base of 50 for the shapes that led price in both samples, see the definitions below")}<th>Signals</th>${th("standing", "Standing", "r", "the thesis profile as percentile ranks: share ×3, cushion ×2, turnover fit ×2, swaps ×1, stock ×1; describes the pair, does not forecast it")}${th("swWk", "Swaps, wk/wk", "r", "swaps in the last seven traded days against the seven before")}${th("dU7", "Stock held, 7d", "r", "the pool's stock level against seven traded days earlier")}${th("pr7", `Price in stock, 7d`, "r", "the pair's price in its stock against seven traded days earlier")}${th("mcapUsd", "Market cap", "r")}${th("stockUsd", "Stock in pools", "r")}${th("backing", "Stock per $1 cap", "r", "cents of stock behind each dollar of market cap")}${th("stockShare", "Share of stock", "r", "share of the stock's whole tokenized supply held in the pair")}${th("turnover", "Turnover", "r", "last complete day's stock traded over market cap; 1% to 50% reads as a market")}<th>Own 30d</th>
+      <th class="r">#</th><th>Pair</th>${th("score", "Tape score", "r", "points from a base of 50 for the shapes that led price in both samples, see the definitions below")}<th>Signals</th>${th("standing", "Standing", "r", "the thesis profile as percentile ranks: share ×3, cushion ×2, turnover fit ×2, swaps ×1, stock ×1; describes the pair, does not forecast it")}${th("swWk", "Swaps, wk/wk", "r", "swaps in the last seven traded days against the seven before")}${th("dU7", "Stock held, 7d", "r", "the pool's stock level against seven traded days earlier")}${th("pr7", "Price, 7d", "r", "the pair's dollar price (price in its stock times the stock's close) against seven traded days earlier")}${th("pr28", "Price, 28d", "r", "the pair's dollar price against 28 traded days earlier")}${th("mcapUsd", "Market cap", "r")}${th("stockUsd", "Stock in pools", "r")}${th("backing", "Stock per $1 cap", "r", "cents of stock behind each dollar of market cap")}${th("stockShare", "Share of stock", "r", "share of the stock's whole tokenized supply held in the pair")}${th("turnover", "Turnover", "r", "last complete day's stock traded over market cap; 1% to 50% reads as a market")}<th>Own 30d</th>
     </tr></thead><tbody>` +
     rows.map((r, i) => `<tr>
       <td class="r muted mono">${i + 1}</td>
@@ -3585,6 +3590,7 @@ function renderBacking() {
       <td class="r mono" style="${q("swWk", r.swWk)}">${pc(r.swWk)}</td>
       <td class="r mono" style="${q("dU7", r.dU7)}">${pc(r.dU7, Math.abs(r.dU7 ?? 0) < 0.1 ? 1 : 0)}</td>
       <td class="r mono" style="${q("pr7", r.pr7)}">${pc(r.pr7)}</td>
+      <td class="r mono" style="${q("pr28", r.pr28)}">${pc(r.pr28)}</td>
       <td class="r mono">$${compact(r.mcapUsd)}</td>
       <td class="r mono" style="${q("stockUsd", r.stockUsd)}">$${compact(r.stockUsd)}</td>
       <td class="r mono num" style="${q("backing", r.backing)}">${bar(r.backing, maxB, "g")}${cents(r.backing)}</td>
@@ -3603,7 +3609,7 @@ function renderBacking() {
      ${venues.length ? `<b>${venues.map((r) => r.symbol).join(", ")}</b> hold over a tenth of their stock's tokenized supply.` : ""}
      ${byShare.length ? `The largest holders of their stock's tokenized supply are ${byShare.map((r) => `<b>${r.symbol}</b> (${pctLevel(r.stockShare, 0)} of all ${r.anchorSymbol})`).join(" and ")}; share carries no score weight because a higher share preceded weaker weeks in every cut of the test.` : ""}
      ${ai ? `AI holds the most stock in absolute terms, <b>$${compact(ai.stockUsd)}</b> of NVDA, and <b>${cents(ai.backing)}</b> per dollar of its cap.` : ""}
-     <span class="muted">Tape score is points from 50 and Standing is the thesis profile as percentile ranks (definitions below); shading is percentile rank among the rows shown, one hue, for reading only. Trend columns come from each pool's own daily swap tape, complete UTC days, traded days only. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; turnover is the last complete day's. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
+     <span class="muted">Tape score is points from 50 and Standing is the thesis profile as percentile ranks (definitions below); shading is percentile rank among the rows shown, one hue, for reading only. Trend columns come from each pool's own daily swap tape, complete UTC days, traded days only; price changes are in dollars (USDG), the pair's price in its stock times that day's stock close. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; turnover is the last complete day's. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
   const bind = (sel, attr, set) => { const seg = $(sel); if (seg.dataset.bound) return; seg.dataset.bound = "1";
     seg.addEventListener("click", (ev) => { const b = ev.target.closest(`button[${attr}]`); if (!b) return; set(b.getAttribute(attr)); for (const o of seg.querySelectorAll("button")) o.setAttribute("aria-pressed", o === b ? "true" : "false"); renderBacking(); }); };
   bind("#backingSort", "data-k", (v) => { backingSort = v; });
