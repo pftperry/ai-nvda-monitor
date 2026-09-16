@@ -390,6 +390,11 @@ footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border
 .brow .bn { border-radius: 4px; padding: 3px 5px; }
 .brow .bn small { display: block; font: 10px var(--mono); color: var(--text-muted); font-weight: 500; }
 .brow .badge.tier { margin-top: 4px; font-size: 9px; padding: 2px 6px; }
+#tBacking td.sigs { white-space: normal; min-width: 150px; max-width: 220px; line-height: 1.5; }
+.sig { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px; margin: 1px 3px 1px 0; white-space: nowrap; border: 1px solid transparent; }
+.sig.up { background: color-mix(in srgb, var(--series-1) 16%, transparent); color: var(--series-1); }
+.sig.down { background: color-mix(in srgb, var(--sell) 14%, transparent); color: var(--sell); }
+.sig.neutral { border-color: var(--border); color: var(--muted); }
 .badge.tier.venue { background: color-mix(in srgb, var(--series-1) 18%, transparent); color: var(--series-1); }
 .badge.tier.challenger { background: color-mix(in srgb, var(--series-3) 18%, transparent); color: var(--series-3); }
 .badge.tier.loop { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
