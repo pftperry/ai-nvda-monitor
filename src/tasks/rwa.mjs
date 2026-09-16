@@ -373,7 +373,7 @@ export async function indexRwa(latest, tm, opts = {}) {
         const h = hourOf(parseInt(l.blockNumber, 16)); if (h == null) continue;
         const B = bucket(h), usd = stockUsd(e, int256(word(l.data, 3)), int256(word(l.data, 4)));
         B.hookSwaps++; B.hookUsd += usd;
-        if (topicAddr(l.topics[1]) === LONG_BUYBACK) B.buybackSwaps++; else { B.hookUserUsd += usd; B.perPool[l.topics[3]] = (B.perPool[l.topics[3]] || 0) + usd; }
+        if (topicAddr(l.topics[1]) === LONG_BUYBACK) B.buybackSwaps++; else { B.hookUserUsd += usd; B.perPool[l.topics[3]] = (B.perPool[l.topics[3]] || 0) + usd; (B.perPoolN ??= {})[l.topics[3]] = (B.perPoolN[l.topics[3]] || 0) + 1; }
       }
     };
     const foldRialto = (logs) => {
@@ -416,11 +416,12 @@ export async function indexRwa(latest, tm, opts = {}) {
     const hoursCovered = Math.max(0, Math.round((endHour - Math.max(startHour, firstHour)) / 3600) + 1);
     const inWin = Object.entries(SW.hours).map(([k, B]) => [Number(k), B]).filter(([h]) => h >= startHour && h <= endHour).sort((x, y) => x[0] - y[0]);
     const tot = { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, perpSwaps: 0, perpLongSwaps: 0, perpUsd: 0, perpLongUsd: 0 };
-    const per = new Map(), perPool = new Map();
+    const per = new Map(), perPool = new Map(), perPoolN = new Map();
     for (const [, B] of inWin) {
       for (const k of Object.keys(tot)) tot[k] += B[k] || 0;
       for (const [token, p] of Object.entries(B.perToken || {})) { const r = per.get(token) || { all: 0, long: 0, usdAll: 0, usdLong: 0 }; r.all += p.all; r.long += p.long; r.usdAll += p.usdAll; r.usdLong += p.usdLong; per.set(token, r); }
       for (const [id, v] of Object.entries(B.perPool || {})) perPool.set(id, (perPool.get(id) || 0) + v);
+      for (const [id, n] of Object.entries(B.perPoolN || {})) perPoolN.set(id, (perPoolN.get(id) || 0) + n);
     }
     const denominatorUsd = tot.usdAll + tot.rialtoUsd;
     swapShare = {
@@ -442,6 +443,7 @@ export async function indexRwa(latest, tm, opts = {}) {
         usdAll: Math.round(r.usdAll), usdLong: Math.round(r.usdLong) })).sort((x, y) => y.usdAll - x.usdAll || y.all - x.all),
       /* User stock volume per LONG pool (the hook's event, buyback legs excluded), for the backing table. */
       perPool: Object.fromEntries([...perPool].sort((a, b) => b[1] - a[1]).slice(0, 400).map(([id, v]) => [id, Math.round(v)])),
+      perPoolN: Object.fromEntries([...perPoolN].sort((a, b) => b[1] - a[1]).slice(0, 400)),
       perPoolHours: Math.max(0, Math.min(hoursCovered, Math.round((endHour - Math.max(startHour, hourOf(SW.perPoolFirst) ?? startHour)) / 3600) + 1)),
     };
     log(`  stock trading, rolling ${hoursCovered}h of ${WINDOW_H}h${truncated ? " (resumes)" : ""}: ${tot.stockSwaps.toLocaleString()} stock-pool swaps of ${tot.chainSwaps.toLocaleString()} on chain, ${tot.longSwaps.toLocaleString()} through LONG pools (${tot.stockSwaps ? (100 * tot.longSwaps / tot.stockSwaps).toFixed(1) : "—"}% by count, ${tot.usdAll ? (100 * tot.usdLong / tot.usdAll).toFixed(1) : "—"}% by dollars); Dune method: LONG $${Math.round(tot.hookUsd).toLocaleString()} (${tot.hookSwaps} hook swaps, ${tot.buybackSwaps} buyback) of $${Math.round(denominatorUsd).toLocaleString()} incl. Rialto $${Math.round(tot.rialtoUsd).toLocaleString()} (${tot.rialtoFills} fills) → ${denominatorUsd ? (100 * tot.hookUsd / denominatorUsd).toFixed(1) : "—"}%, cursor ${SW.cursor.toLocaleString()}, ${secs(t4)}`);
@@ -580,10 +582,27 @@ export async function indexRwa(latest, tm, opts = {}) {
         supply: +supply.toFixed(2), priceUsd, mcapUsd: mcapUsd == null ? null : Math.round(mcapUsd),
         backing: mcapUsd > 0 ? r.stockUsd / mcapUsd : null,
         vol24hUsd: Math.round(r.pools.reduce((s, q) => s + (swapShare?.perPool?.[q.id] || 0), 0)),
+        swaps24h: r.pools.reduce((s, q) => s + (swapShare?.perPoolN?.[q.id] || 0), 0),
       });
     });
     rows.sort((a, b) => b.stockUsd - a.stockUsd);
-    backing = { rows, poolsConsidered: top.length, poolsWithoutCensus: unknown, windowHours: swapShare?.perPoolHours ?? swapShare?.windowHours ?? null, at: Math.floor(Date.now() / 1000),
+    /* History per pair, carried in the published file itself (the store artifact can
+       reset; the data file is snapshotted to git). One point per four hours at most,
+       thirty days deep, for every pair that has ever cleared the size floor, so a pair
+       that later shrinks keeps its record: [t, backing, stockShare, stockUsd, mcapUsd, vol24hUsd]. */
+    const HIST_STEP = 4 * 3600, HIST_KEEP = 30 * 86400, nowT = Math.floor(Date.now() / 1000);
+    const hist = { ...(opts.prior?.backing?.history || {}) };
+    for (const r of rows) {
+      const tracked = hist[r.asset] || r.mcapUsd >= 1e6 || r.stockUsd >= 1e5;
+      if (!tracked || r.backing == null) continue;
+      const arr = (hist[r.asset] || []).filter((p) => p[0] >= nowT - HIST_KEEP);
+      const slot = Math.floor(nowT / HIST_STEP) * HIST_STEP;
+      if (!arr.length || Math.floor(arr.at(-1)[0] / HIST_STEP) * HIST_STEP < slot) arr.push([nowT, +r.backing.toFixed(5), r.stockShare == null ? null : +r.stockShare.toFixed(5), r.stockUsd, r.mcapUsd, r.vol24hUsd]);
+      hist[r.asset] = arr;
+    }
+    const historySince = Math.min(...Object.values(hist).flatMap((a) => a.length ? [a[0][0]] : [])) || nowT;
+    backing = { rows, history: hist, historySince: isFinite(historySince) ? historySince : nowT, historyStepHours: HIST_STEP / 3600,
+      poolsConsidered: top.length, poolsWithoutCensus: unknown, windowHours: swapShare?.perPoolHours ?? swapShare?.windowHours ?? null, at: Math.floor(Date.now() / 1000),
       method: "stock per pool from the position replay; asset price from the pool's last swap price times the stock's Chainlink price; market cap from the asset's own totalSupply; volume from the hook's swap event, buyback legs excluded" };
     log(`  backing per pair: ${rows.length} pair(s) from the ${top.length} LONG pools holding the most stock${unknown ? ` (${unknown} not in the census)` : ""}; top ${rows.slice(0, 3).map((r) => `${r.symbol}/${r.anchorSymbol} $${r.stockUsd.toLocaleString()} behind $${(r.mcapUsd || 0).toLocaleString()}`).join(", ")}, ${secs(t5)}`);
   }

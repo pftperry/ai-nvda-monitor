@@ -482,6 +482,10 @@ if (rwa && rwa.tokens?.length) {
       rwa.longTvl ? K.rows.reduce((s, r) => s + r.stockUsd, 0) <= rwa.longTvl.usd * 1.01 + 1000 : true,
       `$${K.rows.reduce((s, r) => s + r.stockUsd, 0).toLocaleString()} across rows vs $${(rwa.longTvl?.usd ?? 0).toLocaleString()} in all LONG pools`);
     warn("every backing pair is priced", K.rows.every((r) => r.mcapUsd > 0), `${K.rows.filter((r) => !(r.mcapUsd > 0)).map((r) => r.symbol).join(", ") || "all priced"}`);
+    const H = K.history || {};
+    check("backing history is ordered and sane per pair",
+      Object.values(H).every((a) => Array.isArray(a) && a.every((p, i) => Array.isArray(p) && p.length >= 6 && (i === 0 || p[0] > a[i - 1][0]) && p[1] >= 0 && (p[2] == null || (p[2] >= 0 && p[2] <= 1.05)) && p[3] >= 0 && p[4] > 0)),
+      `${Object.keys(H).length} pair(s), ${Object.values(H).reduce((s, a) => s + a.length, 0)} point(s) since ${K.historySince ? new Date(K.historySince * 1000).toISOString().slice(0, 10) : "—"}`);
     warn("every top pool is in the census", !K.poolsWithoutCensus, `${K.poolsWithoutCensus || 0} pool(s) without a census entry`);
   }
   if (rwa.series) {

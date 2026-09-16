@@ -125,7 +125,7 @@
     <div class="card">
       <h3>Real stock behind each LONG pair</h3>
       <div class="agenote" data-age="rwa" hidden></div>
-      <p class="sub">For the LONG pools holding the most tokenized stock: the stock inside the pair's pools against the token's market cap, that stock as a share of the whole tokenized supply, and the last day's volume. A pair that keeps trading and keeps piling up stock is the profile this page ranks.</p>
+      <p class="sub">For the LONG pools holding the most tokenized stock: the stock inside the pair's pools against the token's market cap, that stock as a share of the whole tokenized supply, the last day's trading, and each pair's backing against its own history. A pair that keeps trading and keeps piling up stock is the profile this page ranks.</p>
       <div class="controls" id="backingSort" role="group" aria-label="Sort">
         <span class="muted">Sort by</span>
         <div class="seg">
@@ -133,11 +133,26 @@
           <button data-k="stockUsd" aria-pressed="false">Stock in pools</button>
           <button data-k="stockShare" aria-pressed="false">Share of supply</button>
           <button data-k="vol24hUsd" aria-pressed="false">Volume</button>
+          <button data-k="turnover" aria-pressed="false">Turnover</button>
+        </div>
+      </div>
+      <div class="controls" id="backingTier" role="group" aria-label="Screen">
+        <span class="muted">Show</span>
+        <div class="seg">
+          <button data-t="all" aria-pressed="true">All above the floor</button>
+          <button data-t="venue" aria-pressed="false">Venue pairs</button>
+          <button data-t="challenger" aria-pressed="false">Challengers</button>
         </div>
       </div>
       <div id="backingKpis"></div>
       <div id="backingRows"></div>
       <div id="readBacking"></div>
+      <details class="method" id="backingMethod">
+        <summary>The screen: three gates and two tiers</summary>
+        <p><b>Venue pair:</b> the pool holds at least <b>10%</b> of its stock's whole tokenized supply, carries at least <b>2¢</b> of stock per dollar of market cap, and turns over between <b>1% and 50%</b> of its cap a day with a swap count that looks like people, not a loop. This is the stickiness mechanism itself: above 10% anyone who wants size in that stock on chain ends up trading through the pair.</p>
+        <p><b>Challenger:</b> at least <b>3%</b> of the stock's supply, at least <b>6¢</b> of stock per dollar of cap, turnover between <b>10% and 50%</b> with at least <b>100</b> swaps a day. Smaller caps with about twice the cushion, where the re-rating available is crossing into venue status, which AI, BONER and MEME each did.</p>
+        <p><b>Flags:</b> turnover above 100% a day is marked as a <b>loop</b> (machine volume; watch whether the stock stays when it fades); under 1% with fewer than 20 swaps is <b>parked</b>; under 3% of the stock's supply is <b>thin</b>. Turnover is the last day's user volume through the pair's pools over its market cap. "Own history" is where today's backing sits among the pair's own readings over the last thirty days (one point per four hours); it needs a week of points before it says anything. Nothing here is a recommendation: the screen sorts measured numbers, and the view on the underlying stock is yours.</p>
+      </details>
     </div>
   </section>
 
