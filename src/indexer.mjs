@@ -18,6 +18,7 @@ import { indexTreasury } from "./tasks/treasury.mjs";
 import { indexRwa } from "./tasks/rwa.mjs";
 import { indexPerps } from "./tasks/perps.mjs";
 import { indexStockSupply } from "./tasks/stocksupply.mjs";
+import { indexBackingBackfill } from "./tasks/backfill.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
@@ -508,6 +509,14 @@ if (!fast && !flag("no-launchpad")) {
         const nv = (rwa.tokens || []).find((t) => t.token === C.NVDA);
         rwa.nvdaSupply = await indexStockSupply(latest, tm, { store, deadline: Date.now() + opt("supply-budget", 180) * 1000, priceUsd: nv?.priceUsd ?? null, onChain: nv?.supply ?? null });
       } catch (e) { softFail("NVDA supply", e, "the previous supply block stays in place"); rwa.nvdaSupply = readData("rwa.json")?.nvdaSupply ?? null; }
+      /* Backing backfill: each tracked pair's daily price in its stock, pool inventory
+         and activity from its own Swap tape, sixty days back, cursor-resumed. */
+      if (rwa.backing?.rows?.length) {
+        try {
+          const tracked = rwa.backing.rows.filter((r) => r.mcapUsd >= 1e6 || r.stockUsd >= 1e5).slice(0, 24);
+          rwa.backing.backfill = await indexBackingBackfill(latest, tm, { store, pairs: tracked, deadline: Date.now() + opt("backfill-budget", deep ? 900 : 240) * 1000 });
+        } catch (e) { softFail("backing backfill", e, "the previous backfill stays in place"); rwa.backing.backfill = readData("rwa.json")?.backing?.backfill ?? null; }
+      }
       writeData("rwa.json", rwa);
     } catch (e) {
       softFail("stock capture", e, "the previous rwa.json stays in place");

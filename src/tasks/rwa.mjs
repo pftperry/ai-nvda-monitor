@@ -578,6 +578,7 @@ export async function indexRwa(latest, tm, opts = {}) {
       const stockSupply = supplyOf.get(main.token) || 0;
       rows.push({
         asset: a, symbol: m?.symbol || a.slice(0, 8), anchor: main.token, anchorSymbol: sym(main.token), pools: r.pools.length, poolId: main.id,
+        stockSide: main.side, stockDecimals: sdec, decimals: dec, createdBlock: census.get(main.id)?.block ?? null, stockSupply: stockSupply || null,
         stockUsd: Math.round(r.stockUsd), stockUnits: +anchorUnits.toFixed(4), stockShare: stockSupply > 0 ? anchorUnits / stockSupply : null,
         supply: +supply.toFixed(2), priceUsd, mcapUsd: mcapUsd == null ? null : Math.round(mcapUsd),
         backing: mcapUsd > 0 ? r.stockUsd / mcapUsd : null,
@@ -597,7 +598,7 @@ export async function indexRwa(latest, tm, opts = {}) {
       if (!tracked || r.backing == null) continue;
       const arr = (hist[r.asset] || []).filter((p) => p[0] >= nowT - HIST_KEEP);
       const slot = Math.floor(nowT / HIST_STEP) * HIST_STEP;
-      if (!arr.length || Math.floor(arr.at(-1)[0] / HIST_STEP) * HIST_STEP < slot) arr.push([nowT, +r.backing.toFixed(5), r.stockShare == null ? null : +r.stockShare.toFixed(5), r.stockUsd, r.mcapUsd, r.vol24hUsd]);
+      if (!arr.length || Math.floor(arr.at(-1)[0] / HIST_STEP) * HIST_STEP < slot) arr.push([nowT, +r.backing.toFixed(5), r.stockShare == null ? null : +r.stockShare.toFixed(5), r.stockUsd, r.mcapUsd, r.vol24hUsd, r.priceUsd == null ? null : +r.priceUsd.toPrecision(6), r.swaps24h || 0]);
       hist[r.asset] = arr;
     }
     const historySince = Math.min(...Object.values(hist).flatMap((a) => a.length ? [a[0][0]] : [])) || nowT;
