@@ -51,6 +51,7 @@ const pctOrMult = (x, d = 1) => (x == null || !isFinite(x) ? "—"
   : x > 9 ? `${(1 + x).toFixed(1)}×`
   : x < -0.9 ? `${(1 / (1 + x)).toFixed(1)}× lower`
   : pct(x, d));
+const pctSigned = (v, d = 2) => (v == null || !isFinite(v) ? "—" : `${v >= 0 ? "+" : "−"}${(100 * Math.abs(v)).toFixed(d)}%`);
 const sig = (x, n = 6) => (x == null || !isFinite(x) || x === 0 ? "—" : x.toPrecision(n).replace(/\.?0+$/, ""));
 const short = (a) => (a ? `${a.slice(0, 8)}…${a.slice(-6)}` : "—");
 /* Times render in Central explicitly rather than in the viewer's local zone.
@@ -761,6 +762,49 @@ function windowRows(hourly) {
   return hourly.filter((h) => h.t >= cut);
 }
 
+/* The biggest trades of the last 24 hours across the flagship pools, sized in AI and
+   in dollars, with the pool's price before and after each and the impact that one
+   swap caused. Dollar prices use the quote token's current dollar price (USDG 1,
+   NVDA from the price file); pools quoted in something else show impact only. */
+function renderBigTrades() {
+  const B = S.tape?.big, names = S.tape?.pools || [], host = $("#tBig");
+  if (!B?.trades?.length) { host.innerHTML = `<tr><td class="muted">No trade of ${(B?.minAi ?? 1000).toLocaleString()} AI or more in the last 24 hours.</td></tr>`; $("#bigKpis").innerHTML = ""; $("#bigNote").innerHTML = ""; return; }
+  const nvdaUsd = S.prices?.nvdaUsd || null, aiUsd = S.prices?.aiUsd || null;
+  const quoteUsd = (sym) => sym === "USDG" ? 1 : sym === "NVDA" ? nvdaUsd : null;
+  const rows = B.trades.map((r) => {
+    const q = quoteUsd(names[r.pool]);
+    const usd = q ? r.pair * q : aiUsd ? r.ai * aiUsd : null;
+    const impact = r.before > 0 && r.after > 0 ? r.after / r.before - 1 : null;
+    return { ...r, quote: names[r.pool] || "?", usd, impact, beforeUsd: q && r.before > 0 ? r.before * q : null, afterUsd: q && r.after > 0 ? r.after * q : null };
+  }).sort((a, b) => (b.usd ?? b.ai) - (a.usd ?? a.ai));
+  const buys = rows.filter((r) => r.buy), sells = rows.filter((r) => !r.buy);
+  const sum = (a) => a.reduce((s, r) => s + (r.usd || 0), 0);
+  const top = (a) => a[0];
+  const hourOf = (t) => Math.floor(t / 3600) * 3600;
+  /* the busiest hour by sold dollars, for the "a bunch of sells in one hour" question */
+  const byHour = new Map(); for (const r of sells) byHour.set(hourOf(r.t), (byHour.get(hourOf(r.t)) || 0) + (r.usd || 0));
+  const worstHour = [...byHour].sort((a, b) => b[1] - a[1])[0];
+  $("#bigKpis").innerHTML = `<div class="tiles four">
+    ${tile("Largest sell", sells.length ? `$${compact(top(sells).usd)}` : "—", sells.length ? `${compact(top(sells).ai)} AI on AI/${top(sells).quote} at ${tsFmt(top(sells).t)}, ${pctSigned(top(sells).impact)} on the pool` : "none over the floor", "bad")}
+    ${tile("Largest buy", buys.length ? `$${compact(top(buys).usd)}` : "—", buys.length ? `${compact(top(buys).ai)} AI on AI/${top(buys).quote} at ${tsFmt(top(buys).t)}, ${pctSigned(top(buys).impact)} on the pool` : "none over the floor")}
+    ${tile("Big sells vs big buys", `$${compact(sum(sells))} / $${compact(sum(buys))}`, `${sells.length} sells and ${buys.length} buys of 1,000 AI or more in the window`)}
+    ${tile("Heaviest selling hour", worstHour ? tsFmt(worstHour[0]).replace(/:\d\d/, ":00") : "—", worstHour ? `$${compact(worstHour[1])} of big sells landed in that hour` : "")}
+  </div>`;
+  const cell = (v, d = 4) => v == null ? "—" : `$${sig(v, d)}`;
+  const shortTx = (tx) => tx ? `<span class="mono muted" title="${tx}">${tx.slice(0, 8)}…</span>` : "";
+  const show = rows.slice(0, 40);
+  host.innerHTML = `<thead><tr><th class="r">#</th><th>Time</th><th>Pool</th><th>Side</th><th class="r">AI</th><th class="r">Size $</th><th class="r">Price before</th><th class="r">Price after</th><th class="r" title="the pool's price move caused by this swap alone">Impact</th><th>Tx</th></tr></thead><tbody>` +
+    show.map((r, i) => `<tr>
+      <td class="r muted mono">${i + 1}</td><td class="mono">${tsFmt(r.t)}</td><td>AI / ${r.quote}</td>
+      <td><span class="${r.buy ? "up" : "down"}">${r.buy ? "BUY" : "SELL"}</span></td>
+      <td class="r mono">${compact(r.ai)}</td><td class="r mono"><b>${r.usd == null ? "—" : "$" + compact(r.usd)}</b></td>
+      <td class="r mono">${r.beforeUsd != null ? cell(r.beforeUsd) : r.before > 0 ? sig(r.before, 5) + " " + r.quote : "—"}</td>
+      <td class="r mono">${r.afterUsd != null ? cell(r.afterUsd) : r.after > 0 ? sig(r.after, 5) + " " + r.quote : "—"}</td>
+      <td class="r mono ${r.impact == null ? "" : r.impact >= 0 ? "up" : "down"}">${pctSigned(r.impact)}</td>
+      <td>${shortTx(r.tx)}</td>
+    </tr>`).join("") + "</tbody>";
+  $("#bigNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Window from ${tsFmt(B.since)}. Impact is the pool's own price after the swap against before it, so it is the move that one trade caused, not the day's drift; a run of sells shows as a chain of small impacts in one hour. Dollar prices use USDG at $1 and NVDA at its current price; AI/ETH shows impact only. Size in dollars is the quote leg where priced, else AI at today's price.</p>`;
+}
 function renderFlow() {
   const p = currentPool();
   /* Merge the live tail so this chart does not stop at the last indexed hour.
@@ -838,6 +882,7 @@ function renderFlow() {
     { h: "Price Δ", f: (r) => `<span class="${r.priceChange >= 0 ? "up" : "down"}">${r.priceChange.toFixed(2)}%</span>` },
   ], p.rollups);
 
+  renderBigTrades();
   const names = S.tape?.pools || [];   // the tape is optional; a missing file must not blank the tab
   table($("#tTape"), [
     { h: "Time", f: (r) => tsFmt(r.t) },

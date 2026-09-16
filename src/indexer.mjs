@@ -214,7 +214,7 @@ if (fast) {
 }
 
 step(`Indexing buy/sell flow for ${selected.length} pools`);
-const flow = await indexFlow(selected, latest, tm, { prev });
+const flow = await indexFlow(selected, latest, tm, { prev, prevBig: priorFlow?.big || [] });
 
 /* Routing is now incremental: a transaction sits in one day, so only days the new
    scan touches are recomputed and the rest of the daily series carries forward.
@@ -318,7 +318,7 @@ writeData("meta.json", {
   buildSeconds: Math.round((Date.now() - t0) / 1000),
 });
 if (!fast) writeData("pools.json", { updatedAt: now, pools: active.slice(0, 250) });
-writeData("flow.json", { updatedAt: now, windows, pools: flowOut });
+writeData("flow.json", { updatedAt: now, windows, pools: flowOut, big: flow.big });
 writeData("burns.json", burns);
 
 /* The platform's second fee engine (buyback contract, AI accumulator, revenue
@@ -332,7 +332,8 @@ try {
 }
 // cursor is what the next fast run appends from; windowFrom is where this scan began.
 if (routing) writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, cursor: latest, ...routing });
-writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape });
+writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape,
+  big: { since: flow.bigSince, minAi: 1000, trades: flow.big, method: "every swap of 1,000 AI or more in the four flagship pools over the last 24 hours, with the pool's price before and after it (price impact in the pool's own quote, which is the AI/USD impact with the quote token held still); merged across runs so a two-hour refresh still shows the whole day" } });
 
 /* NVDA in dollars, so the vault and AI's beta to its anchor can be stated in
    money. Two or three small requests; the venues are cached after the first run. */

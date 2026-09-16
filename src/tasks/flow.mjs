@@ -17,6 +17,13 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
 
   const perPool = [];
   const tape = [];
+  /* The biggest trades of the last day, with the pool's price before and after each,
+     so the Tape tab can show what moved the price. Candidates above BIG_MIN AI from
+     this run's new blocks are merged with the previous run's list (a fast refresh
+     only sees a couple of hours), pruned to the window, and the largest kept. */
+  const BIG_MIN = opts.bigMinAi ?? 1000, BIG_WINDOW = opts.bigWindow ?? 86400, BIG_KEEP = opts.bigKeep ?? 150;
+  const nowT = tm.at(latest) ?? Math.floor(Date.now() / 1000);
+  const big = (opts.prevBig || []).filter((b) => b.t >= nowT - BIG_WINDOW && b.pool < pools.length && pools[b.pool].poolId === b.poolId);
 
   for (let idx = 0; idx < pools.length; idx++) {
     const p = pools[idx];
@@ -39,6 +46,27 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
       lastPrice = old.lastPrice ?? null;
     }
 
+    /* First run with the big-trade list (or a list that was lost): a resumed pool has
+       already folded the day's swaps into hourly buckets and will not see them again,
+       so the day is rescanned once for this pool, for the large trades only. Eight
+       seconds for the four flagships, measured. */
+    const dayStart = tm.blockAt(nowT - BIG_WINDOW) ?? null;
+    if (idx < 4 && !(opts.prevBig || []).length && dayStart != null && resumeFrom > dayStart + 1) {
+      let before = null;
+      await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.SWAP, p.poolId] }, dayStart, resumeFrom - 1, { chunk: 1_000_000, onLogs: (ls) => {
+        for (const l of ls) {
+          const s = decodeSwap(l);
+          const aiRaw = p.aiIsCurrency0 ? s.amount0 : s.amount1, pairRaw = p.aiIsCurrency0 ? s.amount1 : s.amount0;
+          const ai = fmtUnits(aiRaw, 18), pair = fmtUnits(pairRaw, p.pairDecimals ?? 18);
+          const d0 = p.aiIsCurrency0 ? 18 : (p.pairDecimals ?? 18), d1 = p.aiIsCurrency0 ? (p.pairDecimals ?? 18) : 18;
+          const bounded = atPriceBound(s.sqrtPriceX96), raw = bounded ? 0 : priceFromSqrt(s.sqrtPriceX96, d0, d1);
+          const price = bounded ? 0 : (p.aiIsCurrency0 ? raw : (raw ? 1 / raw : 0));
+          const t = tm.at(s.block);
+          if (Math.abs(ai) >= BIG_MIN && t != null && t >= nowT - BIG_WINDOW) big.push({ t, pool: idx, poolId: p.poolId, buy: aiRaw > 0n, ai: r6(Math.abs(ai)), pair: r6(Math.abs(pair)), before: r6(before ?? 0), after: r6(price), tx: s.tx, block: s.block, logIndex: s.logIndex });
+          if (price > 0) before = price;
+        }
+      } });
+    }
     const logs = resumeFrom > latest ? [] : await getLogsRange(
       { address: POOL_MANAGER, topics: [TOPICS.SWAP, p.poolId] },
       /* 1M blocks is the measured sweet spot for a single pool: it returns ~7,900
@@ -79,6 +107,10 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
         if (price > 0) row.close = price;   // a boundary print leaves the close alone
         row.feePips = s.fee;
       }
+      const t = tm.at(s.block);
+      if (Math.abs(ai) >= BIG_MIN && t != null && t >= nowT - BIG_WINDOW && idx < 4) {
+        big.push({ t, pool: idx, poolId: p.poolId, buy: isBuy, ai: r6(Math.abs(ai)), pair: r6(Math.abs(pair)), before: r6(lastPrice ?? 0), after: r6(price), tx: s.tx, block: s.block, logIndex: s.logIndex });
+      }
       if (price > 0) lastPrice = price;
       lastLiq = s.liquidity; lastFee = s.fee;
 
@@ -117,7 +149,11 @@ export async function indexFlow(pools, latest, tm, opts = {}) {
   }
 
   tape.sort((a, b) => b.t - a.t);
-  return { perPool, tape: tape.slice(0, 400) };
+  /* de-duplicate (a rerun over the same blocks would list a trade twice), keep the largest */
+  const seen = new Set();
+  const bigOut = big.filter((b) => { const k = b.tx + ":" + b.logIndex; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => b.ai - a.ai).slice(0, BIG_KEEP).sort((a, b) => b.t - a.t);
+  return { perPool, tape: tape.slice(0, 400), big: bigOut, bigSince: nowT - BIG_WINDOW };
 }
 
 /**
