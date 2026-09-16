@@ -168,6 +168,56 @@
         <p><b>In dollars (retest of 16 Sep 2026):</b> the tests above were first run with prices in shares of the stock, which isolates the pool but is not what a holder banks. With each stock's daily close from its Chainlink feed (or its USDG pools) every pair-day now has a dollar price, and the tests were rerun in USDG. Same answer, sharper. Standing ranked the next week backwards in both samples (−0.34 in the launch cohort, −0.20 among survivors), and its top band was the worst place to be: pairs scoring 70+ on standing were up the following week 23% of the time in the cohort and 38% among survivors, with a median week of −8% and −19%, against 66% and 55–71% for the lower bands. The tape score ran +0.15 and +0.10 at one week and +0.47 and +0.06 at four, with its 75+ band up 67% (cohort) and 65% (survivors) of the following weeks. Term by term in dollars: a swap surge 61% up against 40% (cohort); steady accumulation 64% against 41% for shedding; a price up 0–30% on the week 58% against 29% for one already up 30%+. Cushion split the samples again, 10¢+ the best band among survivors (71% up, median +44%) and the worst in the cohort (35%), so it keeps its small weight. Dollar prices are mid prices; a round trip through the stock costs fees and slippage the tape cannot see.</p>
         <p><b>Flags:</b> turnover above 100% a day is <b>bot volume</b> (watch whether the stock stays when it fades); under 1% with fewer than 20 swaps is <b>no trading</b>; under 3% of the stock's supply is <b>little stock</b>. <b>Own 30d</b> is where today's backing sits among the pair's own readings over the last thirty days (one point per four hours); it needs a week of points before it says anything. Everything is measured on chain each standard run; the view on the underlying stock is yours.</p>
       </details>
+      <div class="card" id="backingGlossary">
+        <h3>What the words mean</h3>
+        <p class="sub">Every term on this tab, in plain language. "The stock" is the tokenized share the pair trades against (NVDA for AI, HIMS for BONER); "the pool" is the pair's main LONG pool, which holds the meme token on one side and the stock on the other.</p>
+        <h4>The two scores</h4>
+        <dl class="gloss">
+          <div class="g"><dt>Tape score</dt><dd>Points from a base of 50 for the shapes that came before better weeks in the backtest, in dollars. It is the forward-looking one. The Signals column shows which terms a pair is scoring on.</dd></div>
+          <div class="g"><dt>Standing</dt><dd>The original thesis profile: how much of its stock the pair holds, how much stock backs each dollar of its market cap, and whether it trades like a market, ranked against the other rows. It describes what a pair is. In the backtest it ranked the next weeks backwards, so it sits beside the tape score rather than inside it.</dd></div>
+        </dl>
+        <h4>Signals</h4>
+        <dl class="gloss">
+          <div class="g"><dt>Swap surge</dt><dd>Swaps in the last seven traded days were more than 70% above the seven before. Activity is picking up.</dd></div>
+          <div class="g"><dt>Swaps collapsing</dt><dd>Yesterday's swap count was less than half of three traded days earlier.</dd></div>
+          <div class="g"><dt>Accumulating</dt><dd>The pool holds between 0% and 50% more of the stock than seven traded days ago. Buyers of the meme token pay in stock, so the pile grows when there is net buying.</dd></div>
+          <div class="g"><dt>Shedding stock</dt><dd>The pool holds more than 10% less of the stock than seven traded days ago. Sellers of the meme token take stock out, so a week of net selling drains the pile, and the backing the standing score is built from is being withdrawn. The heaviest penalty, because it trailed in both samples.</dd></div>
+          <div class="g"><dt>Stock jumped</dt><dd>The pile grew more than 50% in seven traded days. It went well among the pairs that survived and badly among launches that did not, so it scores nothing either way.</dd></div>
+          <div class="g"><dt>Steady price</dt><dd>The pair's dollar price is up between 0% and 30% over seven traded days.</dd></div>
+          <div class="g"><dt>Extended</dt><dd>The pair's dollar price is up more than 30% over seven traded days. Buying after that run did worse than buying a steady one.</dd></div>
+          <div class="g"><dt>5¢+ cushion</dt><dd>At least five cents of stock in the pool for every dollar of the pair's market cap.</dd></div>
+          <div class="g"><dt>Trades like a market</dt><dd>On the last complete day, the stock traded through the pool was between 1% and 50% of the pair's market cap. Below that nobody is trading; above it the volume is machines.</dd></div>
+        </dl>
+        <h4>Columns</h4>
+        <dl class="gloss">
+          <div class="g"><dt>Swaps, wk/wk</dt><dd>Swaps in the last seven traded days against the seven before.</dd></div>
+          <div class="g"><dt>Stock held, 7d</dt><dd>The stock in the pool now against seven traded days ago. Measured from the pool's own swap tape, so liquidity providers adding or removing positions move it too.</dd></div>
+          <div class="g"><dt>Price, 7d / 28d</dt><dd>The pair's dollar price against 7 and 28 traded days ago. Dollar price is the pair's price in its stock times the stock's close that day. It is a mid price: selling for USDG goes through the stock, with a fee and slippage on each hop.</dd></div>
+          <div class="g"><dt>Market cap</dt><dd>The meme token's own supply at its last pool price, in dollars.</dd></div>
+          <div class="g"><dt>Stock in pools</dt><dd>The dollar value of the stock the pair's pools hold, from the position replay.</dd></div>
+          <div class="g"><dt>Stock per $1 cap</dt><dd>Cents of stock in the pool behind each dollar of market cap. The cushion.</dd></div>
+          <div class="g"><dt>Share of stock</dt><dd>The pair's stock holdings as a share of that stock's whole tokenized supply on the chain. Above 10%, anyone who wants size in that stock on chain ends up trading through the pair.</dd></div>
+          <div class="g"><dt>Turnover</dt><dd>Stock traded through the pool on the last complete day, over the pair's market cap.</dd></div>
+          <div class="g"><dt>Own 30d</dt><dd>Where today's cushion sits among the pair's own readings over the last thirty days, one point per four hours. Needs a week of points before it shows.</dd></div>
+        </dl>
+        <h4>Labels</h4>
+        <dl class="gloss">
+          <div class="g"><dt>Holds 10%+ of its stock</dt><dd>At least a tenth of the stock's tokenized supply, at least 2¢ of cushion, turnover between 1% and 50%.</dd></div>
+          <div class="g"><dt>Well-backed, active</dt><dd>At least 3% of the stock's supply, at least 6¢ of cushion, turnover between 10% and 50%, at least 100 swaps a day.</dd></div>
+          <div class="g"><dt>Bot volume</dt><dd>Turnover above 100% of market cap in a day.</dd></div>
+          <div class="g"><dt>No trading</dt><dd>Turnover under 1% with fewer than 20 swaps.</dd></div>
+          <div class="g"><dt>Little stock</dt><dd>Under 3% of the stock's tokenized supply.</dd></div>
+        </dl>
+        <h4>The test</h4>
+        <dl class="gloss">
+          <div class="g"><dt>Pair-day</dt><dd>One pair on one complete UTC day with at least one swap. The unit the backtest counts.</dd></div>
+          <div class="g"><dt>Launch cohort</dt><dd>Pairs launched at least thirty days ago that had 50 or more swaps in their first week, kept whatever became of them. The sample with losers in it.</dd></div>
+          <div class="g"><dt>Survivors</dt><dd>The pairs on this tab today. By definition the launches that worked, so anything that looks good in this sample alone may just be survivorship.</dd></div>
+          <div class="g"><dt>Top band</dt><dd>Tape score 75 or better; standing 70 or better. The retest asks how often the following week was up for pairs in that band against all pairs.</dd></div>
+          <div class="g"><dt>Rank correlation</dt><dd>From −1 to +1: whether a higher score went with a higher return over the following days, without assuming a straight line. Zero is no relationship.</dd></div>
+          <div class="g"><dt>Out of sample</dt><dd>Pair-days dated after 16 September 2026, when the tape score's terms were fixed. The score never saw these weeks, so this is the only figure that can prove or break it.</dd></div>
+        </dl>
+      </div>
     </div>
   </section>
 
