@@ -3426,42 +3426,12 @@ function renderCaptureStrip(R, D) {
       <div class="sn">${n}</div></div>`).join("")}</div>`;
 }
 
-/* LONG's own published figures next to this site's measurement of the same thing.
-   The quoted numbers are what LONG or its founder posted, with the date; the
-   measured numbers come from the cards on this tab. Where the two are built
-   differently the note says how. */
-function renderClaims(R) {
-  const host = $("#rwaClaims");
-  if (!R?.tokens?.length) { host.innerHTML = `<p class="muted">Fills after the next standard run.</p>`; return; }
-  const Z = R.series, ZT = Z?.totals, L = R.longTvl, N = R.nvdaSupply, P = R.perps, T = R.totals, last = Z?.days?.at(-1);
-  const rows = [];
-  if (ZT?.longAllVolUsd) rows.push({ what: "Stock volume through LONG, all time", said: 1.4e9, saidTxt: "$1.4B", src: "LONG, 14 Sep", ours: ZT.longAllVolUsd, fmt: (v) => `$${compact(v)}`,
-    note: "same event on both sides (the hook's per-swap record, buyback legs excluded); the gap is the complete UTC days this site waits for" });
-  if (last?.longInvUsd && L?.usd) rows.push({ what: "Tokenized stock sitting in LONG pools", said: last.longInvUsd, saidTxt: `$${compact(last.longInvUsd)}`, src: "LONG's dashboard method", ours: L.usd, fmt: (v) => `$${compact(v)}`,
-    note: "theirs sums swap flow into the pools and never subtracts the fee legs the hook hands out; this site replays the positions and reports what is there now" });
-  if (T?.longShare != null) rows.push({ what: "Share of all stock TVL on the chain", said: 0.10, saidTxt: "10%", src: "founder, 31 Aug", ours: T.longShare, fmt: (v) => pctLevel(v, 1),
-    note: "LONG pools plus the community vault over every stock token on the chain, at today's prices" });
-  if (N?.multiple) rows.push({ what: "Tokenized NVDA supply since LONG launched", said: 5, saidTxt: "5×", src: "founder, 5 Aug", ours: N.multiple, fmt: (v) => `${v.toFixed(1)}×`,
-    note: `from NVDA's own mints and redemptions; it was 3.2× on the day he said it and is ${N.multiple.toFixed(0)}× now` });
-  if (P?.lighter?.netUsd) rows.push({ what: "USDG on Lighter through LongX", said: 2e6, saidTxt: "$2M", src: "LONG, 14 Sep", ours: P.lighter.netUsd, fmt: (v) => `$${compact(v)}`,
-    note: "vault deposits into Lighter's bridge less what came back" });
-  if (!rows.length) { host.innerHTML = `<p class="muted">Fills after the next standard run.</p>`; return; }
-  host.innerHTML = `<div class="claims">${rows.map((r) => { const m = Math.max(r.said, r.ours) || 1; return `<div class="crow">
-      <div class="cw">${r.what}</div>
-      <div class="cbars">
-        <div class="cb"><span class="ck">they say</span><div class="cbar said"><i style="width:${(100 * r.said / m).toFixed(1)}%"></i></div><span class="cv">${r.saidTxt}</span><span class="cs">${r.src}</span></div>
-        <div class="cb"><span class="ck">chain says</span><div class="cbar ours"><i style="width:${(100 * r.ours / m).toFixed(1)}%"></i></div><span class="cv">${r.fmt(r.ours)}</span></div>
-      </div>
-      <div class="cn">${r.note}</div></div>`; }).join("")}</div>`;
-}
-
 function renderRwa() {
   const R = S.rwa, D = S.depth;
   const px = marketState().price || 0;
   const pending = `<p class="muted">Built on the slow path; this card fills after the next standard run.</p>`;
   try { renderRwaKpis(R, D, pending); } catch (e) { console.error("renderRwaKpis", e); }
   try { renderCaptureStrip(R, D); } catch (e) { console.error("renderCaptureStrip", e); }
-  try { renderClaims(R); } catch (e) { console.error("renderClaims", e); }
   try { renderSince(R, pending); } catch (e) { console.error("renderSince", e); }
   try { renderPerps(R, pending); } catch (e) { console.error("renderPerps", e); }
 
@@ -4425,16 +4395,7 @@ function renderMethod() {
       anything else with code is shown as unattributed. USDG on Lighter via LongX is the vaults' deposits into the bridge
       less what came back; daily deposits and withdrawals are share mints and burns valued at the shares' spot-pool prices
       (the vaults publish no NAV on chain, so Dune prices them the same way). Pools quoting a vault share are catalogued
-      like stock pools and bucketed apart in both swap streams, so no perps volume reaches any stock figure.
-      <b>What the developer has said publicly</b> (read from the founder's X account, 14 Jul–15 Sep 2026, posts and
-      replies; his descriptions, this site's measurements): a 0.1% creator fee and 25–50% of protocol fees recycled
-      into liquidity in daily cycles (25–26 Jul), which is the hook's re-added leg above; community mode sends 80% of NVDA
-      fees to the vault and splits AI fees half burn, half vault (31 Jul), which is the splitter's 80/20 and 40/40/20;
-      since mid-September AI-paired pools are used as the AI "sink" instead of direct buybacks (13 Sep), which is why leg A on
-      AI-paired pools lands in the accumulation wallet; the stock reserve is meant to be put to work as LP and yield
-      (8 Aug, 6 Sep), which the revenue wallet has not yet done; Robinhood pauses stock-token minting and redemption over
-      weekends (30–31 Aug), so weekend stock activity is DEX-only and weekend share readings run high; and the team's
-      "$1.4B" counts stock legs only, with LongX perps added to its dashboard separately from 14 Sep, the same split used here.</p>
+      like stock pools and bucketed apart in both swap streams, so no perps volume reaches any stock figure.</p>
 
       <p><b style="color:var(--text-primary)">Cross-checks against LONG's own Dune dashboard</b> (@natan_benish2001, read 14 Sep 2026;
       it identifies LONG pools from the factories' <code>LaunchCreated</code> events and follows pools that graduate to v2/v3,
