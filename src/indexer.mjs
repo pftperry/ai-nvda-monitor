@@ -518,8 +518,9 @@ if (!fast && !flag("no-launchpad")) {
              ago, whatever became of them, so the test has losers as well as winners. */
           const stockRows = new Map((rwa.tokens || []).map((t) => [t.token, t]));
           const trackedPools = new Set(tracked.map((r) => r.poolId));
-          const cohort = (await cohortPairs(census.pools, stockRows, latest, tm, { count: 40, minAgeDays: 30 })).filter((c) => !trackedPools.has(c.poolId));
-          rwa.backing.backfill = await indexBackingBackfill(latest, tm, { store, pairs: [...tracked, ...cohort], deadline: Date.now() + opt("backfill-budget", deep ? 900 : 240) * 1000 });
+          const bfBudget = opt("backfill-budget", deep ? 900 : 240) * 1000, bfStart = Date.now();
+          const cohort = (await cohortPairs(census.pools, stockRows, latest, tm, { store, count: 40, minAgeDays: 30, minWeekSwaps: 50, probe: 600, deadline: bfStart + Math.round(bfBudget * 0.3) })).filter((c) => !trackedPools.has(c.poolId));
+          rwa.backing.backfill = await indexBackingBackfill(latest, tm, { store, pairs: [...tracked, ...cohort], deadline: bfStart + bfBudget });
         } catch (e) { softFail("backing backfill", e, "the previous backfill stays in place"); rwa.backing.backfill = readData("rwa.json")?.backing?.backfill ?? null; }
       }
       writeData("rwa.json", rwa);

@@ -35,10 +35,33 @@ const DAY = 86400, SUPPLY_SEL = "0x18160ddd";
    choice. `pools` is the census (id, c0, c1, block); `stocks` maps a stock token to
    its row (decimals, supply, symbol). */
 export async function cohortPairs(pools, stocks, latest, tm, opts = {}) {
-  const count = opts.count ?? 40, minAgeDays = opts.minAgeDays ?? 30;
+  const count = opts.count ?? 40, minAgeDays = opts.minAgeDays ?? 30, minWeekSwaps = opts.minWeekSwaps ?? 50, probe = opts.probe ?? 400;
+  const store = opts.store, deadline = opts.deadline || Date.now() + 120_000, log = opts.log || console.log;
   const cutoff = tm.blockAt(Math.floor(Date.now() / 1000) - minAgeDays * DAY) ?? latest;
-  const cands = pools.filter((p) => p.block && p.block >= LONG_GENESIS_BLOCK && p.block <= cutoff && (stocks.has(p.c0) !== stocks.has(p.c1)))
-    .map((p) => ({ ...p, key: parseInt(p.id.slice(-8), 16) })).sort((a, b) => a.key - b.key || a.block - b.block).slice(0, count);
+  const ordered = pools.filter((p) => p.block && p.block >= LONG_GENESIS_BLOCK && p.block <= cutoff && (stocks.has(p.c0) !== stocks.has(p.c1)))
+    .map((p) => ({ ...p, key: parseInt(p.id.slice(-8), 16) })).sort((a, b) => a.key - b.key || a.block - b.block).slice(0, probe);
+  /* Most launches never trade, so a sample of launches is a sample of dead pools.
+     Each candidate's first seven days are counted (one filtered query on its own
+     Swap events, nothing later than day seven is looked at) and only pools that
+     reached `minWeekSwaps` are kept: losers that at least started. Counts are
+     remembered in the store so the probe does not repeat. */
+  const weekBlocks = Math.round(7 * DAY / 0.1);   // an upper bound at 100ms blocks; the day map caps it below
+  const sel = (store && store.get("backingCohort")) || { v: 1, week: {} };
+  let kept = [], probed = 0;
+  for (const p of ordered) {
+    if (kept.length >= count) break;
+    if (sel.week[p.id] == null) {
+      if (Date.now() >= deadline) break;
+      const to = Math.min(latest, (tm.blockAt((tm.at(p.block) ?? 0) + 7 * DAY) ?? p.block + weekBlocks));
+      const r = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.SWAP, p.id] }, p.block, to, { chunk: 800_000, deadline });
+      if (r.truncated) break;
+      sel.week[p.id] = r.length; probed++;
+    }
+    if (sel.week[p.id] >= minWeekSwaps) kept.push(p);
+  }
+  if (store) store.set("backingCohort", sel);
+  log(`  cohort: ${kept.length} pair(s) with ${minWeekSwaps}+ swaps in their first week, from ${Object.keys(sel.week).length} launches probed (${probed} this run) of ${ordered.length} sampled`);
+  const cands = kept;
   if (!cands.length) return [];
   const assets = cands.map((p) => (stocks.has(p.c0) ? p.c1 : p.c0));
   const meta = await resolveTokens(assets);
