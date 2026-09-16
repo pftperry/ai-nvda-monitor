@@ -204,6 +204,7 @@ footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border
 .dials.one { grid-template-columns: 1fr; }
 /* Platform-view tiles reuse the cockpit tile; a hero variant carries the headline. */
 .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 6px 0 12px; }
+.tiles.four { grid-template-columns: repeat(4, 1fr); }
 .tiles.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .ctile.hero .val { font-size: 26px; color: var(--buy); }
 .ctile .val.warn { color: var(--warning); }

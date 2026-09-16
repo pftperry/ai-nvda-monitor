@@ -3509,6 +3509,22 @@ function backingScore(r) {
   if (r.turnover != null && r.turnover >= 0.01 && r.turnover <= 0.5) { s += 5; why.push({ k: "up", l: "trades like a market" }); }
   return { score: Math.max(0, Math.min(100, s)), why };
 }
+/* Standing, 0–100: the thesis profile as percentile ranks within the visible rows,
+   share of stock ×3, stock per dollar of cap ×2, turnover inside 1%–50% ×2, swaps ×1,
+   stock in pools ×1. It describes where a pair sits in the stickiness thesis (the
+   venues score highest). It is not a return forecast: on the tape it ranked the next
+   one to four weeks backwards in both samples, so it sits beside the score, not in it. */
+function turnoverFit(t) {
+  if (t == null) return null;
+  if (t >= 0.01 && t <= 0.5) return 1;
+  if (t < 0.01) return t / 0.01;
+  if (t < 1) return Math.max(0, (1 - t) / 0.5);
+  return 0;
+}
+function standingScores(rows) {
+  const c = (k) => rows.map((r) => r[k]);
+  for (const r of rows) r.standing = Math.round(100 * (3 * (pctRank(c("stockShare"), r.stockShare) ?? 0) + 2 * (pctRank(c("backing"), r.backing) ?? 0) + 2 * (turnoverFit(r.turnover) ?? 0.5) + (pctRank(c("swaps24h"), r.swaps24h) ?? 0) + (pctRank(c("stockUsd"), r.stockUsd) ?? 0)) / 9);
+}
 /* Percentile of a value within a list (0 = lowest, 1 = highest); shading only. */
 function pctRank(vals, v) {
   const xs = vals.filter((x) => x != null && isFinite(x));
@@ -3534,17 +3550,19 @@ function renderBacking() {
   });
   const major = all.filter((r) => r.mcapUsd >= BACKING_MIN_CAP || r.stockUsd >= BACKING_MIN_STOCK);
   let rows = (backingAll ? all : major).slice();
+  standingScores(rows);
   if (backingTier !== "all") rows = rows.filter((r) => r.tier.k === backingTier);
   const key = backingSort;
   rows.sort((a, b) => (b[key] ?? -1e9) - (a[key] ?? -1e9) || b.score - a.score || (b.dU7 ?? -9) - (a.dU7 ?? -9));
-  const ai = all.find((r) => r.symbol === "AI"), top = rows[0];
+  const ai = all.find((r) => r.symbol === "AI"), top = rows[0], topStanding = rows.slice().sort((a, b) => b.standing - a.standing)[0];
   const venues = major.filter((r) => r.tier.k === "venue"), chal = major.filter((r) => r.tier.k === "challenger");
   const histDays = B.historySince ? Math.max(0, (Date.now() / 1000 - B.historySince) / 86400) : 0;
   const pc = (v, d = 0) => v == null ? "—" : `${v >= 0 ? "+" : "−"}${(100 * Math.abs(v)).toFixed(d)}%`;
   const whyHtml = (r) => r.why.length ? r.why.map((w) => `<span class="sig ${w.k}">${w.l}</span>`).join("") : `<span class="muted">${r.tradedDays < 8 ? `${r.tradedDays} traded day${r.tradedDays === 1 ? "" : "s"}, too young` : "no signal"}</span>`;
   const accum = major.filter((r) => r.why.some((w) => w.l === "accumulating")), shedding = major.filter((r) => r.why.some((w) => w.l === "shedding stock"));
-  $("#backingKpis").innerHTML = `<div class="tiles three">
-    ${top ? tile("Top of the screen", `${top.symbol} / ${top.anchorSymbol}`, `score ${top.score}: ${top.why.map((w) => w.l).join(", ") || "base only"}${ai && ai !== top ? ` · AI scores ${ai.score}` : ""}`, "", "hero") : ""}
+  $("#backingKpis").innerHTML = `<div class="tiles four">
+    ${top ? tile("Top tape score", `${top.symbol} / ${top.anchorSymbol}`, `${top.score}: ${top.why.map((w) => w.l).join(", ") || "base only"}${ai && ai !== top ? ` · AI ${ai.score}` : ""}`, "", "hero") : ""}
+    ${topStanding ? tile("Highest standing", `${topStanding.symbol} / ${topStanding.anchorSymbol}`, `${topStanding.standing}: ${pctLevel(topStanding.stockShare, 0)} of all ${topStanding.anchorSymbol}, ${(100 * topStanding.backing).toFixed(1)}¢ per $1 of cap · the thesis profile, not a forecast`) : ""}
     ${tile("Accumulating stock", accum.length, accum.length ? accum.map((r) => r.symbol).join(", ") : "no pair added 0–50% to its stock over the last seven traded days")}
     ${tile("Shedding stock", shedding.length, shedding.length ? shedding.map((r) => r.symbol).join(", ") : "no pair lost more than a tenth of its stock over seven traded days", shedding.length ? "bad" : "")}
   </div>`;
@@ -3556,13 +3574,14 @@ function renderBacking() {
   const th = (k, label, cls = "", title = "") => `<th class="${cls}${backingSort === k ? " on" : ""}" data-k="${k}" title="${title}">${label}</th>`;
   const q = (k, v) => tint(pctRank(col(k), v));
   host.innerHTML = `<thead><tr>
-      <th class="r">#</th><th>Pair</th>${th("score", "Score", "r", "points from a base of 50, see the definitions below")}<th>Signals</th>${th("swWk", "Swaps, wk/wk", "r", "swaps in the last seven traded days against the seven before")}${th("dU7", "Stock held, 7d", "r", "the pool's stock level against seven traded days earlier")}${th("pr7", `Price in stock, 7d`, "r", "the pair's price in its stock against seven traded days earlier")}${th("mcapUsd", "Market cap", "r")}${th("stockUsd", "Stock in pools", "r")}${th("backing", "Stock per $1 cap", "r", "cents of stock behind each dollar of market cap")}${th("stockShare", "Share of stock", "r", "share of the stock's whole tokenized supply held in the pair")}${th("turnover", "Turnover", "r", "last complete day's stock traded over market cap; 1% to 50% reads as a market")}<th>Own 30d</th>
+      <th class="r">#</th><th>Pair</th>${th("score", "Tape score", "r", "points from a base of 50 for the shapes that led price in both samples, see the definitions below")}<th>Signals</th>${th("standing", "Standing", "r", "the thesis profile as percentile ranks: share ×3, cushion ×2, turnover fit ×2, swaps ×1, stock ×1; describes the pair, does not forecast it")}${th("swWk", "Swaps, wk/wk", "r", "swaps in the last seven traded days against the seven before")}${th("dU7", "Stock held, 7d", "r", "the pool's stock level against seven traded days earlier")}${th("pr7", `Price in stock, 7d`, "r", "the pair's price in its stock against seven traded days earlier")}${th("mcapUsd", "Market cap", "r")}${th("stockUsd", "Stock in pools", "r")}${th("backing", "Stock per $1 cap", "r", "cents of stock behind each dollar of market cap")}${th("stockShare", "Share of stock", "r", "share of the stock's whole tokenized supply held in the pair")}${th("turnover", "Turnover", "r", "last complete day's stock traded over market cap; 1% to 50% reads as a market")}<th>Own 30d</th>
     </tr></thead><tbody>` +
     rows.map((r, i) => `<tr>
       <td class="r muted mono">${i + 1}</td>
       <td class="pair"><b>${r.symbol}</b> <span class="muted">on ${r.anchorSymbol}</span>${r.pools > 1 ? ` <span class="muted">· ${r.pools} pools</span>` : ""}${r.tier.l ? ` <span class="badge tier ${r.tier.k}">${r.tier.l}</span>` : ""}</td>
       <td class="r mono score" style="${q("score", r.score)}"><b>${r.score}</b></td>
       <td class="sigs">${whyHtml(r)}</td>
+      <td class="r mono" style="${q("standing", r.standing)}">${r.standing}</td>
       <td class="r mono" style="${q("swWk", r.swWk)}">${pc(r.swWk)}</td>
       <td class="r mono" style="${q("dU7", r.dU7)}">${pc(r.dU7, Math.abs(r.dU7 ?? 0) < 0.1 ? 1 : 0)}</td>
       <td class="r mono" style="${q("pr7", r.pr7)}">${pc(r.pr7)}</td>
@@ -3584,7 +3603,7 @@ function renderBacking() {
      ${venues.length ? `<b>${venues.map((r) => r.symbol).join(", ")}</b> hold over a tenth of their stock's tokenized supply.` : ""}
      ${byShare.length ? `The largest holders of their stock's tokenized supply are ${byShare.map((r) => `<b>${r.symbol}</b> (${pctLevel(r.stockShare, 0)} of all ${r.anchorSymbol})`).join(" and ")}; share carries no score weight because a higher share preceded weaker weeks in every cut of the test.` : ""}
      ${ai ? `AI holds the most stock in absolute terms, <b>$${compact(ai.stockUsd)}</b> of NVDA, and <b>${cents(ai.backing)}</b> per dollar of its cap.` : ""}
-     <span class="muted">Score is points from 50 (definitions below); shading is percentile rank among the rows shown, one hue, for reading only. Trend columns come from each pool's own daily swap tape, complete UTC days, traded days only. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; turnover is the last complete day's. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
+     <span class="muted">Tape score is points from 50 and Standing is the thesis profile as percentile ranks (definitions below); shading is percentile rank among the rows shown, one hue, for reading only. Trend columns come from each pool's own daily swap tape, complete UTC days, traded days only. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; turnover is the last complete day's. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
   const bind = (sel, attr, set) => { const seg = $(sel); if (seg.dataset.bound) return; seg.dataset.bound = "1";
     seg.addEventListener("click", (ev) => { const b = ev.target.closest(`button[${attr}]`); if (!b) return; set(b.getAttribute(attr)); for (const o of seg.querySelectorAll("button")) o.setAttribute("aria-pressed", o === b ? "true" : "false"); renderBacking(); }); };
   bind("#backingSort", "data-k", (v) => { backingSort = v; });
