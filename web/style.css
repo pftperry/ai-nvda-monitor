@@ -339,3 +339,30 @@ footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border
 @media (min-width: 621px) and (max-width: 980px) {
   .cockpit { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* RWA: LONG's share of the chain, one bar per measure */
+.strip { display: grid; gap: 7px; margin: 4px 0 12px; }
+.srow { display: grid; grid-template-columns: 150px 1fr 56px; grid-template-areas: "l b v" "n n n"; column-gap: 10px; align-items: center; }
+.srow .sl { grid-area: l; font: 11px var(--mono); color: var(--text-secondary); text-transform: uppercase; letter-spacing: .06em; }
+.srow .sbar { grid-area: b; height: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.srow .sbar i { display: block; height: 100%; background: var(--series-1); border-radius: 3px; min-width: 2px; }
+.srow .sv { grid-area: v; font: 650 14px var(--mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--text-primary); }
+.srow .sn { grid-area: n; font-size: 10.5px; color: var(--text-muted); line-height: 1.35; margin: 1px 0 3px; }
+@media (max-width: 640px) { .srow { grid-template-columns: 1fr 56px; grid-template-areas: "l l" "b v" "n n"; } }
+
+/* RWA: what LONG says against what the chain says */
+.claims { display: grid; gap: 12px; margin: 4px 0 4px; }
+.crow { display: grid; grid-template-columns: 200px 1fr; column-gap: 14px; row-gap: 4px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.crow:last-child { border-bottom: 0; padding-bottom: 0; }
+.crow .cw { font: 600 12.5px var(--sans, inherit); color: var(--text-primary); }
+.crow .cbars { display: grid; gap: 5px; }
+.crow .cb { display: grid; grid-template-columns: 72px 1fr 64px auto; align-items: center; column-gap: 8px; }
+.crow .ck { font: 10px var(--mono); color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.crow .cbar { height: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.crow .cbar i { display: block; height: 100%; min-width: 2px; border-radius: 3px; }
+.crow .cbar.said i { background: color-mix(in srgb, var(--series-3) 55%, transparent); }
+.crow .cbar.ours i { background: var(--series-1); }
+.crow .cv { font: 650 13px var(--mono); font-variant-numeric: tabular-nums; color: var(--text-primary); text-align: right; }
+.crow .cs { font: 10px var(--mono); color: var(--text-muted); }
+.crow .cn { grid-column: 1 / -1; font-size: 10.5px; color: var(--text-secondary); line-height: 1.4; }
+@media (max-width: 640px) { .crow { grid-template-columns: 1fr; } .crow .cb { grid-template-columns: 62px 1fr 56px; } .crow .cs { grid-column: 2 / -1; } }

@@ -284,6 +284,7 @@ function _barChart(host, rows, o) {
   yAxis(f, 0, max, o.fmt || compact);
   const bw = f.iw / rows.length;
   const w = Math.max(1, Math.min(22, bw - 2));
+  weekendBands(f, rows, o, bw);
   const g = mk("g");
   rows.forEach((r, i) => {
     const v = r[o.yKey] || 0;
@@ -314,6 +315,7 @@ function _groupedBars(host, rows, o) {
   yAxis(f, 0, max, o.fmt || compact);
   const bw = f.iw / rows.length;
   const each = Math.max(1, (Math.min(24, bw - 2) - 2) / o.keys.length);
+  weekendBands(f, rows, o, bw);
   const g = mk("g");
   rows.forEach((r, i) => {
     o.keys.forEach((k, j) => {
@@ -347,6 +349,7 @@ function _stackedBars(host, rows, o) {
   yAxis(f, 0, max, o.fmt || compact);
   const bw = f.iw / rows.length;
   const w = Math.max(1, Math.min(22, bw - (bw > 4 ? 2 : 0.4)));
+  weekendBands(f, rows, o, bw);
   const g = mk("g");
   rows.forEach((r, i) => {
     const v = r[o.totalKey] || 0, p = Math.min(v, r[o.partKey] || 0);
@@ -442,6 +445,17 @@ function draw(host, fn) {
   chartRO.observe(host);
 }
 const wrapChart = (fn) => (host, ...args) => draw(host, () => fn(host, ...args));
+
+/* Weekend bands for daily charts (opt-in with `weekends: true`): Robinhood pauses
+   stock-token issuance on Saturdays and Sundays, so a reader should see which
+   columns are weekend columns before reading a share spike into them. */
+const isWeekend = (t) => { const d = new Date(t * 1000).getUTCDay(); return d === 0 || d === 6; };
+function weekendBands(f, rows, o, bw) {
+  if (!o.weekends || !o.xKey) return;
+  const g = mk("g");
+  rows.forEach((r, i) => { if (isWeekend(r[o.xKey])) g.appendChild(mk("rect", { x: f.padL + i * bw, y: f.padT, width: bw, height: f.ih, fill: "var(--text-muted)", opacity: 0.09 })); });
+  f.svg.appendChild(g);
+}
 
 const divergingBars = wrapChart(_divergingBars);
 const lineChart     = wrapChart(_lineChart);
@@ -3293,7 +3307,7 @@ function renderSince(R, pending) {
     ${ready ? tile("Share since inception, transfer basis", T.shareDex == null ? "—" : `≤ ${pctLevel(T.shareDex, 0)}`, `an upper bound: $${compact(T.longVolUsd)} of LONG volume against $${compact(T.dexVolUsd)} of stock that moved in or out of the pool manager since ${dayFmt(Z.since)}; routes that hand a stock between pools inside the manager move no token and are missing from the denominator${T.rialtoVolUsd ? ` · ≤ ${pctLevel(T.shareAll, 0)} with Rialto's $${compact(T.rialtoVolUsd)} of off-DEX fills added` : ""}`) : ""}
   </div>${!ready ? progress : catching ? `<p class="muted" style="margin:6px 0 0">Streams still catching up${(Z.tokensPartial || []).length ? ` for ${Z.tokensPartial.length} stock token(s); the per-day series show the ${T.covered ?? 0} already complete` : ""}${Z.hookPartial ? ", LONG swaps" : ""}${Z.rialtoPartial ? ", Rialto" : ""}. The figures fill in over the next slow runs.</p>` : ""}`;
   if (ready) stackedBars($("#cChainTvl"), rows.filter((r) => r.t >= (rows.find((x) => x.allInvUsd > 0)?.t ?? 0)), {
-    xKey: "t", totalKey: "allInvUsd", partKey: "longInvUsd", totalColor: "color-mix(in srgb, var(--series-3) 45%, transparent)", partColor: "var(--series-1)",
+    xKey: "t", weekends: true, totalKey: "allInvUsd", partKey: "longInvUsd", totalColor: "color-mix(in srgb, var(--series-3) 45%, transparent)", partColor: "var(--series-1)",
     fmt: (v) => `$${compact(v)}`,
     tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>$${compact(r.allInvUsd)} of stock in DEX liquidity</div><div>$${compact(r.longInvUsd)} in LONG pools${r.allInvUsd ? ` · ${pctLevel(Math.min(1, r.longInvUsd / r.allInvUsd), 1)}` : ""}</div>`,
   });
@@ -3302,7 +3316,7 @@ function renderSince(R, pending) {
   if (vrows.length > 1) {
     let cum = 0;
     barChart($("#cVolShare"), vrows.map((r) => { cum += r.longAllVolUsd; return { ...r, cum }; }), {
-      xKey: "t", yKey: "longAllVolUsd", color: "var(--series-1)", fmt: (v) => `$${compact(v)}`,
+      xKey: "t", weekends: true, yKey: "longAllVolUsd", color: "var(--series-1)", fmt: (v) => `$${compact(v)}`,
       tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>$${compact(r.longAllVolUsd)} of stock traded through LONG pools</div><div class="k">$${compact(r.cum)} cumulative since launch</div>`,
     });
   } else $("#cVolShare").innerHTML = `<p class="muted" style="padding:12px 0">Fills in as the LONG swap stream backfills.</p>`;
@@ -3310,7 +3324,7 @@ function renderSince(R, pending) {
      LONG's launch onwards, so the change in minting is visible against the launch. */
   const mrows = nvOk && N.priceUsd ? N.days.filter((r) => r.t >= N.launch.t - 21 * 86400) : [];
   if (mrows.length > 1) groupedBars($("#cNvdaMint"), mrows, {
-    xKey: "t", keys: ["mintedUsd", "burnedUsd"], colors: ["var(--series-1)", "color-mix(in srgb, var(--series-3) 60%, transparent)"], fmt: (v) => `$${compact(v)}`,
+    xKey: "t", weekends: true, keys: ["mintedUsd", "burnedUsd"], colors: ["var(--series-1)", "color-mix(in srgb, var(--series-3) 60%, transparent)"], fmt: (v) => `$${compact(v)}`,
     tip: (r) => `<div class="k">${dayFmt(r.t)}${r.t === N.launch.t ? " · LONG launch day" : ""}</div><div><span style="color:var(--series-1)">●</span> minted $${compact(r.mintedUsd)} (${r.mints} mint${r.mints === 1 ? "" : "s"})</div><div><span style="color:var(--series-3)">●</span> redeemed $${compact(r.burnedUsd)} (${r.burns})</div><div class="k">net ${r.netUsd >= 0 ? "+" : "−"}$${compact(Math.abs(r.netUsd))} · supply ${compact(r.supply)} NVDA</div>`,
   });
   else $("#cNvdaMint").innerHTML = `<p class="muted" style="padding:12px 0">Fills in once the NVDA mint stream has run.</p>`;
@@ -3382,7 +3396,7 @@ function renderPerps(R, pending) {
     { h: "LONG pools", f: (v) => v.longPools.toLocaleString() },
   ], P.vaults);
   const rows = (P.daily || []).filter((d) => d.mintUsd || d.burnUsd);
-  if (rows.length > 1) groupedBars($("#cPerps"), rows.slice(-60), { xKey: "t", keys: ["mintUsd", "burnUsd"], colors: ["var(--buy)", "var(--sell)"], fmt: (v) => `$${compact(v)}`,
+  if (rows.length > 1) groupedBars($("#cPerps"), rows.slice(-60), { xKey: "t", weekends: true, keys: ["mintUsd", "burnUsd"], colors: ["var(--buy)", "var(--sell)"], fmt: (v) => `$${compact(v)}`,
     tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>$${compact(d.mintUsd)} deposited (shares minted)</div><div>$${compact(d.burnUsd)} withdrawn (shares burned)</div><div class="k">$${compact(d.netMintUsd)} net since launch · bridge, all users: $${compact(d.bridgeInUsd)} in / $${compact(d.bridgeOutUsd)} out</div>` });
   else $("#cPerps").innerHTML = `<p class="muted" style="padding:12px 0">Fills in as the share streams backfill.</p>`;
   $("#readPerps").innerHTML = takeEl("neu",
@@ -3391,11 +3405,63 @@ function renderPerps(R, pending) {
      <span class="muted">Vaults are recognised by their shared proxy bytecode or a name that says Long or Pre IPO; the bridge is Lighter's for the whole chain, so only the vaults' own transfers count. Shares are priced from their spot pools; the vaults publish no NAV on chain.</span>`);
 }
 
+/* LONG's share of the chain, one bar per measure, all on a 0–100% scale. The six
+   tiles above give the numbers; this gives the shape: how much of each thing on
+   Robinhood Chain runs through LONG. Same sources as the tiles. */
+function renderCaptureStrip(R, D) {
+  const host = $("#rwaStrip");
+  if (!R?.tokens?.length) { host.innerHTML = ""; return; }
+  const T = R.totals, L = R.longTvl, ss = R.swapShare;
+  const rows = [
+    ["Tokenized stock held", L ? T.longShare : null, L ? `$${compact(L.usd + T.vaultUsd)} of $${compact(T.supplyUsd)} on the chain` : ""],
+    ["Stock liquidity run", L && T.dexUsd ? L.usd / T.dexUsd : null, L ? `$${compact(L.usd)} of $${compact(T.dexUsd)} on every DEX venue` : ""],
+    ["Stock trading, dollars", ss?.dune?.share ?? null, ss?.dune ? `$${compact(ss.dune.longUsd)} of $${compact(ss.dune.denominatorUsd)}, last ${ss.windowHours}h, DEX plus Rialto` : ""],
+    ["Stock swaps, count", ss?.share ?? null, ss ? `${ss.longSwaps.toLocaleString()} of ${ss.stockSwaps.toLocaleString()} swaps, last ${ss.windowHours}h` : ""],
+    ["Stocks with a LONG market", T.activeStocks ? T.activeListed / T.activeStocks : null, T.activeStocks ? `${T.activeListed} of ${T.activeStocks} stocks that traded in the last day` : ""],
+  ].filter((r) => r[1] != null && isFinite(r[1]));
+  host.innerHTML = `<div class="strip" role="img" aria-label="LONG's share of Robinhood Chain by measure">${rows.map(([l, v, n]) => `<div class="srow">
+      <div class="sl">${l}</div>
+      <div class="sbar"><i style="width:${(100 * Math.max(0.004, Math.min(1, v))).toFixed(1)}%"></i></div>
+      <div class="sv">${pctLevel(v, v < 0.1 ? 1 : 0)}</div>
+      <div class="sn">${n}</div></div>`).join("")}</div>`;
+}
+
+/* LONG's own published figures next to this site's measurement of the same thing.
+   The quoted numbers are what LONG or its founder posted, with the date; the
+   measured numbers come from the cards on this tab. Where the two are built
+   differently the note says how. */
+function renderClaims(R) {
+  const host = $("#rwaClaims");
+  if (!R?.tokens?.length) { host.innerHTML = `<p class="muted">Fills after the next standard run.</p>`; return; }
+  const Z = R.series, ZT = Z?.totals, L = R.longTvl, N = R.nvdaSupply, P = R.perps, T = R.totals, last = Z?.days?.at(-1);
+  const rows = [];
+  if (ZT?.longAllVolUsd) rows.push({ what: "Stock volume through LONG, all time", said: 1.4e9, saidTxt: "$1.4B", src: "LONG, 14 Sep", ours: ZT.longAllVolUsd, fmt: (v) => `$${compact(v)}`,
+    note: "same event on both sides (the hook's per-swap record, buyback legs excluded); the gap is the complete UTC days this site waits for" });
+  if (last?.longInvUsd && L?.usd) rows.push({ what: "Tokenized stock sitting in LONG pools", said: last.longInvUsd, saidTxt: `$${compact(last.longInvUsd)}`, src: "LONG's dashboard method", ours: L.usd, fmt: (v) => `$${compact(v)}`,
+    note: "theirs sums swap flow into the pools and never subtracts the fee legs the hook hands out; this site replays the positions and reports what is there now" });
+  if (T?.longShare != null) rows.push({ what: "Share of all stock TVL on the chain", said: 0.10, saidTxt: "10%", src: "founder, 31 Aug", ours: T.longShare, fmt: (v) => pctLevel(v, 1),
+    note: "LONG pools plus the community vault over every stock token on the chain, at today's prices" });
+  if (N?.multiple) rows.push({ what: "Tokenized NVDA supply since LONG launched", said: 5, saidTxt: "5×", src: "founder, 5 Aug", ours: N.multiple, fmt: (v) => `${v.toFixed(1)}×`,
+    note: `from NVDA's own mints and redemptions; it was 3.2× on the day he said it and is ${N.multiple.toFixed(0)}× now` });
+  if (P?.lighter?.netUsd) rows.push({ what: "USDG on Lighter through LongX", said: 2e6, saidTxt: "$2M", src: "LONG, 14 Sep", ours: P.lighter.netUsd, fmt: (v) => `$${compact(v)}`,
+    note: "vault deposits into Lighter's bridge less what came back" });
+  if (!rows.length) { host.innerHTML = `<p class="muted">Fills after the next standard run.</p>`; return; }
+  host.innerHTML = `<div class="claims">${rows.map((r) => { const m = Math.max(r.said, r.ours) || 1; return `<div class="crow">
+      <div class="cw">${r.what}</div>
+      <div class="cbars">
+        <div class="cb"><span class="ck">they say</span><div class="cbar said"><i style="width:${(100 * r.said / m).toFixed(1)}%"></i></div><span class="cv">${r.saidTxt}</span><span class="cs">${r.src}</span></div>
+        <div class="cb"><span class="ck">chain says</span><div class="cbar ours"><i style="width:${(100 * r.ours / m).toFixed(1)}%"></i></div><span class="cv">${r.fmt(r.ours)}</span></div>
+      </div>
+      <div class="cn">${r.note}</div></div>`; }).join("")}</div>`;
+}
+
 function renderRwa() {
   const R = S.rwa, D = S.depth;
   const px = marketState().price || 0;
   const pending = `<p class="muted">Built on the slow path; this card fills after the next standard run.</p>`;
   try { renderRwaKpis(R, D, pending); } catch (e) { console.error("renderRwaKpis", e); }
+  try { renderCaptureStrip(R, D); } catch (e) { console.error("renderCaptureStrip", e); }
+  try { renderClaims(R); } catch (e) { console.error("renderClaims", e); }
   try { renderSince(R, pending); } catch (e) { console.error("renderSince", e); }
   try { renderPerps(R, pending); } catch (e) { console.error("renderPerps", e); }
 

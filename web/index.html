@@ -54,29 +54,18 @@
     <div class="card">
       <h3>LONG on Robinhood Chain, at a glance</h3>
       <div class="agenote" data-age="rwa" hidden></div>
-      <p class="sub">The six numbers that say whether LONG is becoming the venue for tokenized stocks: how much of the chain's stock it holds, how much of the stock liquidity it runs, how much stock trades through it, its share of all stock trading, its coverage of the stock list, and how much of its liquidity the protocol itself owns. All measured from the chain's event logs.</p>
+      <p class="sub">Is LONG becoming the venue for tokenized stocks? Six measured numbers, then LONG's share of the chain on each of them.</p>
       <div id="rwaKpis"></div>
+      <div id="rwaStrip"></div>
       <div id="readKpis"></div>
-    </div>
-
-    <h2 class="section-title">Capture</h2>
-    <div class="card">
-      <h3>Tokenized stock captured by the LONG ecosystem</h3>
-      <div class="agenote" data-age="rwa" hidden></div>
-      <p class="sub">Of every Robinhood stock token that exists on this chain, the share sitting inside DEX liquidity or the community vault. Stock tokens are identified by their shared bytecode, not by name.</p>
-      <div id="rwaTiles"></div>
-      <div id="readRwa"></div>
       <h4 class="subhead">By stock</h4>
       <div class="scroll"><table id="tStocks"></table></div>
-      <h4 class="subhead">NVDA held in DEX liquidity, daily since genesis</h4>
-      <div class="chart" id="cStockDex"></div>
-      <div id="takeStockDex"></div>
     </div>
 
     <div class="card">
       <h3>Since Robinhood Chain went live</h3>
       <div class="agenote" data-age="rwa" hidden></div>
-      <p class="sub">Tokenized stock sitting in DEX liquidity on the chain, day by day from the first block, with LONG's portion shaded; and LONG's share of all tokenized-stock trading over the same span. Every stock token identified on the chain, valued at today's prices.</p>
+      <p class="sub">Day by day from the chain's first block, at today's prices. Weekends are shaded: Robinhood pauses stock-token issuance on them.</p>
       <div id="rwaSince"></div>
       <h4 class="subhead">Stock in DEX liquidity, daily</h4>
       <div class="legend">
@@ -96,96 +85,44 @@
     </div>
 
     <div class="card">
-      <h3>Tokenized stock trading that touches LONG liquidity</h3>
+      <h3>Stock trading in the last 24 hours</h3>
       <div class="agenote" data-age="rwa" hidden></div>
-      <p class="sub">Every swap on the chain over the last 24 hours whose pool holds a stock token, split by whether that pool carries the LONG hook, plus Robinhood's Rialto venue; kept as hourly buckets from a stream that reads only the new blocks each run. Counts as well as dollars, so one whale cannot move the count.</p>
+      <p class="sub">Every swap whose pool holds a stock token, split by whether the pool carries the LONG hook, plus Robinhood's Rialto venue. Counts as well as dollars, so one whale cannot move the count.</p>
       <div id="rwaSwaps"></div>
-      <div class="scroll"><table id="tSwapShare"></table></div>
       <div class="chart small" id="cSwapShare"></div>
+      <div class="scroll"><table id="tSwapShare"></table></div>
       <div id="readSwaps"></div>
     </div>
 
-    <h2 class="section-title">LongX perps</h2>
+    <div class="card">
+      <h3>What LONG says, and what the chain says</h3>
+      <div class="agenote" data-age="rwa" hidden></div>
+      <p class="sub">LONG's own published figures beside this site's measurement of the same thing. Where the methods differ the difference is named.</p>
+      <div id="rwaClaims"></div>
+    </div>
+
     <div class="card">
       <h3>LongX perps on Lighter, counted separately</h3>
       <div class="agenote" data-age="rwa" hidden></div>
-      <p class="sub">LongX runs leveraged vaults (NVDA 3x Long, OPENAI 1x Long, and the first-generation Pre-IPO tokens) whose shares live on this chain and whose positions live on Lighter. Depositors send USDG to a vault, the vault mints shares and forwards the USDG to Lighter's bridge; withdrawals come back the same way. Nothing here is in any stock number above.</p>
+      <p class="sub">Leveraged vaults whose shares live here and whose positions live on Lighter. USDG in, shares minted, USDG forwarded to Lighter's bridge. Nothing here is in any stock number above.</p>
       <div id="perpsTiles"></div>
-      <div class="scroll"><table id="tPerps"></table></div>
-      <h4 class="subhead">Deposits and withdrawals, daily, from share mints and burns at today's prices</h4>
       <div class="legend">
         <span><i style="background:var(--buy)"></i>Deposited</span>
         <span><i style="background:var(--sell)"></i>Withdrawn</span>
       </div>
       <div class="chart small" id="cPerps"></div>
+      <div class="scroll"><table id="tPerps"></table></div>
       <div id="readPerps"></div>
     </div>
 
-    <h2 class="section-title">Liquidity</h2>
-    <div class="grid g2">
-      <div class="card">
-        <h3>LP size, and how much of it the protocol owns</h3>
-        <p class="sub">Dollar value of every position in AI's indexed venues, rebuilt from the liquidity tape, and the share held by the LONG hook itself.</p>
-        <div id="rwaLiq"></div>
-        <h4 class="subhead">Total liquidity, hourly</h4>
-        <div class="chart small" id="cTvl"></div>
-        <div id="readLiq"></div>
-      </div>
-      <div class="card">
-        <h3>Fees compounded into liquidity by the hook</h3>
-        <p class="sub">Since its second week the hook folds pool fees back into its own positions on each swap. Each day's additions, valued at today's prices.</p>
-        <div id="rwaCompound"></div>
-        <h4 class="subhead">Daily, in dollars</h4>
-        <div class="chart small" id="cCompound"></div>
-        <div id="readCompound"></div>
-      </div>
-    </div>
-
     <div class="card">
-      <h3>Cost to trade</h3>
-      <p class="sub">What a sale or purchase of a given size would do to AI's price, walked through every resting position. Routed across all venues, and in the flagship pool alone.</p>
-      <div class="scroll"><table id="tImpact"></table></div>
-      <div id="readImpact"></div>
-    </div>
-
-    <h2 class="section-title">Demand</h2>
-    <div class="grid g2">
-      <div class="card">
-        <h3>Net flow and buyers</h3>
-        <p class="sub">Who is absorbing whom, and how many wallets are doing the buying. Flow moves price mechanically; measured, it does not lead it.</p>
-        <div id="kpiFlow"></div>
-        <div class="chart" id="cInvFlow"></div>
-        <div id="takeFlow"></div>
-        <h4 class="subhead">Wallets net buying and net selling per day</h4>
-        <p class="sub">Wallets whose AI balance rose or fell through a pool, netted per transaction so routers cancel out. Volume can be one wallet; this cannot.</p>
-        <div class="legend">
-          <span><i style="background:var(--buy)"></i>Net bought</span>
-          <span><i style="background:var(--sell)"></i>Net sold</span>
-        </div>
-        <div class="chart small" id="cBuyers"></div>
-      </div>
-      <div class="card">
-        <h3>Holders and whales</h3>
-        <div class="agenote" data-age="holders" hidden></div>
-        <p class="sub">Wallets above a fixed AI balance (a rally cannot manufacture one), wallets funded and emptied each day, and every move of 250,000 AI or more.</p>
-        <div id="kpiBreadth"></div>
-        <div class="legend">
-          <span><i style="background:var(--buy)"></i>Wallets funded from zero</span>
-          <span><i style="background:var(--sell)"></i>Wallets emptied to zero</span>
-        </div>
-        <div class="chart" id="cBreadth"></div>
-        <div id="takeBreadth"></div>
-        <div class="scroll"><table id="tWhales"></table></div>
-      </div>
-    </div>
-    <div class="card">
-      <h3>Mechanical AI buying by the protocol</h3>
-      <div class="agenote" data-age="revenue" hidden></div>
-      <p class="sub">On every swap in a LONG pool the hook hands one fee leg to the protocol's buyback contract, which sells non-AI legs into the pool for AI and forwards the AI to a wallet that has never sold. Measured from the contract's own transfers.</p>
-      <div id="rvTiles"></div>
-      <h4 class="subhead">AI collected by the buyback contract, daily</h4>
-      <div class="chart small" id="cBuyback"></div>
-      <div id="readBuyback"></div>
+      <h3>What LONG has produced, by size</h3>
+      <div class="agenote" data-age="launchpad" hidden></div>
+      <p class="sub">The platform's largest tokens: nominal caps beside the liquidity standing within 10% of spot, because a thin book prints any number.</p>
+      <div id="kpiRunners"></div>
+      <div class="chart" id="cRunners"></div>
+      <div id="takeRunners"></div>
+      <div class="scroll"><table id="tRunners"></table></div>
     </div>
   </section>
 
@@ -197,7 +134,6 @@
     <div id="rating"></div>
     <div id="verdict"></div>
 
-    <h2 class="section-title">Money</h2>
     <div class="card">
       <h3>Price and dollars</h3>
       <p class="sub">On-chain price from the AI/USDG pool; volume, fees and the vault priced at each hour's own close.</p>
@@ -223,83 +159,64 @@
       <div class="scroll"><table id="tDepth"></table></div>
     </div>
 
-    <h2 class="section-title">Platform</h2>
+    <div class="grid g2">
+      <div class="card">
+        <h3>LP size, and how much the protocol owns</h3>
+        <p class="sub">Every position in AI's indexed venues, and the share held by the LONG hook itself.</p>
+        <div id="rwaLiq"></div>
+        <div class="chart small" id="cTvl"></div>
+        <div id="readLiq"></div>
+      </div>
+      <div class="card">
+        <h3>Fees compounded into liquidity</h3>
+        <p class="sub">Since its second week the hook folds pool fees back into its own positions on each swap. Daily, at today's prices.</p>
+        <div id="rwaCompound"></div>
+        <div class="chart small" id="cCompound"></div>
+        <div id="readCompound"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Cost to trade</h3>
+      <p class="sub">What a sale or purchase of a given size would do to AI's price, routed across all venues and in the flagship pool alone.</p>
+      <div class="scroll"><table id="tImpact"></table></div>
+      <div id="readImpact"></div>
+    </div>
+
     <div class="card">
       <h3>AI against its platform</h3>
       <div class="agenote" data-age="launchpad" hidden></div>
-      <p class="sub">Is AI leading or lagging the tokens launched around it? Prices of the platform's largest tokens, sampled by the census.</p>
+      <p class="sub">Is AI leading or lagging the tokens launched around it?</p>
       <div id="kpiPlatform"></div>
       <div class="scroll"><table id="tPlatform"></table></div>
       <div id="takePlatform"></div>
     </div>
 
-    <h2 class="section-title">Protocol</h2>
     <div class="card">
       <h3>Fees, and where they leak</h3>
-      <p class="sub">Revenue is paid in AI on sells and split burn : lock : platform. Anyone can open a hookless AI pool, and routers prefer the cheaper venue.</p>
+      <p class="sub">Anyone can open a hookless AI pool, and routers prefer the cheaper venue. Volume that pays the vault against volume that pays nothing.</p>
       <div class="kpis">
         <div id="kpiFee"></div>
         <div id="kpiCapture"></div>
         <div id="kpiLeak"></div>
       </div>
-      <h4 class="subhead">Daily fees, in AI</h4>
-      <div class="chart small" id="cInvFee"></div>
-      <h4 class="subhead">Fee-bearing volume against hookless</h4>
       <div class="legend">
         <span><i style="background:var(--series-1)"></i>Fee-bearing (funds the vault)</span>
         <span><i style="background:var(--series-2)"></i>Hookless (pays nothing)</span>
       </div>
       <div class="chart" id="cInvLeak"></div>
       <div id="takeLeak"></div>
-      <h4 class="subhead">Venues</h4>
       <div class="scroll"><table id="tVenues"></table></div>
     </div>
 
     <div class="card">
-      <h3>Hub</h3>
-      <div class="agenote" data-age="launchpad" hidden></div>
-      <p class="sub">Other tokens passing through AI (κ, measured per transaction) and choosing AI as their base pair (counted from the census).</p>
-      <div class="kpis">
-        <div id="kpiKappa"></div>
-        <div id="kpiAnchor"></div>
-        <div id="kpiAdopt"></div>
-      </div>
-      <h4 class="subhead">Cross-routed share of direct volume, daily</h4>
-      <div class="chart small" id="cInvKappa"></div>
-      <h4 class="subhead">AI's share of new LONG pools, daily</h4>
-      <div class="chart small" id="cAdopt"></div>
-      <div id="takeKappa"></div>
-      <div id="takeAdopt"></div>
-    </div>
-
-    <h2 class="section-title">Backing and valuation</h2>
-    <div class="grid g2">
-      <div class="card">
-        <h3>Supply sink</h3>
-        <p class="sub">NVDA accreting to the vault and AI destroyed or locked. Real, one-way, and slow.</p>
-        <div class="kpis two">
-          <div id="kpiVault"></div>
-          <div id="kpiFloat"></div>
-        </div>
-        <h4 class="subhead">NVDA in the vault</h4>
-        <div class="chart small" id="cInvVault"></div>
-        <h4 class="subhead">AI burned and locked, cumulative</h4>
-        <div class="legend">
-          <span><i style="background:var(--series-1)"></i>Burned</span>
-          <span><i style="background:var(--series-2)"></i>Vault-locked</span>
-        </div>
-        <div class="chart small" id="cInvFloat"></div>
-        <div id="takeVault"></div>
-      </div>
-      <div class="card">
-        <h3>Valuation</h3>
-        <p class="sub">Market cap over annualised fees is price-invariant (both are in AI). The capitalised rows are one measured stream under assumed rates.</p>
-        <div id="kpiMultiple"></div>
-        <div class="chart small" id="cInvMultiple"></div>
-        <div id="takeMultiple"></div>
-        <div class="scroll"><table id="tValuation"></table></div>
-        <div id="takeValuation"></div>
-      </div>
+      <h3>Valuation</h3>
+      <p class="sub">Market cap over annualised fees is price-invariant (both are in AI). The capitalised rows are one measured stream under assumed rates.</p>
+      <div id="kpiMultiple"></div>
+      <div class="chart small" id="cInvMultiple"></div>
+      <div id="takeMultiple"></div>
+      <div class="scroll"><table id="tValuation"></table></div>
+      <div id="takeValuation"></div>
     </div>
 
     <div class="card">
@@ -327,7 +244,7 @@
 
     <div class="card">
       <h3>Hourly buy / sell volume, in AI</h3>
-      <p class="sub">Above the axis is AI bought (leaving the pool), below is AI sold. Every swap, from the v4 logs.</p>
+      <p class="sub">Above the axis is AI bought (leaving the pool), below is AI sold.</p>
       <div class="legend">
         <span><i style="background:var(--buy)"></i>Bought</span>
         <span><i style="background:var(--sell)"></i>Sold</span>
@@ -343,15 +260,9 @@
       </div>
       <div class="card">
         <h3>Price in the quote token</h3>
-        <p class="sub">The pool's own price from <code>sqrtPriceX96</code>, never overlaid on flow.</p>
+        <p class="sub">The pool's own price, never overlaid on flow.</p>
         <div class="chart" id="cPrice"></div>
       </div>
-    </div>
-
-    <div class="card">
-      <h3>Rolling flow imbalance</h3>
-      <p class="sub">(bought − sold) ÷ (bought + sold) over trailing windows.</p>
-      <div class="scroll"><table id="tRollup"></table></div>
     </div>
 
     <div class="card">
@@ -367,15 +278,43 @@
 
     <div class="card">
       <h3>Where the supply is</h3>
-      <p class="sub">Genesis mint decomposed into gone for good, immobilised, and free to trade. Shares here are of genesis; the tiles above are of current supply.</p>
+      <p class="sub">Genesis mint decomposed into gone for good, immobilised, and free to trade.</p>
       <div class="chart" id="cWaterfall"></div>
       <div class="scroll"><table id="tSupply"></table></div>
+    </div>
+
+    <div class="grid g2">
+      <div class="card">
+        <h3>Net flow and buyers</h3>
+        <p class="sub">Who is absorbing whom, and how many wallets are doing the buying. Volume can be one wallet; a wallet count cannot.</p>
+        <div id="kpiFlow"></div>
+        <div class="chart" id="cInvFlow"></div>
+        <div id="takeFlow"></div>
+        <div class="legend">
+          <span><i style="background:var(--buy)"></i>Net bought</span>
+          <span><i style="background:var(--sell)"></i>Net sold</span>
+        </div>
+        <div class="chart small" id="cBuyers"></div>
+      </div>
+      <div class="card">
+        <h3>Holders and whales</h3>
+        <div class="agenote" data-age="holders" hidden></div>
+        <p class="sub">Wallets above a fixed AI balance, wallets funded and emptied each day, and every move of 250,000 AI or more.</p>
+        <div id="kpiBreadth"></div>
+        <div class="legend">
+          <span><i style="background:var(--buy)"></i>Wallets funded from zero</span>
+          <span><i style="background:var(--sell)"></i>Wallets emptied to zero</span>
+        </div>
+        <div class="chart" id="cBreadth"></div>
+        <div id="takeBreadth"></div>
+        <div class="scroll"><table id="tWhales"></table></div>
+      </div>
     </div>
 
     <div class="card">
       <h3>Who holds AI</h3>
       <div class="agenote" data-age="holders" hidden></div>
-      <p class="sub">Every transfer since genesis replayed into balances, snapshotted every four hours; balances must sum to supply exactly.</p>
+      <p class="sub">Every transfer since genesis replayed into balances; they must sum to supply exactly before anything is shown.</p>
       <div id="kpiHolders"></div>
       <div id="cHolderBuckets"></div>
       <h4 class="subhead">Wallets holding a meaningful balance, in AI</h4>
@@ -387,47 +326,33 @@
       <h4 class="subhead">The largest wallets</h4>
       <div class="scroll"><table id="tTopHolders"></table></div>
       <h4 class="subhead">Cohorts by first week held</h4>
-      <p class="sub">Of the wallets that first held AI in a week, how many still do and how much they hold now.</p>
       <div class="scroll"><table id="tCohorts"></table></div>
       <h4 class="subhead">Whale tape</h4>
-      <p class="sub">Every transfer of 250,000 AI or more, newest first. Bought and sold are moves against a pool.</p>
       <div class="scroll"><table id="tWhalesFull"></table></div>
     </div>
 
-    <h2 class="section-title">Burn engine</h2>
     <div class="grid g4" id="burnTiles"></div>
     <div class="grid g2">
       <div class="card">
         <h3>Daily AI burned</h3>
-        <p class="sub">AI sent to <code>0x0</code> by the fee splitter; a direct read on fee-paying volume.</p>
+        <p class="sub">AI sent to the zero address by the fee splitter; a direct read on fee-paying volume.</p>
         <div class="chart" id="cBurn"></div>
       </div>
       <div class="card">
-        <h3>NVDA reserve accretion</h3>
-        <p class="sub">Cumulative NVDA held by the community vault.</p>
-        <div class="chart" id="cReserve"></div>
-      </div>
-    </div>
-    <div class="grid g2">
-      <div class="card">
-        <h3>Permanent removal over time</h3>
-        <p class="sub">Cumulative AI burned and vault-locked; both legs are irreversible.</p>
+        <h3>Burned and vault-locked, cumulative</h3>
+        <p class="sub">Both legs are irreversible.</p>
         <div class="legend">
           <span><i style="background:var(--series-1)"></i>Burned</span>
           <span><i style="background:var(--series-2)"></i>Vault-locked</span>
         </div>
         <div class="chart" id="cRemoval"></div>
       </div>
-      <div class="card">
-        <h3>Observed fee split</h3>
-        <p class="sub">Measured from the splitter's own transfers, not assumed.</p>
-        <div class="chart" id="cSplit"></div>
-        <div class="hint" id="splitNote"></div>
-      </div>
     </div>
     <div class="card">
-      <h3>Daily burn and reserve</h3>
-      <p class="sub">The table behind the charts above, most recent first.</p>
+      <h3>NVDA reserve accretion</h3>
+      <p class="sub">Cumulative NVDA held by the community vault.</p>
+      <div class="chart small" id="cReserve"></div>
+      <h4 class="subhead">Daily burn and reserve</h4>
       <div class="scroll"><table id="tBurn"></table></div>
     </div>
   </section>
@@ -437,33 +362,19 @@
     <div class="grid g4" id="routeTiles"></div>
 
     <div class="card">
-      <h3>Cross-routing intensity</h3>
-      <p class="sub">Cross-routed AI as a share of direct volume, from transactions where AI is a pass-through hop. Markers are the series' own 10th, 50th and 90th percentiles.</p>
-      <div class="chart" id="cGauge"></div>
-    </div>
-
-    <div class="grid g2">
-      <div class="card">
-        <h3>Direct vs cross-routed volume</h3>
-        <p class="sub">Daily AI volume split by whether AI was the destination or the bridge.</p>
-        <div class="legend">
-          <span><i style="background:var(--series-1)"></i>Direct</span>
-          <span><i style="background:var(--series-2)"></i>Cross-routed</span>
-        </div>
-        <div class="chart" id="cRouting"></div>
+      <h3>Direct vs cross-routed volume</h3>
+      <p class="sub">Daily AI volume split by whether AI was the destination or the bridge.</p>
+      <div class="legend">
+        <span><i style="background:var(--series-1)"></i>Direct</span>
+        <span><i style="background:var(--series-2)"></i>Cross-routed</span>
       </div>
-      <div class="card">
-        <h3>New AI bridges per day</h3>
-        <div class="agenote" data-age="bridges" hidden></div>
-        <p class="sub">Pools opened against AI each day that are still trading; hover for how many opened in total.</p>
-        <div class="chart" id="cFormation"></div>
-      </div>
+      <div class="chart" id="cRouting"></div>
     </div>
 
     <div class="card">
       <h3>AI-pair share by token</h3>
       <div class="agenote" data-age="bridges" hidden></div>
-      <p class="sub">Of each token's trading anywhere on the chain, the share that settles on its AI bridge. Native launches sit near 100% by construction; the organic rows carry the hub claim.</p>
+      <p class="sub">Of each token's trading anywhere on the chain, the share that settles on its AI bridge. The organic rows carry the hub claim.</p>
       <div class="grid g2" id="bridgeKinds"></div>
       <div id="takeBoner"></div>
       <div class="scroll"><table id="tBridges"></table></div>
@@ -477,7 +388,7 @@
       </div>
       <div class="card">
         <h3>Busiest AI counterparties</h3>
-        <p class="sub">Direct (non-routed) AI volume by paired token.</p>
+        <p class="sub">Direct AI volume by paired token.</p>
         <div class="scroll"><table id="tCounter"></table></div>
       </div>
     </div>
@@ -486,54 +397,44 @@
   <!-- ───────────────────────── Treasury ───────────────────────── -->
   <section class="panel" id="p-treasury" role="tabpanel" aria-labelledby="tab-treasury" hidden>
     <div class="card">
-      <h3>The bigger fee engine</h3>
+      <h3>The fee engine</h3>
       <div class="agenote" data-age="revenue" hidden></div>
-      <p class="sub">The buyback contract named in LONG's own methodology: it takes a fee leg on every LONG-pool swap, turns AI-paired legs into AI it never sells, and forwards stock-paired legs as USDG to a revenue wallet. Followed from its transfers.</p>
+      <p class="sub">The buyback contract takes a fee leg on every LONG-pool swap: AI-paired legs become AI it never sells, stock-paired legs become USDG in the revenue wallet.</p>
       <div id="rvTreasury"></div>
-      <h4 class="subhead">USDG into the revenue wallet, daily</h4>
       <div class="chart small" id="cRevenue"></div>
       <div id="readRevenue"></div>
-    </div>
-    <div class="card">
-      <h3>Where the fees go</h3>
-      <div class="agenote" data-age="treasury" hidden></div>
-      <p class="sub">The platform's take, followed from the fee wallet to the wallets it forwards to, and what those wallets did with it. Every pool-touching transaction is classified from the pool manager's own logs: a sale, a buy, liquidity seeded, or liquidity withdrawn.</p>
-      <div id="kpiTreasury"></div>
-      <div id="readTreasury"></div>
-      <h4 class="subhead">Every dollar's end state</h4>
-      <div class="scroll"><table id="tTerminals"></table></div>
-      <div id="treasuryDest"></div>
+      <div id="rvTiles"></div>
+      <h4 class="subhead">AI collected by the buyback contract, daily</h4>
+      <div class="chart small" id="cBuyback"></div>
+      <div id="readBuyback"></div>
     </div>
 
     <div class="card">
       <h3>Flow of value</h3>
-      <p class="sub">Sources on the left, uses on the right, at today's prices. Width is dollars. Green is value that stays in or returns to the ecosystem; red is value sold; grey is value moved to addresses this page cannot name.</p>
+      <p class="sub">Sources on the left, uses on the right, at today's prices. Green stays in or returns to the ecosystem; red is sold; grey moved to addresses this page cannot name.</p>
       <div class="chart" id="cSankey"></div>
       <div id="takeTreasury"></div>
     </div>
 
     <div class="card">
-      <h3>What the treasury did with AI, by week</h3>
-      <p class="sub">AI leaving the treasury wallets into pools as sales, coming back from pools as buys, seeded as liquidity, or moved to other addresses.</p>
-      <div class="legend">
-        <span><i style="background:var(--sell)"></i>Sold into pools</span>
-        <span><i style="background:var(--buy)"></i>Bought from pools</span>
-        <span><i style="background:var(--series-2)"></i>Seeded as liquidity</span>
-        <span><i style="background:var(--text-muted)"></i>Moved or bridged out</span>
-      </div>
-      <div class="chart" id="cTreasuryWeekly"></div>
+      <h3>Where the platform's take goes</h3>
+      <div class="agenote" data-age="treasury" hidden></div>
+      <p class="sub">The platform wallet's forwards, and what those wallets did with them: sold, bought, seeded as liquidity, or withdrawn.</p>
+      <div id="kpiTreasury"></div>
+      <div id="readTreasury"></div>
+      <div class="scroll"><table id="tTerminals"></table></div>
+      <div id="treasuryDest"></div>
+      <h4 class="subhead">Observed fee split</h4>
+      <div class="chart small" id="cSplit"></div>
+      <div class="hint" id="splitNote"></div>
     </div>
 
     <div class="card">
       <h3>The wallets</h3>
-      <p class="sub">Found from the fee wallet's forwards, not declared anywhere. Held, sold, seeded and moved are from the classified transactions; balances are read live.</p>
+      <p class="sub">Found from the fee wallet's forwards, not declared anywhere. Balances are read live.</p>
       <div class="scroll"><table id="tTreasury"></table></div>
       <div id="tTreasuryPools"></div>
-    </div>
-
-    <div class="card">
-      <h3>Every token that has paid the platform</h3>
-      <p class="sub">The 20% platform leg of every LONG launch pays in that launch's own token or its anchor. Summed across the whole launchpad, priced today where a price exists.</p>
+      <h4 class="subhead">Every token that has paid the platform</h4>
       <div class="scroll"><table id="tPlatformFees"></table></div>
     </div>
   </section>
@@ -543,27 +444,10 @@
     <div class="card">
       <h3>Tokens launched per day</h3>
       <div class="agenote" data-age="launchpad" hidden></div>
-      <p class="sub">Every pool carrying the LONG hook is a launch, so this is a census of the whole platform, not a sample.</p>
+      <p class="sub">Every pool carrying the LONG hook is a launch, so this is a census of the whole platform. Launch counts are a vanity metric on their own; the size table on the RWA tab is what they produced.</p>
       <div id="kpiLaunches"></div>
       <div class="chart" id="cLaunches"></div>
       <div id="takeLaunches"></div>
-    </div>
-
-    <div class="card">
-      <h3>Cumulative tokens launched</h3>
-      <div class="agenote" data-age="launchpad" hidden></div>
-      <p class="sub">A platform wants this line to keep bending upward; a burst that flattens is an event.</p>
-      <div class="chart" id="cLaunchCum"></div>
-    </div>
-
-    <div class="card">
-      <h3>What LONG has produced, by size</h3>
-      <div class="agenote" data-age="launchpad" hidden></div>
-      <p class="sub">Nominal caps beside the liquidity standing within 10% of spot, because a thin book prints any number.</p>
-      <div id="kpiRunners"></div>
-      <div class="chart" id="cRunners"></div>
-      <div id="takeRunners"></div>
-      <div class="scroll"><table id="tRunners"></table></div>
     </div>
   </section>
 
