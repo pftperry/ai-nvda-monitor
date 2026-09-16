@@ -400,3 +400,21 @@ footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border
 details.method { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
 details.method summary { cursor: pointer; font: 600 12px var(--mono); color: var(--text-secondary); }
 details.method p { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin: 8px 0 0; }
+
+/* Backing ranking table */
+#tBacking th[data-k] { cursor: pointer; }
+#tBacking th.on { color: var(--text-primary); text-decoration: underline; }
+#tBacking td { white-space: nowrap; }
+#tBacking td.pair { white-space: normal; min-width: 150px; }
+#tBacking td.pair .badge.tier { margin-left: 4px; font-size: 9px; padding: 2px 6px; vertical-align: 1px; }
+#tBacking td.num { position: relative; }
+#tBacking td.score b { font-size: 13px; }
+#tBacking .mini { display: inline-block; width: 46px; height: 6px; border-radius: 3px; background: var(--surface-2); margin-right: 8px; vertical-align: 2px; position: relative; overflow: hidden; }
+#tBacking .mini::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: var(--w); background: var(--series-1); border-radius: 3px; }
+#tBacking .mini.b::after { background: var(--series-3); }
+#tBacking td.own { display: flex; align-items: center; gap: 8px; min-width: 120px; }
+#tBacking td.own .spark { position: static; width: 56px; height: 20px; flex: none; opacity: .9; }
+#tBacking td.own .spark polyline { fill: none; stroke-width: 1.5; } #tBacking td.own .spark polygon { opacity: .16; }
+#tBacking .pill { display: inline-block; padding: 2px 6px; border-radius: 3px; font: 600 11px var(--mono); }
+#tBacking th:nth-child(2), #tBacking td:nth-child(2) { position: sticky; left: 0; background: var(--surface-1); z-index: 1; box-shadow: 2px 0 0 var(--border); }
+#tBacking tbody tr:hover td:nth-child(2) { background: var(--surface-2); }
