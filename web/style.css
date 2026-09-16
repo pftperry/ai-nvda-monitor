@@ -384,3 +384,5 @@ footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border
   .brow .bp { grid-area: p; } .brow .bn.m { grid-area: m; text-align: left; } .brow .bn.s { grid-area: s; } .brow .bb.b1 { grid-area: b1; } .brow .bb.b2 { grid-area: b2; } .brow .bn.v { grid-area: v; text-align: left; }
   .brow .bn::before { content: attr(data-l) " "; font: 10px var(--mono); color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
 }
+
+.linklike { appearance: none; background: none; border: 0; padding: 0; font: inherit; color: var(--series-3); cursor: pointer; text-decoration: underline; }

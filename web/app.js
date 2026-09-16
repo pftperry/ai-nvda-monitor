@@ -3444,18 +3444,23 @@ function renderCaptureStrip(R, D) {
    control only reorders what is already measured. Bars share one scale per column:
    the largest value in the column is the full bar, so a ratio of "half as much" is
    drawn as half. */
-let backingSort = "backing";
+let backingSort = "backing", backingAll = false;
+/* Size floor for the default view: a $40K token with $17K of stock behind it has a
+   fine ratio and no market. Pairs below both floors are kept behind a toggle. */
+const BACKING_MIN_CAP = 1e6, BACKING_MIN_STOCK = 1e5;
 function renderBacking() {
   const R = S.rwa, B = R?.backing, host = $("#backingRows");
   if (!B?.rows?.length) { host.innerHTML = `<p class="muted">Built on the slow path; this table fills after the next standard run.</p>`; $("#backingKpis").innerHTML = ""; $("#readBacking").innerHTML = ""; return; }
-  const rows = B.rows.filter((r) => r.mcapUsd > 0 && r.backing != null).slice();
+  const all = B.rows.filter((r) => r.mcapUsd > 0 && r.backing != null);
+  const major = all.filter((r) => r.mcapUsd >= BACKING_MIN_CAP || r.stockUsd >= BACKING_MIN_STOCK);
+  const rows = (backingAll ? all : major).slice();
   const key = backingSort;
   rows.sort((a, b) => (b[key] ?? -1) - (a[key] ?? -1));
   const maxB = maxOf(rows.map((r) => r.backing || 0)), maxS = maxOf(rows.map((r) => r.stockShare || 0));
   const ai = rows.find((r) => r.symbol === "AI"), top = rows.slice().sort((a, b) => b.backing - a.backing)[0];
   const stockTotal = sumOf(rows, (r) => r.stockUsd), volTotal = sumOf(rows, (r) => r.vol24hUsd);
   $("#backingKpis").innerHTML = `<div class="tiles three">
-    ${tile("Pairs ranked", rows.length, `the LONG pools holding the most stock (${B.poolsConsidered} pools read${B.poolsWithoutCensus ? `, ${B.poolsWithoutCensus} not yet in the census` : ""})`)}
+    ${tile("Pairs ranked", rows.length, backingAll ? `every pair behind the ${B.poolsConsidered} LONG pools holding the most stock` : `pairs with a market cap over $${compact(BACKING_MIN_CAP)} or more than $${compact(BACKING_MIN_STOCK)} of stock, of ${all.length} read from the ${B.poolsConsidered} LONG pools holding the most stock${B.poolsWithoutCensus ? ` (${B.poolsWithoutCensus} not yet in the census)` : ""}`)}
     ${tile("Stock behind them", `$${compact(stockTotal)}`, `inside these pairs' pools, from the position replay · $${compact(volTotal)} traded through them in the last ${B.windowHours ?? 24}h`)}
     ${top ? tile("Most stock per dollar of cap", `${top.symbol} / ${top.anchorSymbol}`, `${(100 * top.backing).toFixed(1)}¢ of ${top.anchorSymbol} behind each $1 of market cap${ai && ai !== top ? ` · AI carries ${(100 * ai.backing).toFixed(1)}¢` : ""}`, "", "hero") : ""}
   </div>`;
@@ -3468,7 +3473,9 @@ function renderBacking() {
       <div class="bb b1" title="${(100 * r.backing).toFixed(2)} cents of stock per dollar of market cap"><i style="width:${(100 * r.backing / (maxB || 1)).toFixed(1)}%"></i><b style="left:${Math.min(88, 100 * r.backing / (maxB || 1) + 1).toFixed(1)}%">${cents(r.backing)}</b></div>
       <div class="bb b2 blue" title="${r.stockShare == null ? "" : `${(100 * r.stockShare).toFixed(1)}% of all tokenized ${r.anchorSymbol} on the chain`}"><i style="width:${(100 * (r.stockShare || 0) / (maxS || 1)).toFixed(1)}%"></i><b style="left:${Math.min(88, 100 * (r.stockShare || 0) / (maxS || 1) + 1).toFixed(1)}%">${r.stockShare == null ? "—" : pctLevel(r.stockShare, r.stockShare < 0.1 ? 1 : 0)}</b></div>
       <div class="bn v dim" data-l="vol">$${compact(r.vol24hUsd)}</div>
-    </div>`).join("");
+    </div>`).join("") +
+    (all.length > major.length ? `<p class="muted" style="margin:10px 0 0"><button class="linklike" id="backingToggle">${backingAll ? `Show only the ${major.length} pairs above the size floor` : `Show all ${all.length} pairs, including the ${all.length - major.length} below the size floor`}</button></p>` : "");
+  $("#backingToggle").onclick = () => { backingAll = !backingAll; renderBacking(); };
   const byShare = rows.slice().sort((a, b) => (b.stockShare || 0) - (a.stockShare || 0)).slice(0, 2);
   $("#readBacking").innerHTML = takeEl("neu",
     `${top ? `<b>${top.symbol}</b> on ${top.anchorSymbol} carries the most stock per dollar of market cap, <b>${cents(top.backing)}</b>.` : ""}
