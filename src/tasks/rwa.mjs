@@ -388,6 +388,9 @@ export async function indexRwa(latest, tm, opts = {}) {
     };
     const t4 = Date.now();
     if (SW.cursor == null) { SW.cursor = Math.max(GENESIS_BLOCK, latest - WINDOW_H * STEP) - 1; SW.first = SW.cursor + 1; }
+    /* Per-pool buckets were added later than the window itself; hours folded before
+       that carry none, so the backing table states how many hours its volume covers. */
+    if (SW.perPoolFirst == null) SW.perPoolFirst = SW.cursor + 1;
     let truncated = false, lo = SW.cursor + 1;
     while (lo <= latest && timeLeft()) {
       const hi = Math.min(latest, lo + STEP - 1);
@@ -439,6 +442,7 @@ export async function indexRwa(latest, tm, opts = {}) {
         usdAll: Math.round(r.usdAll), usdLong: Math.round(r.usdLong) })).sort((x, y) => y.usdAll - x.usdAll || y.all - x.all),
       /* User stock volume per LONG pool (the hook's event, buyback legs excluded), for the backing table. */
       perPool: Object.fromEntries([...perPool].sort((a, b) => b[1] - a[1]).slice(0, 400).map(([id, v]) => [id, Math.round(v)])),
+      perPoolHours: Math.max(0, Math.min(hoursCovered, Math.round((endHour - Math.max(startHour, hourOf(SW.perPoolFirst) ?? startHour)) / 3600) + 1)),
     };
     log(`  stock trading, rolling ${hoursCovered}h of ${WINDOW_H}h${truncated ? " (resumes)" : ""}: ${tot.stockSwaps.toLocaleString()} stock-pool swaps of ${tot.chainSwaps.toLocaleString()} on chain, ${tot.longSwaps.toLocaleString()} through LONG pools (${tot.stockSwaps ? (100 * tot.longSwaps / tot.stockSwaps).toFixed(1) : "—"}% by count, ${tot.usdAll ? (100 * tot.usdLong / tot.usdAll).toFixed(1) : "—"}% by dollars); Dune method: LONG $${Math.round(tot.hookUsd).toLocaleString()} (${tot.hookSwaps} hook swaps, ${tot.buybackSwaps} buyback) of $${Math.round(denominatorUsd).toLocaleString()} incl. Rialto $${Math.round(tot.rialtoUsd).toLocaleString()} (${tot.rialtoFills} fills) → ${denominatorUsd ? (100 * tot.hookUsd / denominatorUsd).toFixed(1) : "—"}%, cursor ${SW.cursor.toLocaleString()}, ${secs(t4)}`);
   }
@@ -579,7 +583,7 @@ export async function indexRwa(latest, tm, opts = {}) {
       });
     });
     rows.sort((a, b) => b.stockUsd - a.stockUsd);
-    backing = { rows, poolsConsidered: top.length, poolsWithoutCensus: unknown, windowHours: swapShare?.windowHours ?? null, at: Math.floor(Date.now() / 1000),
+    backing = { rows, poolsConsidered: top.length, poolsWithoutCensus: unknown, windowHours: swapShare?.perPoolHours ?? swapShare?.windowHours ?? null, at: Math.floor(Date.now() / 1000),
       method: "stock per pool from the position replay; asset price from the pool's last swap price times the stock's Chainlink price; market cap from the asset's own totalSupply; volume from the hook's swap event, buyback legs excluded" };
     log(`  backing per pair: ${rows.length} pair(s) from the ${top.length} LONG pools holding the most stock${unknown ? ` (${unknown} not in the census)` : ""}; top ${rows.slice(0, 3).map((r) => `${r.symbol}/${r.anchorSymbol} $${r.stockUsd.toLocaleString()} behind $${(r.mcapUsd || 0).toLocaleString()}`).join(", ")}, ${secs(t5)}`);
   }
