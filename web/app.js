@@ -1,9 +1,18 @@
 /* AI / NVDA Monitor — client.
-   Reads pre-indexed JSON for history, and talks to the Robinhood Chain RPC
-   directly for live state (the RPC sends access-control-allow-origin: *, so the
-   browser can query the chain with no backend in between). */
+   Reads pre-indexed JSON for history, and talks to public Robinhood Chain RPCs
+   directly for live state (each sends access-control-allow-origin: *, so the
+   browser can query the chain with no backend in between). Several endpoints,
+   because Robinhood's own node answers a throttled request through a layer that
+   sends the CORS header twice ("*,*"), which the browser refuses; a call that fails
+   in transport moves to the next endpoint and the one that answers stays first.
+   The dedicated key used by the indexer never reaches this file. */
 
-const RPC = "https://rpc.mainnet.chain.robinhood.com";
+/* Order measured 16 Sep 2026: ordofi serves log queries over tens of thousands of
+   blocks with a clean CORS header; Robinhood's node does too until it throttles;
+   publicnode refuses anything it deems archival without a token, so it is last and
+   useful only for head-of-chain calls. */
+const RPCS = ["https://rpc.ordofi.network", "https://rpc.mainnet.chain.robinhood.com", "https://robinhood-rpc.publicnode.com"];
+let rpcFirst = 0;
 const AI_TOKEN = "0x2e8c31162b855a2ffa90f6f8634643ad6f111e18";
 const POOL_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951";
 const AI_NVDA_POOL = "0xcbdfea90430a30ee4469c9902e120a77e7c7e4711d5643671c1d1957f2f1ce27";
@@ -586,23 +595,27 @@ let rpcCooldownUntil = 0;
 async function rpcCall(method, params, tries = 3) {
   if (Date.now() < rpcCooldownUntil) throw new Error("live RPC cooling down after throttling");
   let lastErr;
-  for (let i = 0; i < tries; i++) {
+  const attempts = Math.max(tries, RPCS.length);
+  for (let i = 0; i < attempts; i++) {
+    const k = (rpcFirst + i) % RPCS.length;
     try {
-      const r = await fetch(RPC, {
+      const r = await fetch(RPCS[k], {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
       });
       const j = await r.json();
-      if (j.error) throw new Error(j.error.message);   // a real JSON-RPC error: do not retry
+      if (j.error) throw new Error(j.error.message);
+      rpcFirst = k;                                     // the endpoint that answered goes first next time
       return j.result;
     } catch (e) {
       lastErr = e;
-      // Only a transport failure is worth retrying; a node that answered and said
-      // no will say no again. In a browser, a throttled request lands here too.
-      const transport = e instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(e.message || "");
-      if (!transport) throw e;
-      if (i === tries - 1) { rpcCooldownUntil = Date.now() + 20_000; throw e; }
-      await new Promise((res) => setTimeout(res, 1500 * 2 ** i));
+      // Every failure moves to the next endpoint: a transport error (in a browser a
+      // throttled or CORS-broken request lands here), and a node's own refusal too,
+      // since public nodes differ in what they serve (publicnode calls a 40k-block
+      // log query "archival" and says no; the others answer it). Only once every
+      // endpoint has failed does the call give up and pause the live layer.
+      if (i === attempts - 1) { rpcCooldownUntil = Date.now() + 20_000; throw e; }
+      if (i >= RPCS.length - 1) await new Promise((res) => setTimeout(res, 1500 * 2 ** (i - RPCS.length + 1)));
     }
   }
   throw lastErr;
