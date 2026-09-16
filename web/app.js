@@ -3453,11 +3453,11 @@ const BACKING_MIN_CAP = 1e6, BACKING_MIN_STOCK = 1e5;
    day's user volume through the pair's pools over its market cap. */
 function backingTierOf(r) {
   const t = r.turnover, n = r.swaps24h || 0, s = r.stockShare || 0, b = r.backing || 0;
-  if (t != null && t > 1) return { k: "loop", l: "loop" };
-  if (t != null && t < 0.01 && n < 20) return { k: "parked", l: "parked" };
-  if (s >= 0.10 && b >= 0.02 && t != null && t >= 0.01 && t <= 0.5) return { k: "venue", l: "venue" };
-  if (s >= 0.03 && b >= 0.06 && t != null && t >= 0.10 && t <= 0.5 && n >= 100) return { k: "challenger", l: "challenger" };
-  if (s < 0.03) return { k: "thin", l: "thin" };
+  if (t != null && t > 1) return { k: "loop", l: "bot volume" };
+  if (t != null && t < 0.01 && n < 20) return { k: "parked", l: "no trading" };
+  if (s >= 0.10 && b >= 0.02 && t != null && t >= 0.01 && t <= 0.5) return { k: "venue", l: "holds 10%+ of its stock" };
+  if (s >= 0.03 && b >= 0.06 && t != null && t >= 0.10 && t <= 0.5 && n >= 100) return { k: "challenger", l: "well-backed, active" };
+  if (s < 0.03) return { k: "thin", l: "little stock" };
   return { k: "none", l: "" };
 }
 /* Where today's value sits among the pair's own readings: 0 = its lowest, 1 = its
@@ -3529,8 +3529,8 @@ function renderBacking() {
   const hours = B.windowHours ?? 24, histDays = B.historySince ? Math.max(0, (Date.now() / 1000 - B.historySince) / 86400) : 0;
   const stockTotal = sumOf(rows, (r) => r.stockUsd), volTotal = sumOf(rows, (r) => r.vol24hUsd);
   $("#backingKpis").innerHTML = `<div class="tiles three">
-    ${tile("Venue pairs", venues.length, venues.length ? venues.map((r) => `${r.symbol}/${r.anchorSymbol}`).join(", ") : `none clear all three gates yet${hours < 20 ? ` (turnover needs a full day; ${hours}h so far)` : ""}`, "", "hero")}
-    ${tile("Challengers", chal.length, chal.length ? chal.map((r) => `${r.symbol}/${r.anchorSymbol}`).join(", ") : `none clear the gates yet${hours < 20 ? ` (${hours}h of volume so far)` : ""}`)}
+    ${tile("Pairs holding 10%+ of their stock", venues.length, venues.length ? venues.map((r) => `${r.symbol}/${r.anchorSymbol}`).join(", ") : `none yet with cushion and daily trading${hours < 20 ? ` (turnover needs a full day; ${hours}h so far)` : ""}`, "", "hero")}
+    ${tile("Well-backed, active pairs", chal.length, chal.length ? chal.map((r) => `${r.symbol}/${r.anchorSymbol}`).join(", ") : `none yet${hours < 20 ? ` (${hours}h of volume so far)` : ""}`)}
     ${top ? tile("Top of the screen", `${top.symbol} / ${top.anchorSymbol}`, `score ${top.score} · ${(100 * top.backing).toFixed(1)}¢ of ${top.anchorSymbol} per $1 of cap, ${pctLevel(top.stockShare || 0, 0)} of all tokenized ${top.anchorSymbol}${ai && ai !== top ? ` · AI scores ${ai.score ?? "—"}` : ""} · $${compact(stockTotal)} of stock behind the ${rows.length} pairs shown, $${compact(volTotal)} traded in ${hours}h`) : ""}
   </div>`;
   const cents = (v) => `${(100 * v).toFixed(v >= 0.1 ? 0 : 1)}¢`;
@@ -3560,9 +3560,9 @@ function renderBacking() {
   for (const h of host.querySelectorAll("th[data-k]")) h.onclick = () => { backingSort = h.dataset.k; for (const o of $("#backingSort").querySelectorAll("button")) o.setAttribute("aria-pressed", o.dataset.k === backingSort ? "true" : "false"); renderBacking(); };
   const byShare = major.slice().sort((a, b) => (b.stockShare || 0) - (a.stockShare || 0)).slice(0, 2);
   $("#readBacking").innerHTML = takeEl(venues.length ? "pos" : "neu",
-    `${venues.length ? `<b>${venues.map((r) => r.symbol).join(", ")}</b> clear all three venue gates: over a tenth of the stock's tokenized supply in the pair, at least 2¢ of stock per dollar of cap, and a day's turnover between 1% and 50%.` : `No pair clears all three venue gates on today's numbers${hours < 20 ? `, with only ${hours}h of per-pair volume measured so far` : ""}.`}
-     ${chal.length ? `<b>${chal.map((r) => r.symbol).join(", ")}</b> are challengers: smaller, with roughly twice the cushion, trading like markets.` : ""}
-     ${byShare.length ? `By share of the whole tokenized supply the venue pairs are ${byShare.map((r) => `<b>${r.symbol}</b> (${pctLevel(r.stockShare, 0)} of all ${r.anchorSymbol})`).join(" and ")}.` : ""}
+    `${venues.length ? `<b>${venues.map((r) => r.symbol).join(", ")}</b> hold over a tenth of their stock's tokenized supply, carry at least 2¢ of stock per dollar of market cap, and turn over between 1% and 50% of that cap a day.` : `No pair holds a tenth of its stock with that cushion and daily trading on today's numbers${hours < 20 ? `, with only ${hours}h of per-pair volume measured so far` : ""}.`}
+     ${chal.length ? `<b>${chal.map((r) => r.symbol).join(", ")}</b> are well-backed and active: smaller, with roughly twice the cushion, trading every day.` : ""}
+     ${byShare.length ? `The largest holders of their stock's tokenized supply are ${byShare.map((r) => `<b>${r.symbol}</b> (${pctLevel(r.stockShare, 0)} of all ${r.anchorSymbol})`).join(" and ")}.` : ""}
      ${ai ? `AI holds the most stock in absolute terms, <b>$${compact(ai.stockUsd)}</b> of NVDA, and <b>${cents(ai.backing)}</b> per dollar of its cap.` : ""}
      <span class="muted">Score is a weighted sum of each pair's percentile rank among the rows shown: share of stock ×3, stock per dollar of cap ×2, turnover inside the 1%–50% band ×2, swaps ×1, stock in pools ×1. Shading is that percentile, one hue; the turnover cell shades by fit to the band, not by size. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; volume and swaps from the hook's own event, buyback legs excluded. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
   const bind = (sel, attr, set) => { const seg = $(sel); if (seg.dataset.bound) return; seg.dataset.bound = "1";
