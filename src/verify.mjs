@@ -461,6 +461,18 @@ if (rwa && rwa.tokens?.length) {
     warn("perps streams have reached the head and every bridge counterparty is classified", !P.lighter.partial && !P.sharesPartial && !P.lighter.unclassified,
       `${P.lighter.unclassified || 0} unclassified; streams ${P.lighter.partial || P.sharesPartial ? "catching up" : "at the head"}`);
   }
+  if (rwa.nvdaSupply) {
+    const N = rwa.nvdaSupply, todayStart = Math.floor(Date.now() / 86400000) * 86400;
+    check("NVDA supply history is ordered, complete days only, and adds up",
+      N.days.every((r, i, a) => i === 0 || r.t > a[i - 1].t) && (!N.days.length || N.days.at(-1).t < todayStart)
+      && N.days.every((r) => r.minted >= 0 && r.burned >= 0 && Math.abs(r.net - (r.minted - r.burned)) < 0.01 && r.supply >= -0.01)
+      && N.days.every((r, i, a) => i === 0 || Math.abs(r.supply - (a[i - 1].supply + r.net)) < 0.01),
+      `${N.days.length} day(s) since ${N.since ? new Date(N.since * 1000).toISOString().slice(0, 10) : "—"}`);
+    const drift = N.now.onChain > 0 && N.now.supply != null ? Math.abs(N.now.supply + (N.today?.net || 0) - N.now.onChain) / N.now.onChain : null;
+    warn("NVDA supply rebuilt from mints and burns matches the token's live totalSupply within 2%", drift == null || N.partial || drift <= 0.02,
+      drift == null ? "no on-chain supply to compare" : `${(N.now.supply + (N.today?.net || 0)).toLocaleString()} rebuilt vs ${N.now.onChain.toLocaleString()} on chain (${(drift * 100).toFixed(2)}% apart)${N.partial ? "; stream still catching up" : ""}`);
+    warn("NVDA supply at LONG's launch is known", N.launch?.supply > 0 && N.multiple != null, N.launch ? `${N.launch.supply} NVDA on launch day, ${N.multiple}× since` : "launch day not yet in range");
+  }
   if (rwa.series) {
     const Z = rwa.series, todayStart = Math.floor(Date.now() / 86400000) * 86400;
     check("since-inception history is ordered, complete days only",

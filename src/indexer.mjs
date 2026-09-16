@@ -17,6 +17,7 @@ import { indexPrices } from "./tasks/prices.mjs";
 import { indexTreasury } from "./tasks/treasury.mjs";
 import { indexRwa } from "./tasks/rwa.mjs";
 import { indexPerps } from "./tasks/perps.mjs";
+import { indexStockSupply } from "./tasks/stocksupply.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
 import { analyseBridges } from "./tasks/bridges.mjs";
@@ -500,6 +501,13 @@ if (!fast && !flag("no-launchpad")) {
         prior: readData("rwa.json"), deadline: rwaDeadline,
       });
       rwa.perps = perps;
+      /* Tokenized NVDA supply from its own mints and burns (cheap: two filtered
+         streams, cursor-resumed), priced and cross-checked with the census's live
+         totalSupply for NVDA. */
+      try {
+        const nv = (rwa.tokens || []).find((t) => t.token === C.NVDA);
+        rwa.nvdaSupply = await indexStockSupply(latest, tm, { store, deadline: Date.now() + opt("supply-budget", 180) * 1000, priceUsd: nv?.priceUsd ?? null, onChain: nv?.supply ?? null });
+      } catch (e) { softFail("NVDA supply", e, "the previous supply block stays in place"); rwa.nvdaSupply = readData("rwa.json")?.nvdaSupply ?? null; }
       writeData("rwa.json", rwa);
     } catch (e) {
       softFail("stock capture", e, "the previous rwa.json stays in place");

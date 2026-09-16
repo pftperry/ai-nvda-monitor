@@ -3263,8 +3263,9 @@ const tile = (lbl, val, note, cls = "", extra = "") => `<div class="ctile ${extr
    today's prices); the card says so rather than pretending to a full census. */
 function renderSince(R, pending) {
   const Z = R?.series, host = $("#rwaSince");
-  if (!Z?.days?.length) { host.innerHTML = pending; for (const id of ["#cChainTvl", "#cVolShare", "#readSince"]) $(id).innerHTML = ""; return; }
+  if (!Z?.days?.length) { host.innerHTML = pending; for (const id of ["#cChainTvl", "#cVolShare", "#cNvdaMint", "#readSince"]) $(id).innerHTML = ""; return; }
   const rows = Z.days, last = rows.at(-1), T = Z.totals || {};
+  const N = R?.nvdaSupply, nvOk = N?.days?.length && N.launch?.supply > 0 && N.multiple != null;
   const firstLong = rows.find((r) => r.longInvUsd > 0) || rows.find((r) => r.allInvUsd > 0);
   const growth = firstLong && firstLong.allInvUsd > 0 && firstLong !== last ? last.allInvUsd / firstLong.allInvUsd : null;
   const d30 = rows.find((r) => r.t >= last.t - 30 * 86400);
@@ -3286,6 +3287,8 @@ function renderSince(R, pending) {
       : tile("Stock in DEX liquidity", "backfilling", `streams complete for ${T.covered ?? 0} of ${Z.stocks} stocks, ${pctLevel(Z.coverage, 1)} of DEX stock value`)}
     ${ready ? tile("LONG's portion of it", pctLevel(longShare, 1), `$${compact(last.longInvUsd)} in LONG pools by LONG's own swap-count method (what its dashboard reports)${R.longTvl ? `; the position replay says $${compact(R.longTvl.usd)} is actually there` : ""} · peak ${pctLevel(peakShare, 0)}`) : ""}
     ${tile("LONG stock volume since launch", `$${compact(T.longAllVolUsd)}`, `user swaps in every LONG stock pool${firstVol ? ` since ${dayFmt(firstVol.t)}` : ""}, from the hook's own swap event, at today's prices`, "", "hero")}
+    ${nvOk ? tile("Tokenized NVDA supply since LONG launched", xf(N.multiple),
+      `${compact(N.launch.supply)} → ${compact(N.now.supply)} NVDA${N.priceUsd ? ` ($${compact(N.now.supply * N.priceUsd)})` : ""} issued by Robinhood, from the token's own mints less redemptions since ${dayFmt(N.launch.t)}${N.week?.netUsd != null ? ` · net ${N.week.netUsd >= 0 ? "+" : "−"}$${compact(Math.abs(N.week.netUsd))} minted over the last ${N.week.days} days` : ""}${N.partial ? " · stream still catching up" : ""}`, "", "hero") : ""}
     ${tile("Share of stock trading, measured window", censusShare == null ? "—" : pctLevel(censusShare, 1), censusShare == null ? "census pending" : `LONG's Dune definition over every DEX venue plus Rialto, last ${R.swapShare.windowHours}h${R.swapShare.windowTargetHours && R.swapShare.windowHours < R.swapShare.windowTargetHours ? ` of a ${R.swapShare.windowTargetHours}h window still filling` : ""} · the same event on both sides`)}
     ${ready ? tile("Share since inception, transfer basis", T.shareDex == null ? "—" : `≤ ${pctLevel(T.shareDex, 0)}`, `an upper bound: $${compact(T.longVolUsd)} of LONG volume against $${compact(T.dexVolUsd)} of stock that moved in or out of the pool manager since ${dayFmt(Z.since)}; routes that hand a stock between pools inside the manager move no token and are missing from the denominator${T.rialtoVolUsd ? ` · ≤ ${pctLevel(T.shareAll, 0)} with Rialto's $${compact(T.rialtoVolUsd)} of off-DEX fills added` : ""}`) : ""}
   </div>${!ready ? progress : catching ? `<p class="muted" style="margin:6px 0 0">Streams still catching up${(Z.tokensPartial || []).length ? ` for ${Z.tokensPartial.length} stock token(s); the per-day series show the ${T.covered ?? 0} already complete` : ""}${Z.hookPartial ? ", LONG swaps" : ""}${Z.rialtoPartial ? ", Rialto" : ""}. The figures fill in over the next slow runs.</p>` : ""}`;
@@ -3303,9 +3306,18 @@ function renderSince(R, pending) {
       tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>$${compact(r.longAllVolUsd)} of stock traded through LONG pools</div><div class="k">$${compact(r.cum)} cumulative since launch</div>`,
     });
   } else $("#cVolShare").innerHTML = `<p class="muted" style="padding:12px 0">Fills in as the LONG swap stream backfills.</p>`;
+  /* NVDA issuance: what Robinhood minted and redeemed each day, three weeks before
+     LONG's launch onwards, so the change in minting is visible against the launch. */
+  const mrows = nvOk && N.priceUsd ? N.days.filter((r) => r.t >= N.launch.t - 21 * 86400) : [];
+  if (mrows.length > 1) groupedBars($("#cNvdaMint"), mrows, {
+    xKey: "t", keys: ["mintedUsd", "burnedUsd"], colors: ["var(--series-1)", "color-mix(in srgb, var(--series-3) 60%, transparent)"], fmt: (v) => `$${compact(v)}`,
+    tip: (r) => `<div class="k">${dayFmt(r.t)}${r.t === N.launch.t ? " · LONG launch day" : ""}</div><div><span style="color:var(--series-1)">●</span> minted $${compact(r.mintedUsd)} (${r.mints} mint${r.mints === 1 ? "" : "s"})</div><div><span style="color:var(--series-3)">●</span> redeemed $${compact(r.burnedUsd)} (${r.burns})</div><div class="k">net ${r.netUsd >= 0 ? "+" : "−"}$${compact(Math.abs(r.netUsd))} · supply ${compact(r.supply)} NVDA</div>`,
+  });
+  else $("#cNvdaMint").innerHTML = `<p class="muted" style="padding:12px 0">Fills in once the NVDA mint stream has run.</p>`;
   $("#readSince").innerHTML = takeEl(longShare >= 0.08 ? "pos" : "neu",
     `${ready ? `Across ${covNote}, DEX liquidity has grown to <b>$${compact(last.allInvUsd)}</b>${growth ? ` (${xf(growth)} since LONG launched)` : ""} and LONG holds <b>${pctLevel(longShare, 1)}</b> of it.` : `The liquidity history is still backfilling (streams complete for ${pctLevel(Z.coverage, 1)} of DEX stock value).`}
      LONG's pools have traded <b>$${compact(T.longAllVolUsd)}</b> of tokenized stock since launch${censusShare != null ? `, and in the measured window LONG carried <b>${pctLevel(censusShare, 1)}</b> of all stock trading by LONG's own Dune definition` : ""}.
+     ${nvOk ? `Robinhood's tokenized NVDA supply is <b>${xf(N.multiple)}</b> what it was on launch day (${compact(N.launch.supply)} → ${compact(N.now.supply)} NVDA), read from the token's own mints and redemptions; the chart shows issuance per day, and Robinhood pauses minting and redemption over weekends.` : ""}
      <span class="muted">Inventory from each token's transfers through the pool manager (exact: the manager's balance only moves by transfer); LONG's volume from the hook's swap event; today's prices, complete UTC days. A since-inception volume share needs the same event on both sides, and the chain-wide Swap tape is tens of millions of events, so the transfer-basis share is published only as an upper bound.</span>`);
 }
 
