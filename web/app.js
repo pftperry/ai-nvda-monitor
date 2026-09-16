@@ -3439,6 +3439,54 @@ function renderCaptureStrip(R, D) {
       <div class="sn">${n}</div></div>`).join("")}</div>`;
 }
 
+/* Backing tab: the stock standing behind each LONG pair, ranked. Rows come from
+   rwa.backing (the position replay joined to each pool's launched token); the sort
+   control only reorders what is already measured. Bars share one scale per column:
+   the largest value in the column is the full bar, so a ratio of "half as much" is
+   drawn as half. */
+let backingSort = "backing";
+function renderBacking() {
+  const R = S.rwa, B = R?.backing, host = $("#backingRows");
+  if (!B?.rows?.length) { host.innerHTML = `<p class="muted">Built on the slow path; this table fills after the next standard run.</p>`; $("#backingKpis").innerHTML = ""; $("#readBacking").innerHTML = ""; return; }
+  const rows = B.rows.filter((r) => r.mcapUsd > 0 && r.backing != null).slice();
+  const key = backingSort;
+  rows.sort((a, b) => (b[key] ?? -1) - (a[key] ?? -1));
+  const maxB = maxOf(rows.map((r) => r.backing || 0)), maxS = maxOf(rows.map((r) => r.stockShare || 0));
+  const ai = rows.find((r) => r.symbol === "AI"), top = rows.slice().sort((a, b) => b.backing - a.backing)[0];
+  const stockTotal = sumOf(rows, (r) => r.stockUsd), volTotal = sumOf(rows, (r) => r.vol24hUsd);
+  $("#backingKpis").innerHTML = `<div class="tiles three">
+    ${tile("Pairs ranked", rows.length, `the LONG pools holding the most stock (${B.poolsConsidered} pools read${B.poolsWithoutCensus ? `, ${B.poolsWithoutCensus} not yet in the census` : ""})`)}
+    ${tile("Stock behind them", `$${compact(stockTotal)}`, `inside these pairs' pools, from the position replay · $${compact(volTotal)} traded through them in the last ${B.windowHours ?? 24}h`)}
+    ${top ? tile("Most stock per dollar of cap", `${top.symbol} / ${top.anchorSymbol}`, `${(100 * top.backing).toFixed(1)}¢ of ${top.anchorSymbol} behind each $1 of market cap${ai && ai !== top ? ` · AI carries ${(100 * ai.backing).toFixed(1)}¢` : ""}`, "", "hero") : ""}
+  </div>`;
+  const cents = (v) => `${(100 * v).toFixed(v >= 0.1 ? 0 : 1)}¢`;
+  host.innerHTML = `<div class="brow head"><div>Pair</div><div class="bn">Market cap</div><div class="bn">Stock in pools</div><div>Stock per $1 of cap</div><div>Share of the stock's supply</div><div class="bn">Volume ${B.windowHours ?? 24}h</div></div>` +
+    rows.map((r) => `<div class="brow">
+      <div class="bp">${r.symbol}<small>on ${r.anchorSymbol}${r.pools > 1 ? ` · ${r.pools} pools` : ""}</small></div>
+      <div class="bn m" data-l="cap">$${compact(r.mcapUsd)}</div>
+      <div class="bn s" data-l="stock">$${compact(r.stockUsd)}</div>
+      <div class="bb b1" title="${(100 * r.backing).toFixed(2)} cents of stock per dollar of market cap"><i style="width:${(100 * r.backing / (maxB || 1)).toFixed(1)}%"></i><b style="left:${Math.min(88, 100 * r.backing / (maxB || 1) + 1).toFixed(1)}%">${cents(r.backing)}</b></div>
+      <div class="bb b2 blue" title="${r.stockShare == null ? "" : `${(100 * r.stockShare).toFixed(1)}% of all tokenized ${r.anchorSymbol} on the chain`}"><i style="width:${(100 * (r.stockShare || 0) / (maxS || 1)).toFixed(1)}%"></i><b style="left:${Math.min(88, 100 * (r.stockShare || 0) / (maxS || 1) + 1).toFixed(1)}%">${r.stockShare == null ? "—" : pctLevel(r.stockShare, r.stockShare < 0.1 ? 1 : 0)}</b></div>
+      <div class="bn v dim" data-l="vol">$${compact(r.vol24hUsd)}</div>
+    </div>`).join("");
+  const byShare = rows.slice().sort((a, b) => (b.stockShare || 0) - (a.stockShare || 0)).slice(0, 2);
+  $("#readBacking").innerHTML = takeEl("neu",
+    `${top ? `<b>${top.symbol}</b> on ${top.anchorSymbol} carries the most stock per dollar of market cap, <b>${cents(top.backing)}</b>.` : ""}
+     ${byShare.length ? `By share of the whole tokenized supply the venue pairs are ${byShare.map((r) => `<b>${r.symbol}</b> (${pctLevel(r.stockShare, 0)} of all ${r.anchorSymbol})`).join(" and ")}.` : ""}
+     ${ai ? `AI holds the most stock in absolute terms, <b>$${compact(ai.stockUsd)}</b> of NVDA, and <b>${cents(ai.backing)}</b> per dollar of its cap.` : ""}
+     <span class="muted">Stock per pool from the position replay; each token's market cap from its own supply at the pool's last price; a pool's stock is exact, so pairs sharing a stock are no longer approximated. Refreshes every standard run.</span>`);
+  const seg = $("#backingSort");
+  if (!seg.dataset.bound) {
+    seg.dataset.bound = "1";
+    seg.addEventListener("click", (ev) => {
+      const b = ev.target.closest("button[data-k]"); if (!b) return;
+      backingSort = b.dataset.k;
+      for (const o of seg.querySelectorAll("button")) o.setAttribute("aria-pressed", o === b ? "true" : "false");
+      renderBacking();
+    });
+  }
+}
+
 function renderRwa() {
   const R = S.rwa, D = S.depth;
   const px = marketState().price || 0;
@@ -4605,6 +4653,7 @@ function renderAges() {
 function renderAll() {
   renderInvestor(); renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
   try { renderRwa(); } catch (e) { console.error("renderRwa", e); }
+  try { renderBacking(); } catch (e) { console.error("renderBacking", e); }
   try { renderRevenue(); } catch (e) { console.error("renderRevenue", e); }
   try { renderHolders(); } catch (e) { console.error("renderHolders", e); /* optional; never blank the tab */ }
   renderAges();

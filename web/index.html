@@ -33,6 +33,7 @@
 <nav class="tabs">
   <div class="inner" role="tablist">
     <button class="tab" role="tab" id="tab-investor"  aria-controls="p-investor"  aria-selected="true">RWA</button>
+    <button class="tab" role="tab" id="tab-backing"   aria-controls="p-backing"   aria-selected="false">Backing</button>
     <button class="tab" role="tab" id="tab-valuation" aria-controls="p-valuation" aria-selected="false">Valuation</button>
     <button class="tab" role="tab" id="tab-flow"      aria-controls="p-flow"      aria-selected="false">Tape</button>
     <button class="tab" role="tab" id="tab-float"     aria-controls="p-float"     aria-selected="false">Supply &amp; Holders</button>
@@ -116,6 +117,27 @@
       <div class="chart" id="cRunners"></div>
       <div id="takeRunners"></div>
       <div class="scroll"><table id="tRunners"></table></div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── Backing: real stock behind each LONG pair ───────────────────────── -->
+  <section class="panel" id="p-backing" role="tabpanel" aria-labelledby="tab-backing" hidden>
+    <div class="card">
+      <h3>Real stock behind each LONG pair</h3>
+      <div class="agenote" data-age="rwa" hidden></div>
+      <p class="sub">For the LONG pools holding the most tokenized stock: the stock inside the pair's pools against the token's market cap, that stock as a share of the whole tokenized supply, and the last day's volume. A pair that keeps trading and keeps piling up stock is the profile this page ranks.</p>
+      <div class="controls" id="backingSort" role="group" aria-label="Sort">
+        <span class="muted">Sort by</span>
+        <div class="seg">
+          <button data-k="backing" aria-pressed="true">Stock per $ of cap</button>
+          <button data-k="stockUsd" aria-pressed="false">Stock in pools</button>
+          <button data-k="stockShare" aria-pressed="false">Share of supply</button>
+          <button data-k="vol24hUsd" aria-pressed="false">Volume</button>
+        </div>
+      </div>
+      <div id="backingKpis"></div>
+      <div id="backingRows"></div>
+      <div id="readBacking"></div>
     </div>
   </section>
 

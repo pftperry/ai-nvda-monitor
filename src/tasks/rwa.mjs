@@ -348,7 +348,7 @@ export async function indexRwa(latest, tm, opts = {}) {
     let SW = store && store.get("rwaSwapHours");
     if (!SW || SW.v !== 1) SW = { v: 1, cursor: null, first: null, hours: {} };
     const hourOf = (b) => tm.hourBucket(b);
-    const bucket = (h) => { const b = (SW.hours[h] ||= { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, perToken: {} }); for (const k of ["perpSwaps", "perpLongSwaps", "perpUsd", "perpLongUsd"]) b[k] ??= 0; return b; };
+    const bucket = (h) => { const b = (SW.hours[h] ||= { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, perToken: {} }); for (const k of ["perpSwaps", "perpLongSwaps", "perpUsd", "perpLongUsd"]) b[k] ??= 0; b.perPool ??= {}; return b; };
     const stockUsd = (e, a0, a1) => { for (const { token, side } of e.stocks) { const px = anchorUsd.get(token); if (!px) continue; return fmtUnits(abs(side === 0 ? a0 : a1), decimals.get(token) ?? 18) * px; } return 0; };
     /* LongX vault-share pools (perps) are bucketed apart, never into the stock
        figures: Dune's convention, and the honest one. */
@@ -373,7 +373,7 @@ export async function indexRwa(latest, tm, opts = {}) {
         const h = hourOf(parseInt(l.blockNumber, 16)); if (h == null) continue;
         const B = bucket(h), usd = stockUsd(e, int256(word(l.data, 3)), int256(word(l.data, 4)));
         B.hookSwaps++; B.hookUsd += usd;
-        if (topicAddr(l.topics[1]) === LONG_BUYBACK) B.buybackSwaps++; else B.hookUserUsd += usd;
+        if (topicAddr(l.topics[1]) === LONG_BUYBACK) B.buybackSwaps++; else { B.hookUserUsd += usd; B.perPool[l.topics[3]] = (B.perPool[l.topics[3]] || 0) + usd; }
       }
     };
     const foldRialto = (logs) => {
@@ -413,10 +413,11 @@ export async function indexRwa(latest, tm, opts = {}) {
     const hoursCovered = Math.max(0, Math.round((endHour - Math.max(startHour, firstHour)) / 3600) + 1);
     const inWin = Object.entries(SW.hours).map(([k, B]) => [Number(k), B]).filter(([h]) => h >= startHour && h <= endHour).sort((x, y) => x[0] - y[0]);
     const tot = { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, perpSwaps: 0, perpLongSwaps: 0, perpUsd: 0, perpLongUsd: 0 };
-    const per = new Map();
+    const per = new Map(), perPool = new Map();
     for (const [, B] of inWin) {
       for (const k of Object.keys(tot)) tot[k] += B[k] || 0;
       for (const [token, p] of Object.entries(B.perToken || {})) { const r = per.get(token) || { all: 0, long: 0, usdAll: 0, usdLong: 0 }; r.all += p.all; r.long += p.long; r.usdAll += p.usdAll; r.usdLong += p.usdLong; per.set(token, r); }
+      for (const [id, v] of Object.entries(B.perPool || {})) perPool.set(id, (perPool.get(id) || 0) + v);
     }
     const denominatorUsd = tot.usdAll + tot.rialtoUsd;
     swapShare = {
@@ -436,6 +437,8 @@ export async function indexRwa(latest, tm, opts = {}) {
         share: B.usdAll + B.rialtoUsd > 0 ? B.hookUsd / (B.usdAll + B.rialtoUsd) : null })),
       perToken: [...per].map(([t, r]) => ({ token: t, symbol: sym(t), all: r.all, long: r.long, share: r.all ? r.long / r.all : null,
         usdAll: Math.round(r.usdAll), usdLong: Math.round(r.usdLong) })).sort((x, y) => y.usdAll - x.usdAll || y.all - x.all),
+      /* User stock volume per LONG pool (the hook's event, buyback legs excluded), for the backing table. */
+      perPool: Object.fromEntries([...perPool].sort((a, b) => b[1] - a[1]).slice(0, 400).map(([id, v]) => [id, Math.round(v)])),
     };
     log(`  stock trading, rolling ${hoursCovered}h of ${WINDOW_H}h${truncated ? " (resumes)" : ""}: ${tot.stockSwaps.toLocaleString()} stock-pool swaps of ${tot.chainSwaps.toLocaleString()} on chain, ${tot.longSwaps.toLocaleString()} through LONG pools (${tot.stockSwaps ? (100 * tot.longSwaps / tot.stockSwaps).toFixed(1) : "—"}% by count, ${tot.usdAll ? (100 * tot.usdLong / tot.usdAll).toFixed(1) : "—"}% by dollars); Dune method: LONG $${Math.round(tot.hookUsd).toLocaleString()} (${tot.hookSwaps} hook swaps, ${tot.buybackSwaps} buyback) of $${Math.round(denominatorUsd).toLocaleString()} incl. Rialto $${Math.round(tot.rialtoUsd).toLocaleString()} (${tot.rialtoFills} fills) → ${denominatorUsd ? (100 * tot.hookUsd / denominatorUsd).toFixed(1) : "—"}%, cursor ${SW.cursor.toLocaleString()}, ${secs(t4)}`);
   }
@@ -454,6 +457,7 @@ export async function indexRwa(latest, tm, opts = {}) {
         if it has never traded -- a pool that never traded holds no stock anyway,
         since launches seed the launched token alone. */
   let longTvl = null;
+  const poolStock = [];   // every valued LONG pool's stock leg, for the backing table below
   if (allStockPools.size) {
     const t4 = Date.now();
     const longIds = new Set([...allStockPools].filter(([, e]) => e.long).map(([id]) => id));
@@ -498,6 +502,7 @@ export async function indexRwa(latest, tm, opts = {}) {
         const amt = (side === 0 ? a0 : a1) / 10 ** (decimals.get(token) ?? 18);
         const px = anchorUsd.get(token); if (!px || !(amt > 0)) continue;
         usd += amt * px; perToken[sym(token)] = (perToken[sym(token)] || 0) + amt * px; counted = true;
+        poolStock.push({ id, token, side, units: amt, usd: amt * px, sqrtP });
       }
       if (counted) valued++;
     }
@@ -524,6 +529,59 @@ export async function indexRwa(latest, tm, opts = {}) {
       method: "LONG's Dune definition: launches from the factories' LaunchCreated, v4 pools valued from their position ladders, graduated pools (Airlock.Migrate) by balance",
     };
     log(`  stock inventory in LONG pools: $${Math.round(usd).toLocaleString()} in v4 across ${valued} pools with stock (${withLiquidity} with liquidity of ${longIds.size}) + $${Math.round(graduatedUsd).toLocaleString()} in ${graduatedPools} graduated pools (${launched.size} launches, ${Object.keys(reg.migrations).length} migrations); ladder stream at block ${LS.cursor.toLocaleString()} (${(100 * longTvl.backfillShare).toFixed(1)}% of history${LS.partial ? ", resumes" : ""}), ${seen.toLocaleString()} events this run, ${secs(t4)}`);
+  }
+
+  /* 4b'. Stock backing per pair. For the LONG pools holding the most stock, the
+        launched token behind each pool (from the census, which carries both
+        currencies), that token's market cap (its own totalSupply at the pool's last
+        price, in stock, times the stock's Chainlink price), the stock inside its pools,
+        that stock as a share of the whole tokenized supply, and the last day's user
+        volume through the pools. Everything here is already measured above; this
+        joins it per pair so the pairs can be ranked by how much real stock stands
+        behind each dollar of market cap. */
+  let backing = null;
+  if (longTvl && poolStock.length) {
+    const t5 = Date.now();
+    const census = new Map(pools.map((p) => [p.id, p]));
+    const top = poolStock.sort((a, b) => b.usd - a.usd).slice(0, 80);
+    const byAsset = new Map(); let unknown = 0;
+    for (const p of top) {
+      const c = census.get(p.id); if (!c) { unknown++; continue; }
+      const asset = p.side === 0 ? c.c1 : c.c0;
+      const r = byAsset.get(asset) || { asset, pools: [], stockUsd: 0 };
+      r.pools.push(p); r.stockUsd += p.usd; byAsset.set(asset, r);
+    }
+    const assets = [...byAsset.keys()];
+    const meta = assets.length ? await resolveTokens(assets) : new Map();
+    const sup = assets.length ? await multicall(assets.map((a) => ({ to: a, data: SUPPLY_SEL }))) : [];
+    const supplyOf = new Map(tokens.map((t) => [t.token, t.supply]));
+    const rows = [];
+    assets.forEach((a, i) => {
+      const r = byAsset.get(a), m = meta.get(a), dec = m?.decimals ?? 18;
+      const supply = sup[i] && sup[i] !== "0x" ? fmtUnits(BigInt(sup[i]), dec) : 0;
+      const main = r.pools.sort((x, y) => y.usd - x.usd)[0];
+      const sdec = decimals.get(main.token) ?? 18, px = anchorUsd.get(main.token);
+      /* sqrtP squared is token1 per token0 in raw units; scale to whole units, then
+         read the asset's price in the stock from whichever side it sits on. */
+      const stockIs0 = main.side === 0;
+      const p1per0 = main.sqrtP * main.sqrtP * 10 ** ((stockIs0 ? sdec : dec) - (stockIs0 ? dec : sdec));
+      const assetInStock = stockIs0 ? (p1per0 > 0 ? 1 / p1per0 : 0) : p1per0;
+      const priceUsd = px && assetInStock > 0 ? assetInStock * px : null;
+      const mcapUsd = priceUsd && supply > 0 ? priceUsd * supply : null;
+      const anchorUnits = r.pools.filter((q) => q.token === main.token).reduce((s, q) => s + q.units, 0);
+      const stockSupply = supplyOf.get(main.token) || 0;
+      rows.push({
+        asset: a, symbol: m?.symbol || a.slice(0, 8), anchor: main.token, anchorSymbol: sym(main.token), pools: r.pools.length, poolId: main.id,
+        stockUsd: Math.round(r.stockUsd), stockUnits: +anchorUnits.toFixed(4), stockShare: stockSupply > 0 ? anchorUnits / stockSupply : null,
+        supply: +supply.toFixed(2), priceUsd, mcapUsd: mcapUsd == null ? null : Math.round(mcapUsd),
+        backing: mcapUsd > 0 ? r.stockUsd / mcapUsd : null,
+        vol24hUsd: Math.round(r.pools.reduce((s, q) => s + (swapShare?.perPool?.[q.id] || 0), 0)),
+      });
+    });
+    rows.sort((a, b) => b.stockUsd - a.stockUsd);
+    backing = { rows, poolsConsidered: top.length, poolsWithoutCensus: unknown, windowHours: swapShare?.windowHours ?? null, at: Math.floor(Date.now() / 1000),
+      method: "stock per pool from the position replay; asset price from the pool's last swap price times the stock's Chainlink price; market cap from the asset's own totalSupply; volume from the hook's swap event, buyback legs excluded" };
+    log(`  backing per pair: ${rows.length} pair(s) from the ${top.length} LONG pools holding the most stock${unknown ? ` (${unknown} not in the census)` : ""}; top ${rows.slice(0, 3).map((r) => `${r.symbol}/${r.anchorSymbol} $${r.stockUsd.toLocaleString()} behind $${(r.mcapUsd || 0).toLocaleString()}`).join(", ")}, ${secs(t5)}`);
   }
 
   /* 4c. Two histories since the chain went live, for the growth charts.
@@ -825,7 +883,7 @@ export async function indexRwa(latest, tm, opts = {}) {
     classifier: { ...STOCK_CODE, event: STOCK_EVENT, note: "Robinhood tokenized-stock beacon proxy: same bytecode and beacon as NVDA; emits the stock transfer event" },
     minDegree: MIN_DEGREE,
     universe: { activeTokens: Object.keys(uni.active).length, samples: uni.samples, blocksSampled: uni.blocksSampled, partial: uni.partial },
-    tokens, totals, swapShare, longTvl, series, history,
+    tokens, totals, swapShare, longTvl, backing, series, history,
     dailyTracked: Object.fromEntries(DAILY_TRACKED.map((t) => [t, sym(t)])),
     daily,
     dailyPartial: Object.fromEntries(DAILY_TRACKED.map((t) => [t, !!dexState[t]?.partial])),

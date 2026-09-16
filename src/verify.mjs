@@ -473,6 +473,17 @@ if (rwa && rwa.tokens?.length) {
       drift == null ? "no on-chain supply to compare" : `${(N.now.supply + (N.today?.net || 0)).toLocaleString()} rebuilt vs ${N.now.onChain.toLocaleString()} on chain (${(drift * 100).toFixed(2)}% apart)${N.partial ? "; stream still catching up" : ""}`);
     warn("NVDA supply at LONG's launch is known", N.launch?.supply > 0 && N.multiple != null, N.launch ? `${N.launch.supply} NVDA on launch day, ${N.multiple}× since` : "launch day not yet in range");
   }
+  if (rwa.backing) {
+    const K = rwa.backing;
+    check("backing rows are sane: positive stock, market cap and supply, shares within the stock's supply",
+      Array.isArray(K.rows) && K.rows.every((r) => r.stockUsd >= 0 && (r.mcapUsd == null || r.mcapUsd > 0) && r.supply >= 0 && (r.stockShare == null || (r.stockShare >= 0 && r.stockShare <= 1.05)) && (r.backing == null || r.backing >= 0) && r.vol24hUsd >= 0),
+      `${K.rows.length} pair(s) from ${K.poolsConsidered} pools`);
+    check("backing stock never exceeds the LONG stock inventory it is drawn from",
+      rwa.longTvl ? K.rows.reduce((s, r) => s + r.stockUsd, 0) <= rwa.longTvl.usd * 1.01 + 1000 : true,
+      `$${K.rows.reduce((s, r) => s + r.stockUsd, 0).toLocaleString()} across rows vs $${(rwa.longTvl?.usd ?? 0).toLocaleString()} in all LONG pools`);
+    warn("every backing pair is priced", K.rows.every((r) => r.mcapUsd > 0), `${K.rows.filter((r) => !(r.mcapUsd > 0)).map((r) => r.symbol).join(", ") || "all priced"}`);
+    warn("every top pool is in the census", !K.poolsWithoutCensus, `${K.poolsWithoutCensus || 0} pool(s) without a census entry`);
+  }
   if (rwa.series) {
     const Z = rwa.series, todayStart = Math.floor(Date.now() / 86400000) * 86400;
     check("since-inception history is ordered, complete days only",
