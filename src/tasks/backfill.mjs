@@ -83,6 +83,9 @@ export async function indexBackingBackfill(latest, tm, opts = {}) {
   const t0 = Date.now();
   let BF = store && store.get("backingBackfill");
   if (!BF || BF.v !== 2) BF = { v: 2, pools: {} };
+  /* One-time: pools created before AI genesis had their early swaps stamped 14 Jul by
+     the old time map; their tapes are dropped and re-streamed from creation. */
+  if (!BF.preFixed) { for (const [id, P] of Object.entries(BF.pools)) if ((P.first ?? 0) < 9_721_433) delete BF.pools[id]; BF.preFixed = true; }
   let streamed = 0, done = 0;
   /* Cohort pools first (small tapes, and the test is worthless without them), then
      the tracked pairs; no single pool may take more than a third of what is left,

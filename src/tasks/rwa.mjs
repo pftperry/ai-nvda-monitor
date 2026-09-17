@@ -137,9 +137,7 @@ const EXCLUDE = new Set([AI, USDG, "0x0000000000000000000000000000000000000000"]
  * and every later run pays for a few hours.
  */
 async function dexInventoryDaily(token, latest, tm, prior, opts) {
-  const state = prior && prior.cursor ? { ...prior, byDay: { ...prior.byDay } } : { cursor: GENESIS_BLOCK - 1, byDay: {} };
-  const from = Math.max(GENESIS_BLOCK, state.cursor + 1);
-  if (from > latest) return state;
+  const state = prior && prior.cursor ? { ...prior, byDay: { ...prior.byDay } } : { cursor: GENESIS_BLOCK - 1, byDay: {}, pre: true };
   const fold = (sign) => (logs) => {
     for (const l of logs) {
       const t = decodeTransfer(l);
@@ -148,6 +146,20 @@ async function dexInventoryDaily(token, latest, tm, prior, opts) {
       state.byDay[d] = (state.byDay[d] || 0) + sign * fmtUnits(t.value, opts.decimals ?? 18);
     }
   };
+  /* One-time pre pass: the replay began at AI genesis, but stock had already been
+     sitting in the manager since LONG's first pools, so the level ran a little low
+     (NVDA: about 240 shares against the live balance). The chain's first block to
+     AI genesis, both directions, added once and remembered. */
+  if (!state.pre) {
+    const pin = await getLogsRange({ address: token, topics: [TOPICS.TRANSFER, null, padAddr(POOL_MANAGER)] }, 0, GENESIS_BLOCK - 1, { deadline: opts.deadline, onLogs: fold(1), chunk: 2_000_000 });
+    if (!pin.truncated) {
+      const pout = await getLogsRange({ address: token, topics: [TOPICS.TRANSFER, padAddr(POOL_MANAGER), null] }, 0, GENESIS_BLOCK - 1, { deadline: opts.deadline + 120_000, onLogs: fold(-1), chunk: 2_000_000 });
+      if (!pout.truncated) state.pre = true;
+    }
+    if (!state.pre) return prior && prior.cursor ? { ...prior, partial: true } : { ...state, byDay: {}, partial: true };   // a half pass is not kept
+  }
+  const from = Math.max(GENESIS_BLOCK, state.cursor + 1);
+  if (from > latest) return state;
   /* The two scans must end at the same block or a day could hold inflows without
      its outflows. The first scan sets the reach; the second is bounded by it. */
   const inLogs = await getLogsRange({ address: token, topics: [TOPICS.TRANSFER, null, padAddr(POOL_MANAGER)] }, from, latest, { deadline: opts.deadline, onLogs: fold(1), chunk: 200_000 });
@@ -545,12 +557,12 @@ export async function indexRwa(latest, tm, opts = {}) {
         graduatedUsd += amt * px; perToken[sym(g.numeraire)] = (perToken[sym(g.numeraire)] || 0) + amt * px; graduatedPools++;
       });
     }
-    const span = latest - GENESIS_BLOCK + 1;
+    const span = latest - LONG_GENESIS_BLOCK + 1;
     longTvl = {
       usd: Math.round(usd + graduatedUsd), v4Usd: Math.round(usd), graduatedUsd: Math.round(graduatedUsd),
       pools: valued, poolsWithLiquidity: withLiquidity, poolsUnpriced: unpriced, longStockPools: longIds.size,
       graduatedPools, graduatedCandidates: grads.length, launches: launched.size, migrations: Object.keys(reg.migrations).length, registryPartial: !!reg.partial,
-      backfilledTo: LS.cursor, complete: !LS.partial && LS.cursor >= latest, backfillShare: Math.min(1, (LS.cursor - GENESIS_BLOCK + 1) / span),
+      backfilledTo: LS.cursor, complete: !LS.partial && LS.cursor >= latest, backfillShare: Math.min(1, (LS.cursor - LONG_GENESIS_BLOCK + 1) / span),
       events: LS.events,
       perToken: Object.fromEntries(Object.entries(perToken).map(([k, v]) => [k, Math.round(v)]).sort((a, b) => b[1] - a[1])),
       method: "LONG's Dune definition: launches from the factories' LaunchCreated, v4 pools valued from their position ladders, graduated pools (Airlock.Migrate) by balance",
@@ -644,9 +656,9 @@ export async function indexRwa(latest, tm, opts = {}) {
             pool-perspective sum is Dune's "stock held in LONG pools".
         Per day, per stock, in stock units; valued at today's prices when published
         (stated on the page). Every identified stock token is covered. Streamed
-        and cursor-resumed; the first pass wants a deep run. The shared timemap
-        starts at AI genesis (14 Jul); the chain's first block is 30 Apr, so a
-        pre-genesis anchor set is built once and kept with the state. */
+        and cursor-resumed; the first pass wants a deep run. The shared timemap now
+        covers the whole chain; the pre-genesis anchor set kept here predates that
+        and is harmless (the map sorts and tolerates duplicates). */
   let series = null;
   if (allStockPools.size && timeLeft()) {
     const t5 = Date.now();

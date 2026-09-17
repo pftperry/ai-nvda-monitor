@@ -25,7 +25,7 @@ export async function indexStockPrices(latest, tm, opts = {}) {
   const stocks = opts.stocks || [], usdgPools = opts.usdgPools || [], rank = opts.rank, decimals = opts.decimals;
   const t0 = Date.now();
   let PX = store && store.get("stockPx");
-  if (!PX || PX.v !== 2) PX = { v: 2, stocks: {} };
+  if (!PX || PX.v !== 3) PX = { v: 3, stocks: {} };   // v3: day stamps from the whole-chain time map
   /* Every USDG pool per stock, for the ones without a feed: a stock's deepest pool
      today may be days old, so all of them are folded and each day's close is taken
      from whichever pool traded most that day. */

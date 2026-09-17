@@ -12,7 +12,7 @@ import { GENESIS_BLOCK } from "./config.mjs";
  */
 export class TimeMap {
   constructor(anchors = []) {
-    this.anchors = anchors.slice().sort((a, b) => a[0] - b[0]);
+    this.anchors = anchors.filter((a) => a[1] > 1_000_000_000).sort((a, b) => a[0] - b[0]);   // a zero-time anchor (block 0) would pull early blocks to 1970
   }
 
   static fromJSON(j) { return new TimeMap(j || []); }
@@ -111,6 +111,11 @@ export async function loadTimeMap(store, latest, io) {
   const stored = io?.read?.("anchors.json")?.anchors || store.get("timemap") || [];
   const tm = TimeMap.fromJSON(stored);
   const before = tm.toJSON().length;
+  /* The map used to start at AI's genesis (14 Jul), and at() clamps anything earlier
+     to its first anchor, so every pre-AI block -- LONG's first fortnight, some nine
+     thousand launches -- was stamped 14 Jul. Two passes keep the existing anchor grid:
+     the chain's first block to AI genesis (a one-time forty anchors), then the usual. */
+  await tm.build(1, GENESIS_BLOCK);   // block 0 carries a zero timestamp on this chain
   await tm.build(GENESIS_BLOCK, latest);
   const after = tm.toJSON().length;
   store.set("timemap", tm.toJSON());

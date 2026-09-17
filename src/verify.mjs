@@ -654,6 +654,12 @@ if (launchpad && launchpad.buckets?.length) {
   } else console.log("  --  liveness not measured in the run that wrote this artifact");
 
   const flow = lp.anchorFlow || [];
+  if (flow.length > 3) {
+    const aiDay = Math.floor(Date.UTC(2026, 6, 14) / 1000 / 86400) * 86400;
+    const i = flow.findIndex((d) => d.t === aiDay);
+    warn("launchpad day series starts before AI genesis (LONG's first fortnight has its own days)", flow[0].t < aiDay, `first day ${new Date(flow[0].t * 1000).toISOString().slice(0, 10)}`);
+    if (i > 0) warn("14 Jul is not a lump of pre-AI launches", flow[i].all <= 3 * Math.max(flow[i - 1].all, flow[i + 1]?.all || 0), `${flow[i].all} pools on 14 Jul against ${flow[i - 1].all} the day before`);
+  }
   if (flow.length) {
     check("every day’s AI-anchored count fits inside that day’s pool count",
       flow.every((d) => d.ai >= 0 && d.all > 0 && d.ai <= d.all),
