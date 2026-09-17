@@ -172,7 +172,7 @@ jobs:
               MODE="deep"
               mkdir -p .cache && echo "$NOW" > .cache/last-weekly-deep && echo "$NOW" > .cache/last-standard-attempt
               echo "weekly deep run (last one $(( SINCE_DEEP / 86400 ))d ago)"
-            elif [ "$AGE" -gt 21600 ] && [ "$SINCE_TRY" -gt 10800 ]; then
+            elif [ "$AGE" -gt 7200 ] && [ "$SINCE_TRY" -gt 5400 ]; then
               MODE="standard"
               mkdir -p .cache && echo "$NOW" > .cache/last-standard-attempt
             else MODE="fast"; fi

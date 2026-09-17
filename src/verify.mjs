@@ -488,6 +488,7 @@ if (rwa && rwa.tokens?.length) {
         pd.every((o) => Array.isArray(o.days) && o.days.every((d, i, a) => (i === 0 || d.t > a[i - 1].t) && d.gross >= 0 && d.swaps >= 0 && (d.priceInStock == null || d.priceInStock > 0))),
         `${pd.length} pair(s), ${pd.reduce((s, o) => s + o.days.length, 0)} pair-days, ${F.complete} of ${F.pairs} at the head`);
       warn("backing backfill has reached the head for every tracked pair", F.complete >= F.pairs, `${F.pairs - F.complete} pair(s) still streaming`);
+      check("backfill today-so-far blocks are sane (0–24 hours, non-negative counts)", pd.every((o) => !o.today || (o.today.hours > 0 && o.today.hours <= 24.5 && o.today.swaps >= 0 && o.today.gross >= 0)));
       check("backfill dollar prices, where present, are positive and consistent with the stock close", pd.every((o) => o.days.every((d) => d.priceUsd == null || (d.priceUsd > 0 && d.stockUsd > 0 && Math.abs(d.priceUsd - d.priceInStock * d.stockUsd) <= 1e-9 * Math.max(1, d.priceUsd)))));
       warn("backfill has a dollar leg for most pair-days", (F.usdDays || 0) >= 0.8 * pd.reduce((s, o) => s + o.days.length, 0), `${F.usdDays || 0} of ${pd.reduce((s, o) => s + o.days.length, 0)} pair-days priced in dollars`);
     }

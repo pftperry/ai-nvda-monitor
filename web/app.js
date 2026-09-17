@@ -3515,25 +3515,36 @@ function ownRank(hist, key) {
   for (const v of pts) if (v < cur) below++;
   return below / (pts.length - 1);
 }
-/* Trend terms from the pair's daily backfill (complete UTC days from the pool's own
-   swap tape, traded days only): swaps in the last seven traded days against the seven
-   before; swaps yesterday against three traded days earlier; the pool's stock level
-   and the price in the stock against seven traded days earlier; and the last complete
-   day's turnover, which does not depend on how far into today's window the run is. */
-function backingTrends(days) {
-  const d = (days || []).filter((x) => x.swaps > 0 && x.priceInStock > 0), n = d.length, a = d[n - 1];
-  const sum = (arr, k) => arr.reduce((s, x) => s + x[k], 0);
-  const wk = d.slice(-7), pwk = n >= 14 ? d.slice(-14, -7) : null;
+/* Trend terms, read intraday. The tape gives complete UTC days plus today so far on
+   the same basis (pool.today), and the census gives the live inventory and price, so
+   every term moves each standard run instead of once a day:
+     trailing 24h swaps  = today so far + yesterday's remaining share of the day
+     swaps vs week       = trailing 24h against the mean of the last seven complete days
+     swaps vs 3d ago     = trailing 24h against the complete day three days back
+     stock held vs 7d    = the tape's level now (level at last close + today's flow)
+                           against its level at the close seven days ago
+     price vs 7d / 28d   = the live dollar price against the tape's dollar close then
+   The backtest was run on end-of-day readings of the same shapes; these are the
+   intraday reads of them. */
+function backingTrends(days, today, live) {
+  const all = (days || []).filter((x) => x.priceInStock > 0), d = all.filter((x) => x.swaps > 0), n = d.length, a = d[n - 1];
+  const byT = new Map(all.map((x) => [x.t, x]));
+  const dayStart = today?.t ?? (a ? a.t + 86400 : null);
+  const back = (k) => (dayStart != null ? byT.get(dayStart - k * 86400) : null) || (n > k ? d[n - 1 - k] : null);   // complete day k days ago, nearest traded day as fallback
+  const yday = a && dayStart != null && a.t === dayStart - 86400 ? a : null;
+  const hours = today?.hours ?? null;
+  const trailing24 = today && yday ? today.swaps + yday.swaps * Math.max(0, 1 - hours / 24) : today ? today.swaps / Math.max(0.25, Math.min(1, hours / 24)) : a ? a.swaps : null;
+  const wkMean = n >= 7 ? d.slice(-7).reduce((s, x) => s + x.swaps, 0) / 7 : null;
+  const d3 = back(3), d7 = back(7), d28 = back(28);
+  const unitsNow = live?.unitsDeltaNow ?? (a ? a.units : null);
+  const priceNow = live?.priceUsd > 0 ? live.priceUsd : (a?.priceUsd > 0 ? a.priceUsd : null);
   return {
-    tradedDays: n,
-    swWk: pwk && sum(pwk, "swaps") > 0 ? sum(wk, "swaps") / sum(pwk, "swaps") - 1 : null,
-    dSw3: n >= 4 && d[n - 4].swaps > 0 ? a.swaps / d[n - 4].swaps - 1 : null,
-    dU7: n >= 8 && d[n - 8].units > 0 && a.units > 0 ? a.units / d[n - 8].units - 1 : null,
-    /* price changes in dollars (USDG), the pair's price in its stock times the stock's
-       close that day; the in-stock change is kept for the read-out */
-    pr7: n >= 8 && d[n - 8].priceUsd > 0 && a.priceUsd > 0 ? a.priceUsd / d[n - 8].priceUsd - 1 : null,
-    pr28: n >= 29 && d[n - 29].priceUsd > 0 && a.priceUsd > 0 ? a.priceUsd / d[n - 29].priceUsd - 1 : null,
-    pr7Stock: n >= 8 && d[n - 8].priceInStock > 0 ? a.priceInStock / d[n - 8].priceInStock - 1 : null,
+    tradedDays: n, hoursToday: hours, trailing24,
+    swWk: trailing24 != null && wkMean > 0 ? trailing24 / wkMean - 1 : null,
+    dSw3: trailing24 != null && d3?.swaps > 0 ? trailing24 / d3.swaps - 1 : null,
+    dU7: unitsNow > 0 && d7?.units > 0 ? unitsNow / d7.units - 1 : null,
+    pr7: priceNow && d7?.priceUsd > 0 ? priceNow / d7.priceUsd - 1 : null,
+    pr28: priceNow && d28?.priceUsd > 0 ? priceNow / d28.priceUsd - 1 : null,
     priceUsdClose: a && a.priceUsd > 0 ? a.priceUsd : null,
     dayTurnover: a && a.turnover != null ? a.turnover : null,
   };
@@ -3609,9 +3620,11 @@ function renderBacking() {
   if (!B?.rows?.length) { host.innerHTML = `<tr><td class="muted">Built on the slow path; this table fills after the next standard run.</td></tr>`; $("#backingKpis").innerHTML = ""; $("#readBacking").innerHTML = ""; $("#backingFoot").innerHTML = ""; return; }
   const hist = B.history || {}, bf = B.backfill?.pools || {};
   const all = B.rows.filter((r) => r.mcapUsd > 0 && r.backing != null).map((r) => {
-    const tr = backingTrends(bf[r.asset]?.days);
+    const pool = bf[r.asset];
+    const tr = backingTrends(pool?.days, pool?.today, { unitsDeltaNow: pool?.unitsDeltaNow, priceUsd: r.priceUsd });
     const liveTurnover = r.mcapUsd > 0 && r.vol24hUsd != null ? r.vol24hUsd / r.mcapUsd : null;
-    const row = { ...r, ...tr, liveTurnover, turnover: tr.dayTurnover ?? liveTurnover };
+    /* turnover: the live 24h read once the window has most of a day in it, else the last complete day */
+    const row = { ...r, ...tr, liveTurnover, turnover: (B.windowHours ?? 0) >= 20 && liveTurnover != null ? liveTurnover : (tr.dayTurnover ?? liveTurnover) };
     row.tier = backingTierOf(row);
     Object.assign(row, backingScore(row));
     row.own = ownRank(hist[r.asset], "backing");
@@ -3643,7 +3656,7 @@ function renderBacking() {
   const th = (k, label, cls = "", title = "") => `<th class="${cls}${backingSort === k ? " on" : ""}" data-k="${k}" title="${title}">${label}</th>`;
   const q = (k, v) => tint(pctRank(col(k), v));
   host.innerHTML = `<thead><tr>
-      <th class="r">#</th><th>Pair</th>${th("score", "Forward Looking", "r", "points from a base of 50 for the shapes that led price in both samples, see the definitions below")}<th>Signals</th>${th("standing", "Stock-Based", "r", "the thesis profile as percentile ranks: share ×3, cushion ×2, turnover fit ×2, swaps ×1, stock ×1; describes the pair, does not forecast it")}${th("swWk", "Swaps, wk/wk", "r", "swaps in the last seven traded days against the seven before")}${th("dU7", "Stock held, 7d", "r", "the pool's stock level against seven traded days earlier")}${th("pr7", "Price, 7d", "r", "the pair's dollar price (price in its stock times the stock's close) against seven traded days earlier")}${th("pr28", "Price, 28d", "r", "the pair's dollar price against 28 traded days earlier")}${th("mcapUsd", "Market cap", "r")}${th("stockUsd", "Stock in pools", "r")}${th("backing", "Stock per $1 cap", "r", "cents of stock behind each dollar of market cap")}${th("stockShare", "Share of stock", "r", "share of the stock's whole tokenized supply held in the pair")}${th("turnover", "Turnover", "r", "last complete day's stock traded over market cap; 1% to 50% reads as a market")}<th>Own 30d</th>
+      <th class="r">#</th><th>Pair</th>${th("score", "Forward Looking", "r", "points from a base of 50 for the shapes that led price in both samples, see the definitions below")}<th>Signals</th>${th("standing", "Stock-Based", "r", "the thesis profile as percentile ranks: share ×3, cushion ×2, turnover fit ×2, swaps ×1, stock ×1; describes the pair, does not forecast it")}${th("swWk", "Swaps, 24h vs week", "r", "swaps in the trailing 24 hours against the average complete day of the last seven")}${th("dU7", "Stock held, vs 7d ago", "r", "the pool's stock level now against its level at the close seven days ago")}${th("pr7", "Price, vs 7d ago", "r", "the pair's live dollar price against its dollar close seven days ago")}${th("pr28", "Price, vs 28d ago", "r", "the pair's live dollar price against its dollar close 28 days ago")}${th("mcapUsd", "Market cap", "r")}${th("stockUsd", "Stock in pools", "r")}${th("backing", "Stock per $1 cap", "r", "cents of stock behind each dollar of market cap")}${th("stockShare", "Share of stock", "r", "share of the stock's whole tokenized supply held in the pair")}${th("turnover", "Turnover", "r", "last complete day's stock traded over market cap; 1% to 50% reads as a market")}<th>Own 30d</th>
     </tr></thead><tbody>` +
     rows.map((r, i) => `<tr>
       <td class="r muted mono">${i + 1}</td>
@@ -3673,7 +3686,7 @@ function renderBacking() {
      ${venues.length ? `<b>${venues.map((r) => r.symbol).join(", ")}</b> hold over a tenth of their stock's tokenized supply.` : ""}
      ${byShare.length ? `The largest holders of their stock's tokenized supply are ${byShare.map((r) => `<b>${r.symbol}</b> (${pctLevel(r.stockShare, 0)} of all ${r.anchorSymbol})`).join(" and ")}; share carries no score weight because a higher share preceded weaker weeks in every cut of the test.` : ""}
      ${ai ? `AI holds the most stock in absolute terms, <b>$${compact(ai.stockUsd)}</b> of NVDA, and <b>${cents(ai.backing)}</b> per dollar of its cap.` : ""}
-     <span class="muted">Forward Looking is points from 50 and Stock-Based is the thesis profile as percentile ranks (definitions below); shading is percentile rank among the rows shown, one hue, for reading only. Trend columns come from each pool's own daily swap tape, complete UTC days, traded days only; price changes are in dollars (USDG), the pair's price in its stock times that day's stock close. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; turnover is the last complete day's. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
+     <span class="muted">Forward Looking is points from 50 and Stock-Based is the thesis profile as percentile ranks (definitions below); shading is percentile rank among the rows shown, one hue, for reading only. Trend columns are read intraday: the trailing 24 hours of each pool's own swap tape against its complete days, the live stock level and dollar price against the closes 7 and 28 days back; they move every standard run, about every two hours. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; turnover is the last complete day's. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
   renderScoreTest(R.scoreTest);
   const bind = (sel, attr, set) => { const seg = $(sel); if (seg.dataset.bound) return; seg.dataset.bound = "1";
     seg.addEventListener("click", (ev) => { const b = ev.target.closest(`button[${attr}]`); if (!b) return; set(b.getAttribute(attr)); for (const o of seg.querySelectorAll("button")) o.setAttribute("aria-pressed", o === b ? "true" : "false"); renderBacking(); }); };

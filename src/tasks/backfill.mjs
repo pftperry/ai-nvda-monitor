@@ -145,8 +145,18 @@ export async function indexBackingBackfill(latest, tm, opts = {}) {
     }
     /* Today's exact figure from the position replay, for scale against the swap-delta level. */
     const todayNet = Object.entries(P.days).filter(([t]) => Number(t) >= todayStart).reduce((s, [, v]) => s + v.net, 0);
+    /* Today so far, on the tape's own basis, so the tab can read the score intraday:
+       swaps, flow and the last print since 00:00 UTC, with the hours elapsed. Only
+       when the pool's tape is at the head; a stale cursor would understate the day. */
+    const TD = P.days[todayStart];
+    const hoursToday = Math.max(0.1, (Math.floor(Date.now() / 1000) - todayStart) / 3600);
+    const tsq = TD?.last ? Number(BigInt(TD.last)) / 2 ** 96 : null;
+    const stockIs0T = p.stockSide === 0, decT = p.decimals ?? 18, sdecT = p.stockDecimals ?? 18;
+    const tp1 = tsq ? tsq * tsq * 10 ** ((stockIs0T ? sdecT : decT) - (stockIs0T ? decT : sdecT)) : null;
+    const todayPriceInStock = tp1 == null ? null : stockIs0T ? (tp1 > 0 ? 1 / tp1 : null) : tp1;
+    const today = atHead ? { t: todayStart, hours: +hoursToday.toFixed(2), swaps: TD?.swaps || 0, net: +(TD?.net || 0).toFixed(4), gross: +(TD?.gross || 0).toFixed(4), priceInStock: todayPriceInStock } : null;
     out[p.asset] = { symbol: p.symbol, anchorSymbol: p.anchorSymbol, poolId: p.poolId, cohort: !!p.cohort, cursor: P.cursor, partial: !atHead, from: P.first, createdBlock: p.createdBlock ?? null,
-      unitsNow: p.stockUnits ?? null, unitsDeltaNow: atHead ? +(level + todayNet).toFixed(4) : null, days: rows };
+      unitsNow: p.stockUnits ?? null, unitsDeltaNow: atHead ? +(level + todayNet).toFixed(4) : null, today, days: rows };
   }
   const summary = { pairs: pairs.length, tracked: pairs.filter((p) => !p.cohort).length, cohort: pairs.filter((p) => p.cohort).length, complete: done, streamedThisRun: streamed, usdDays, secs: Math.round((Date.now() - t0) / 1000),
     method: "each pair's main LONG pool's Swap events from the pool's creation, folded into UTC days: pool-perspective stock delta summed into a running level (Dune's swap-delta definition, an upper bound), gross stock traded, swap count, closing sqrtPrice; prices in the stock, and in dollars where the stock's daily close is known (Chainlink feed or deepest USDG pool); the asset's supply is today's; the cohort is a deterministic sample of LONG stock pairs launched at least thirty days ago, chosen by pool id" };
