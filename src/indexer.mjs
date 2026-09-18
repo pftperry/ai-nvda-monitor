@@ -523,7 +523,7 @@ if (!fast && !flag("no-launchpad")) {
       if (registry && !fast) {
         try {
           venues = await indexVenues(latest, registry, { store, deadline: Date.now() + opt("venues-budget", deep ? 300 : 120) * 1000 });
-          venueSwaps = await indexVenueSwaps(latest, tm, venues, { store, deadline: Date.now() + opt("venue-swaps-budget", deep ? 420 : 150) * 1000 });
+          venueSwaps = await indexVenueSwaps(latest, tm, venues, { store, deadline: Date.now() + opt("venue-swaps-budget", deep ? 1800 : 150) * 1000 });
           rialto = await indexRialto(latest, tm, registry, { store, from: C.LONG_GENESIS_BLOCK, deadline: Date.now() + opt("rialto-budget", deep ? 300 : 120) * 1000 });
         } catch (e) { softFail("other venues and Rialto", e, "the series keeps v4 and the old fill event"); }
       }
