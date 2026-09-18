@@ -90,7 +90,7 @@ export async function indexRegistry(latest, opts = {}) {
 export async function indexFeeds(latest, registry, opts = {}) {
   const store = opts.store, log = opts.log || console.log;
   let F = store && store.get("rwaFeeds");
-  if (!F || F.v !== 1) F = { v: 1, cursor: 0, feeds: {}, seen: {} };
+  if (!F || F.v !== 2) F = { v: 2, cursor: 0, feeds: {}, seen: {} };   // v2: the hyphen naming is matched too
   /* Discovery only needs to notice an aggregator once, so the scan keeps a cursor and
      looks for addresses it has not already resolved. */
   if (F.cursor < latest) {
@@ -109,7 +109,10 @@ export async function indexFeeds(latest, registry, opts = {}) {
         const d = desc[i] && desc[i] !== "0x" ? abiString(desc[i], 0) : null;
         F.seen[a] = 1;
         if (!d) return;
-        const m = /Robinhood\s+([A-Za-z0-9.]+)\s*\/\s*USD/.exec(d) || /^RH([A-Za-z0-9.]+)\s*\/\s*USD/.exec(d);
+        /* Robinhood names its feeds three ways: "Robinhood PLTR / USD", "RHNVDA / USD"
+           and "Robinhood DELL-USD". The hyphen form is worth accepting: it is how USAR,
+           SGOV and DELL are written, and a slash-only match leaves them silently unpriced. */
+        const m = /Robinhood\s+([A-Za-z0-9.]+)\s*[/-]\s*USD/.exec(d) || /^RH([A-Za-z0-9.]+)\s*[/-]\s*USD/.exec(d);
         const ticker = m?.[1];
         const token = ticker ? bySymbol.get(ticker) : null;
         if (token) F.feeds[a] = { ticker, token, description: d };
