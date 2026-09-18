@@ -20,7 +20,7 @@ import { indexPerps } from "./tasks/perps.mjs";
 import { indexStockSupply } from "./tasks/stocksupply.mjs";
 import { indexBackingBackfill, cohortPairs } from "./tasks/backfill.mjs";
 import { indexStockPrices } from "./tasks/stockpx.mjs";
-import { indexRegistry, indexFeeds, indexHourlyPrices } from "./tasks/registry.mjs";
+import { indexRegistry, indexFeeds, indexHourlyPrices, indexDerivedPrices, combinedPriceReader } from "./tasks/registry.mjs";
 import { indexVenues, indexVenueSwaps, indexRialto } from "./tasks/venues.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
@@ -505,12 +505,16 @@ if (!fast && !flag("no-launchpad")) {
          their hourly answers: the universe and the prices LONG's dashboard uses.
          All three are cheap and cursor-resumed; a failure leaves the older
          bytecode-and-head-price path in place rather than blanking the tab. */
-      let registry = null, priceAt = null, feeds = null, hourly = null;
+      let registry = null, priceAt = null, feeds = null, hourly = null, derivedPx = null;
       try {
         registry = await indexRegistry(latest, { store, deadline: Date.now() + opt("registry-budget", 120) * 1000 });
         feeds = await indexFeeds(latest, registry, { store, deadline: Date.now() + opt("feeds-budget", 240) * 1000 });
         hourly = await indexHourlyPrices(latest, tm, feeds, { store, deadline: Date.now() + opt("hourly-budget", deep ? 420 : 180) * 1000 });
-        priceAt = hourly.priceAt;
+        /* Two thirds of the registry has no Chainlink feed, HIMS, AMC, GLD and RDDT
+           among them, and those anchor large LONG pairs. Their USDG pools price them
+           hourly so their history is not valued at today's price. */
+        derivedPx = await indexDerivedPrices(latest, tm, registry, feeds, { store, usdgPools: census.usdgPools, deadline: Date.now() + opt("derived-budget", deep ? 420 : 150) * 1000 });
+        priceAt = combinedPriceReader(hourly, feeds, derivedPx);
       } catch (e) { softFail("registry and hourly prices", e, "the bytecode universe and head prices stay in place"); }
       /* The venues the denominator used to miss (a v2 and a v3 factory) and Robinhood's
          own venue, whose event format changed on 15 Sep. Slow path only, cursor-resumed,
@@ -565,6 +569,7 @@ if (!fast && !flag("no-launchpad")) {
         byClass: Object.values(registry.tokens).reduce((m, t) => ((m[t.assetClass] = (m[t.assetClass] || 0) + 1), m), {}),
         feeds: feeds ? Object.keys(feeds.feeds).length : 0, pricedTokens: feeds ? new Set(Object.values(feeds.feeds).map((f) => f.token)).size : 0,
         hourlyAnswers: hourly ? Object.values(hourly.at).reduce((s, a) => s + a.length, 0) : 0,
+        derivedTokens: derivedPx ? Object.keys(derivedPx.at || {}).length : 0, derivedPartial: !!derivedPx?.partial,
         method: "Robinhood's stock factory announces every listing (name, symbol); names containing 'Dollar' are dropped and the rest classed treasury/commodity/etf/stock by name, as LONG's Dune queries do. Prices are every Chainlink aggregator on the chain, found by its update event and identified by its own description(), folded to the last answer of each UTC hour and forward-filled." } : null;
       writeData("rwa.json", rwa);
     } catch (e) {

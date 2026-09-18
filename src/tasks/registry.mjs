@@ -1,5 +1,7 @@
 import { rpc, getLogsRange } from "../rpc.mjs";
 import { multicall } from "../tokens.mjs";
+import { POOL_MANAGER, USDG } from "../config.mjs";
+import { TOPICS } from "../decode.mjs";
 
 /**
  * The tokenized-stock universe and its hourly dollar prices, on LONG's Dune
@@ -35,6 +37,7 @@ const TOKEN_LISTED = "0xd9b0c6a1c0de228715ad0fa09f3259686ee84f8cc675e03ef7e47a9c
 export const TOKEN_FACTORY = "0x4783c67b63de2b358ac5951a7d41f47a38f3c046";
 const DESCRIPTION = "0x7284e416";
 const HOUR = 3600;
+const SWAP_TOPIC = TOPICS.SWAP;
 
 const addrOf = (hex) => "0x" + hex.slice(-40).toLowerCase();
 /** ABI-decode a dynamic string at word `i` of `data` (offset word, then length, then bytes). */
@@ -189,6 +192,106 @@ export function priceReader(P, feeds) {
     const h = Math.floor(t / HOUR) * HOUR;
     let lo = 0, hi = arr.length - 1, best = -1;
     if (arr[0][0] > h) return null;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (arr[mid][0] <= h) { best = mid; lo = mid + 1; } else hi = mid - 1; }
+    return best < 0 ? null : arr[best][1];
+  };
+}
+
+/**
+ * Hourly prices for the listed tokens that have no Chainlink feed (Dune query_8391616).
+ *
+ * Two thirds of the registry has no aggregator, and among them are HIMS, AMC, GLD and
+ * RDDT, which anchor some of LONG's largest pairs. Left unpriced they fall back to
+ * today's price for the whole of history, which is exactly the error the hourly feeds
+ * were introduced to remove. Dune derives their prices from settlement prints; the
+ * pool tape is the same observation with more of them, so each token's USDG pools
+ * supply the price directly from the swap's own sqrtPrice.
+ *
+ * Per hour the median print wins, which discards the launch-day snipes and the
+ * one-sided fills a mean would follow. A per-token sanity band, anchored to the first
+ * hour that has at least three prints, throws out the prints that are orders of
+ * magnitude away: an illiquid listing's first trades can be 200x off and a single one
+ * of those can otherwise own an hour.
+ */
+export async function indexDerivedPrices(latest, tm, registry, feeds, opts = {}) {
+  const store = opts.store, log = opts.log || console.log;
+  const usdgPools = opts.usdgPools || [];
+  let D = store && store.get("rwaDerivedPx");
+  if (!D || D.v !== 1) D = { v: 1, cursor: null, hours: {}, at: {} };
+  const hasFeed = new Set(Object.values(feeds.feeds || {}).map((f) => f.token));
+  /* Only the listed tokens without a feed, and only where a USDG pool exists to
+     price them from. */
+  const want = new Map();
+  for (const p of usdgPools) {
+    const other = p.c0 === USDG ? p.c1 : p.c0;
+    if (other === USDG || !registry.tokens[other] || hasFeed.has(other)) continue;
+    if (!want.has(other)) want.set(other, []);
+    want.get(other).push(p);
+  }
+  if (!want.size) { log(`  derived prices: no feedless listed token has a USDG pool`); return { ...D, at: D.at }; }
+  const byPool = new Map();
+  for (const [token, pools] of want) for (const p of pools) byPool.set(p.id, { token, tokenIsC0: p.c0 === token });
+  const ids = [...byPool.keys()].slice(0, 960);          // one topic-set scan
+  if (D.cursor == null) D.cursor = (tm.blockAt(opts.since ?? Date.UTC(2026, 6, 1) / 1000) ?? 1) - 1;
+  if (D.cursor < latest) {
+    let seen = 0;
+    const r = await getLogsRange({ address: POOL_MANAGER, topics: [SWAP_TOPIC, ids] }, D.cursor + 1, latest, {
+      chunk: 400_000, deadline: opts.deadline,
+      onLogs: (logs) => {
+        for (const l of logs) {
+          const m = byPool.get(l.topics[1]); if (!m) continue;
+          const t = tm.at(parseInt(l.blockNumber, 16)); if (t == null) continue;
+          const sq = Number(BigInt("0x" + l.data.slice(2 + 64 * 2, 2 + 64 * 3))) / 2 ** 96;
+          if (!(sq > 0)) continue;
+          /* price of token1 per token0, decimals-adjusted, then oriented so the answer
+             is USDG per stock unit (USDG is six decimals, the stocks eighteen) */
+          const p1per0 = sq * sq * 10 ** (m.tokenIsC0 ? 18 - 6 : 6 - 18);
+          const usd = m.tokenIsC0 ? p1per0 : p1per0 > 0 ? 1 / p1per0 : 0;
+          if (!(usd > 0) || !isFinite(usd)) continue;
+          const h = Math.floor(t / HOUR) * HOUR;
+          const key = m.token + ":" + h;
+          (D.hours[key] ||= []).push(+usd.toPrecision(8));
+          if (D.hours[key].length > 24) D.hours[key].splice(0, D.hours[key].length - 24);   // a sample is enough for a median
+          seen++;
+        }
+      },
+    });
+    D.cursor = r.reachedBlock ?? latest;
+    D.partial = !!r.truncated;
+    /* Fold the collected prints into one price per token-hour: the median, gated by a
+       band around the token's own first well-observed hour. */
+    const median = (a) => { const v = a.slice().sort((x, y) => x - y); return v[v.length >> 1]; };
+    const anchors = {};
+    for (const [key, arr] of Object.entries(D.hours)) {
+      const token = key.slice(0, key.lastIndexOf(":"));
+      if (arr.length >= 3 && anchors[token] == null) anchors[token] = median(arr);
+    }
+    D.at = {};
+    for (const [key, arr] of Object.entries(D.hours)) {
+      const i = key.lastIndexOf(":"), token = key.slice(0, i), h = Number(key.slice(i + 1));
+      const anchor = anchors[token];
+      const kept = anchor ? arr.filter((v) => v >= anchor / 30 && v <= anchor * 30) : arr;
+      if (!kept.length) continue;
+      (D.at[token] ||= []).push([h, median(kept)]);
+    }
+    for (const a of Object.values(D.at)) a.sort((x, y) => x[0] - y[0]);
+    if (store) store.set("rwaDerivedPx", D);
+    log(`  derived prices: ${seen.toLocaleString()} pool prints this run for ${want.size} feedless listed tokens, ${Object.keys(D.at).length} now priced${D.partial ? ", resumes next run" : ", at the head"}`);
+  }
+  return D;
+}
+
+/** Feed prices first, pool-derived prices where a token has no feed. */
+export function combinedPriceReader(P, feeds, derived) {
+  const fromFeeds = priceReader(P, feeds);
+  const byToken = new Map(Object.entries(derived?.at || {}));
+  return (token, t) => {
+    const v = fromFeeds(token, t);
+    if (v != null) return v;
+    const arr = byToken.get(token); if (!arr?.length) return null;
+    const h = Math.floor(t / HOUR) * HOUR;
+    if (arr[0][0] > h) return null;
+    let lo = 0, hi = arr.length - 1, best = -1;
     while (lo <= hi) { const mid = (lo + hi) >> 1; if (arr[mid][0] <= h) { best = mid; lo = mid + 1; } else hi = mid - 1; }
     return best < 0 ? null : arr[best][1];
   };
