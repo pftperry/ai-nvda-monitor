@@ -860,7 +860,7 @@ export async function indexRwa(latest, tm, opts = {}) {
     const covered = new Set(universe.filter(complete));
     const cumAll = {}, cumLong = {};
     const rows = days.map((d) => {
-      let allInv = 0, dexVol = 0, feeLegs = 0, rialtoDex = 0, longInv = 0, longVol = 0, longUser = 0, longAllUser = 0, longAllGross = 0, rialtoVol = 0;
+      let allInv = 0, dexVol = 0, feeLegs = 0, rialtoDex = 0, longInv = 0, longVol = 0, longUser = 0, longAllUser = 0, longAllGross = 0, rialtoVol = 0, otherVol = 0;
       for (const [tok, st] of Object.entries(F.tokens)) {
         if (!covered.has(tok)) continue;
         const c = st.days[d]?.x; if (!c) continue;
@@ -875,7 +875,14 @@ export async function indexRwa(latest, tm, opts = {}) {
         if (covered.has(tok)) { longVol += (c.vol || 0) * p; longUser += (c.volUser || 0) * p; }
       }
       for (const tok of Object.keys(cumLong)) if (covered.has(tok)) longInv += Math.max(0, cumLong[tok]) * px(tok);
-      for (const [tok, c] of Object.entries(F.rialto.days[d] || {})) if (covered.has(tok)) rialtoVol += (c.vol || 0) * pxAt(tok, d);
+      /* Robinhood's own venue. The venue replaced its fill event on 15 Sep 2026, so the
+         dedicated stream reads both formats and supersedes the old one-format fold; the
+         amounts it carries are already in USDG and need no price. */
+      if (opts.rialto) { for (const [tok, v] of Object.entries(opts.rialto.days?.[d] || {})) if (covered.has(tok)) rialtoVol += v; }
+      else for (const [tok, c] of Object.entries(F.rialto.days[d] || {})) if (covered.has(tok)) rialtoVol += (c.vol || 0) * pxAt(tok, d);
+      /* Every other DEX on the chain: the v2 and v3 factories the denominator used to
+         miss entirely, in stock units priced at the day's own answer. */
+      for (const [tok, u] of Object.entries(opts.venueSwaps?.days?.[d] || {})) if (covered.has(tok)) otherVol += u * pxAt(tok, d);
       const dexUser = Math.max(0, dexVol - feeLegs);                 // trades only: the hook's and buyback's fee legs are not volume
       const rialtoOnly = Math.max(0, rialtoVol - rialtoDex);         // fills Rialto settled itself, not the ones it routed into the pools
       /* Transfer-basis volume counts stock entering or leaving the manager. Under v4
@@ -884,9 +891,9 @@ export async function indexRwa(latest, tm, opts = {}) {
          the hook's event still records them; the share is therefore an upper bound
          and is capped at one. */
       const R = (v) => Math.round(v);
-      return { t: d, allInvUsd: R(allInv), longInvUsd: R(longInv), dexVolUsd: R(dexUser), rialtoVolUsd: R(rialtoOnly), allVolUsd: R(dexUser + rialtoOnly),
+      return { t: d, allInvUsd: R(allInv), longInvUsd: R(longInv), dexVolUsd: R(dexUser), rialtoVolUsd: R(rialtoOnly), otherVenueVolUsd: R(otherVol), allVolUsd: R(dexUser + rialtoOnly + otherVol),
         longVolUsd: R(longUser), longGrossVolUsd: R(longVol), longAllVolUsd: R(longAllUser), longAllGrossUsd: R(longAllGross),
-        shareDex: dexUser > 0 ? Math.min(1, longUser / dexUser) : null, shareAll: dexUser + rialtoOnly > 0 ? Math.min(1, longUser / (dexUser + rialtoOnly)) : null };
+        shareDex: dexUser > 0 ? Math.min(1, longUser / dexUser) : null, shareAll: dexUser + rialtoOnly + otherVol > 0 ? Math.min(1, longUser / (dexUser + rialtoOnly + otherVol)) : null };
     });
     /* Perps volume since launch rides on its own stream (F.perps), keyed by share. */
     for (const r of rows) { let v = 0, u = 0; for (const [tok, c] of Object.entries(F.perps?.days?.[r.t] || {})) { v += (c.vol || 0) * px(tok); u += (c.volUser || 0) * px(tok); } r.perpVolUsd = Math.round(v); r.perpUserVolUsd = Math.round(u); }
@@ -911,9 +918,10 @@ export async function indexRwa(latest, tm, opts = {}) {
       days: rows, stocks: universe.length, priced: universe.filter((a) => px(a) > 0).length, since: rows[0]?.t ?? null,
       coverage: totalDexUsd > 0 ? coveredUsd / totalDexUsd : null,   // share of today's DEX stock value whose stream has reached the head
       tokensPartial: universe.filter((a) => !complete(a)).map((a) => sym(a)),
-      hookCursor: F.hook.cursor, hookPartial: !!F.hook.partial, rialtoCursor: F.rialto.cursor, rialtoPartial: !!F.rialto.partial, poolSign,
+      hookCursor: F.hook.cursor, hookPartial: !!F.hook.partial, rialtoCursor: opts.rialto ? opts.rialto.cursor : F.rialto.cursor, rialtoPartial: opts.rialto ? !!opts.rialto.partial : !!F.rialto.partial, poolSign,
+      venues: opts.venues ? { pools: Object.keys(opts.venues.pools).length, partial: !!opts.venues.partial, swapsPartial: !!opts.venueSwaps?.partial } : null,
       reconcile, pricedAt: opts.priceAt ? "each day's own hourly Chainlink answer" : "today",
-      totals: { dexVolUsd: sum("dexVolUsd"), rialtoVolUsd: sum("rialtoVolUsd"), allVolUsd: sum("allVolUsd"), longVolUsd: sum("longVolUsd"), longAllVolUsd: sum("longAllVolUsd"), longAllGrossUsd: sum("longAllGrossUsd"),
+      totals: { dexVolUsd: sum("dexVolUsd"), rialtoVolUsd: sum("rialtoVolUsd"), otherVenueVolUsd: sum("otherVenueVolUsd"), allVolUsd: sum("allVolUsd"), longVolUsd: sum("longVolUsd"), longAllVolUsd: sum("longAllVolUsd"), longAllGrossUsd: sum("longAllGrossUsd"),
         shareDex: sum("dexVolUsd") > 0 ? Math.min(1, sum("longVolUsd") / sum("dexVolUsd")) : null, shareAll: sum("allVolUsd") > 0 ? Math.min(1, sum("longVolUsd") / sum("allVolUsd")) : null,
         shareDex7d: last7.reduce((s, r) => s + r.dexVolUsd, 0) > 0 ? Math.min(1, last7.reduce((s, r) => s + r.longVolUsd, 0) / last7.reduce((s, r) => s + r.dexVolUsd, 0)) : null,
         covered: covered.size, perpVolUsd: sum("perpVolUsd"), perpUserVolUsd: sum("perpUserVolUsd"), perpsPartial: !!F.perps?.partial, perpsSince: F.perps ? (rows.find((r) => r.perpVolUsd > 0)?.t ?? null) : null },

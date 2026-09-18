@@ -21,6 +21,7 @@ import { indexStockSupply } from "./tasks/stocksupply.mjs";
 import { indexBackingBackfill, cohortPairs } from "./tasks/backfill.mjs";
 import { indexStockPrices } from "./tasks/stockpx.mjs";
 import { indexRegistry, indexFeeds, indexHourlyPrices } from "./tasks/registry.mjs";
+import { indexVenues, indexVenueSwaps, indexRialto } from "./tasks/venues.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -511,8 +512,19 @@ if (!fast && !flag("no-launchpad")) {
         hourly = await indexHourlyPrices(latest, tm, feeds, { store, deadline: Date.now() + opt("hourly-budget", deep ? 420 : 180) * 1000 });
         priceAt = hourly.priceAt;
       } catch (e) { softFail("registry and hourly prices", e, "the bytecode universe and head prices stay in place"); }
+      /* The venues the denominator used to miss (a v2 and a v3 factory) and Robinhood's
+         own venue, whose event format changed on 15 Sep. Slow path only, cursor-resumed,
+         and optional: without them the series falls back to v4 plus the old fill event. */
+      let venues = null, venueSwaps = null, rialto = null;
+      if (registry && !fast) {
+        try {
+          venues = await indexVenues(latest, registry, { store, deadline: Date.now() + opt("venues-budget", deep ? 300 : 120) * 1000 });
+          venueSwaps = await indexVenueSwaps(latest, tm, venues, { store, deadline: Date.now() + opt("venue-swaps-budget", deep ? 420 : 150) * 1000 });
+          rialto = await indexRialto(latest, tm, registry, { store, from: C.LONG_GENESIS_BLOCK, deadline: Date.now() + opt("rialto-budget", deep ? 300 : 120) * 1000 });
+        } catch (e) { softFail("other venues and Rialto", e, "the series keeps v4 and the old fill event"); }
+      }
       const rwa = await indexRwa(latest, tm, {
-        store, pools: census.pools, symbols, decimals, anchorUsd: anchors, perpPools, registry, priceAt,
+        store, pools: census.pools, symbols, decimals, anchorUsd: anchors, perpPools, registry, priceAt, venues, venueSwaps, rialto,
         swaps: { counts: rank.counts, volume: rank.volume, last: rank.last, blocks: Math.round(C.BLOCKS_PER_DAY / 12), total: rank.swaps, truncated: rank.truncated },
         prior: readData("rwa.json"), deadline: rwaDeadline,
       });
