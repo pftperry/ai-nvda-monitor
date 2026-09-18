@@ -28,6 +28,12 @@ export const RIALTO_FILL_OLD = "0x4b02af496e764b30261032ae2ad58e4f96e73563c59fe3
 export const RIALTO_FILL_NEW = "0x824a7dbfc9f746ced98e93f691f8e5c68d0a549b6999eeaa16192f903e39aa27";
 export const RIALTO = "0x4262efbd176f02824af27010bea218429c33c7e8";
 const USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
+const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
+const LONG_HOOK = "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544";
+const HOOK_SWAP = "0x1d9f7b5e406d8c887155e1a78e070d2d41c5d0444dab8b21612f846835c27183";
+/* A pool whose other side is a quote asset is a plain stock trade; anything else is a
+   stock paired with a launchpad token. */
+const QUOTES = new Set([USDG, WETH, "0x0000000000000000000000000000000000000000"]);
 const HOUR = 3600;
 
 const addrOf = (h) => "0x" + h.slice(-40).toLowerCase();
@@ -79,14 +85,24 @@ export async function indexVenues(latest, registry, opts = {}) {
 export async function indexVenueSwaps(latest, tm, venues, opts = {}) {
   const store = opts.store, log = opts.log || console.log;
   let S = store && store.get("rwaVenueSwaps");
-  if (!S || S.v !== 1) S = { v: 1, cursor: null, days: {} };
+  if (!S || S.v !== 2) S = { v: 2, cursor: null, days: {} };   // v2: routed legs excluded
   const pools = Object.keys(venues.pools);
   if (!pools.length) return S;
   if (S.cursor == null) S.cursor = Math.min(...Object.values(venues.pools).map((p) => p.block)) - 1;
   if (S.cursor >= latest) { log(`  other-venue swaps: at the head`); return S; }
-  let folded = 0;
+  let folded = 0, routed = 0;
   /* One address-filtered scan over the whole pool set: the node takes an address list,
      and the two swap topics are OR'd in one filter. */
+  /* Dune drops a trade with no launchpad token when its transaction also contains a
+     stock-by-launchpad trade: one arbitrage route through a LONG pool and a plain
+     stock pool is one trade, not two, and counting both inflates the market. The
+     transactions carrying a LONG-pool swap are collected over the same block range
+     first, then a quote-paired venue trade inside one of them is skipped. */
+  const hookTxs = new Set();
+  await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, S.cursor + 1, latest, {
+    chunk: 1_000_000, deadline: opts.deadline,
+    onLogs: (logs) => { for (const l of logs) hookTxs.add(l.transactionHash); },
+  });
   const r = await getLogsRange({ address: pools, topics: [[V2_SWAP, V3_SWAP]] }, S.cursor + 1, latest, {
     chunk: 1_000_000, deadline: opts.deadline,
     onLogs: (logs) => {
@@ -104,6 +120,7 @@ export async function indexVenueSwaps(latest, tm, venues, opts = {}) {
           units = absBig(int(word(l.data, p.stockIsToken0 ? 0 : 1)));
         }
         if (units <= 0n) continue;
+        if (QUOTES.has(p.other) && hookTxs.has(l.transactionHash)) { routed++; continue; }   // routed leg
         const row = (S.days[d] ||= {});
         row[p.stock] = (row[p.stock] || 0) + Number(units) / 1e18;
         folded++;
@@ -113,7 +130,7 @@ export async function indexVenueSwaps(latest, tm, venues, opts = {}) {
   S.cursor = r.reachedBlock ?? latest;
   S.partial = !!r.truncated;
   if (store) store.set("rwaVenueSwaps", S);
-  log(`  other-venue swaps: ${folded.toLocaleString()} folded this run, ${Object.keys(S.days).length} days${S.partial ? ", resumes next run" : ", at the head"}`);
+  log(`  other-venue swaps: ${folded.toLocaleString()} folded this run, ${routed.toLocaleString()} routed legs skipped, ${Object.keys(S.days).length} days${S.partial ? ", resumes next run" : ", at the head"}`);
   return S;
 }
 
