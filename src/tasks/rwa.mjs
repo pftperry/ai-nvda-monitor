@@ -273,17 +273,37 @@ export async function indexRwa(latest, tm, opts = {}) {
     try { codeCache[a] = isStockCode(await rpc("eth_getCode", [a, "latest"])); looked++; } catch { /* left unknown; retried next run */ }
   }
   if (store) store.set("rwaCode", codeCache);
-  const stocks = candidates.filter((a) => codeCache[a] === true);
+  /* The universe is Robinhood's own listing registry when the caller supplies it
+     (LONG's Dune definition: every token the stock factory announced, stablecoins
+     dropped by name). Bytecode classification stays as the fallback and as a check:
+     a registry token that fails it, or a classified token the registry never listed,
+     is worth knowing about. */
+  const listing = opts.registry?.tokens || null;
+  const stocks = listing ? Object.keys(listing) : candidates.filter((a) => codeCache[a] === true);
+  if (listing) {
+    for (const [a, t] of Object.entries(listing)) { if (t.symbol) symbols.set(a, t.symbol); if (!decimals.has(a)) decimals.set(a, 18); }
+    const byCode = candidates.filter((a) => codeCache[a] === true);
+    const extra = byCode.filter((a) => !listing[a]);
+    log(`  universe: ${stocks.length} listed tokens from the registry (bytecode found ${byCode.length}, ${extra.length} of them unlisted${extra.length ? ": " + extra.slice(0, 6).map((a) => symbols.get(a) || a.slice(0, 8)).join(", ") : ""})`);
+  }
   const unlisted = stocks.filter((a) => !(degree.get(a) > 0));
   if (unlisted.length) {
     const meta = await resolveTokens(unlisted.filter((a) => !symbols.has(a)), { log: () => {} });
     for (const [a, m] of meta) { if (m.symbol) symbols.set(a, m.symbol); if (m.decimals != null) decimals.set(a, m.decimals); }
   }
-  log(`  ${candidates.length} candidate tokens, ${looked} newly classified, ${stocks.length} are Robinhood stock tokens by bytecode (${unlisted.length} with no LONG pool)`);
+  if (!listing) log(`  ${candidates.length} candidate tokens, ${looked} newly classified, ${stocks.length} are Robinhood stock tokens by bytecode (${unlisted.length} with no LONG pool)`);
 
   /* 1b. Dollar prices from the Chainlink aggregators LONG's dashboard uses, where a
         stock has one; pool prints otherwise. One multicall. */
-  const feedTokens = stocks.filter((a) => CHAINLINK_FEEDS[a]);
+  /* The hourly reader knows every aggregator on the chain, not just the thirty this
+     file once hard-coded, so it is asked first. */
+  if (opts.priceAt) {
+    const nowT = tm.at(latest) ?? Math.floor(Date.now() / 1000);
+    let n = 0;
+    for (const a of stocks) { const v = opts.priceAt(a, nowT); if (v > 0) { anchorUsd.set(a, v); priceSource[a] = "chainlink"; n++; } }
+    log(`  prices: ${n} stocks priced from discovered Chainlink feeds at the head`);
+  }
+  const feedTokens = stocks.filter((a) => !anchorUsd.has(a) && CHAINLINK_FEEDS[a]);
   if (feedTokens.length) {
     const ans = await multicall(feedTokens.map((a) => ({ to: CHAINLINK_FEEDS[a], data: LATEST_ANSWER })));
     feedTokens.forEach((a, i) => {
@@ -673,7 +693,12 @@ export async function indexRwa(latest, tm, opts = {}) {
        big ones; a token first seen later starts from block 0 in its own batch. */
     const universe = [...stocks];
     const tracked = new Set(universe);
+    /* A trade is worth what the stock was worth when it happened. `px` keeps the
+       head price for balances and inventory; `pxAt` prices a day's flow at that day's
+       own hourly answer, which is how Dune values volume and is why a total built on
+       today's price ran high. */
     const px = (tok) => anchorUsd.get(tok) || 0;
+    const pxAt = opts.priceAt ? (tok, day) => { const v = opts.priceAt(tok, day + 12 * 3600); return v > 0 ? v : (anchorUsd.get(tok) || 0); } : (tok) => anchorUsd.get(tok) || 0;
     const addDay = (map, d, key, field, v) => { const row = (map[d] ||= {}); const cell = (row[key] ||= {}); cell[field] = (cell[field] || 0) + v; };
     const byCursor = new Map();
     for (const tok of universe) {
@@ -835,20 +860,22 @@ export async function indexRwa(latest, tm, opts = {}) {
     const covered = new Set(universe.filter(complete));
     const cumAll = {}, cumLong = {};
     const rows = days.map((d) => {
-      let allInv = 0, dexVol = 0, feeLegs = 0, rialtoDex = 0, longInv = 0, longVol = 0, longUser = 0, longAllUser = 0, rialtoVol = 0;
+      let allInv = 0, dexVol = 0, feeLegs = 0, rialtoDex = 0, longInv = 0, longVol = 0, longUser = 0, longAllUser = 0, longAllGross = 0, rialtoVol = 0;
       for (const [tok, st] of Object.entries(F.tokens)) {
         if (!covered.has(tok)) continue;
         const c = st.days[d]?.x; if (!c) continue;
-        cumAll[tok] = (cumAll[tok] || 0) + c.net; dexVol += c.gross * px(tok); feeLegs += (c.fee || 0) * px(tok); rialtoDex += (c.rialto || 0) * px(tok);
+        const p = pxAt(tok, d);
+        cumAll[tok] = (cumAll[tok] || 0) + c.net; dexVol += c.gross * p; feeLegs += (c.fee || 0) * p; rialtoDex += (c.rialto || 0) * p;
       }
       for (const tok of Object.keys(cumAll)) allInv += Math.max(0, cumAll[tok]) * px(tok);
       for (const [tok, c] of Object.entries(F.hook.days[d] || {})) {
+        const p = pxAt(tok, d);
         cumLong[tok] = (cumLong[tok] || 0) + poolSign * (c.delta || 0);
-        longAllUser += (c.volUser || 0) * px(tok);
-        if (covered.has(tok)) { longVol += (c.vol || 0) * px(tok); longUser += (c.volUser || 0) * px(tok); }
+        longAllUser += (c.volUser || 0) * p; longAllGross += (c.vol || 0) * p;
+        if (covered.has(tok)) { longVol += (c.vol || 0) * p; longUser += (c.volUser || 0) * p; }
       }
       for (const tok of Object.keys(cumLong)) if (covered.has(tok)) longInv += Math.max(0, cumLong[tok]) * px(tok);
-      for (const [tok, c] of Object.entries(F.rialto.days[d] || {})) if (covered.has(tok)) rialtoVol += (c.vol || 0) * px(tok);
+      for (const [tok, c] of Object.entries(F.rialto.days[d] || {})) if (covered.has(tok)) rialtoVol += (c.vol || 0) * pxAt(tok, d);
       const dexUser = Math.max(0, dexVol - feeLegs);                 // trades only: the hook's and buyback's fee legs are not volume
       const rialtoOnly = Math.max(0, rialtoVol - rialtoDex);         // fills Rialto settled itself, not the ones it routed into the pools
       /* Transfer-basis volume counts stock entering or leaving the manager. Under v4
@@ -858,7 +885,7 @@ export async function indexRwa(latest, tm, opts = {}) {
          and is capped at one. */
       const R = (v) => Math.round(v);
       return { t: d, allInvUsd: R(allInv), longInvUsd: R(longInv), dexVolUsd: R(dexUser), rialtoVolUsd: R(rialtoOnly), allVolUsd: R(dexUser + rialtoOnly),
-        longVolUsd: R(longUser), longGrossVolUsd: R(longVol), longAllVolUsd: R(longAllUser),
+        longVolUsd: R(longUser), longGrossVolUsd: R(longVol), longAllVolUsd: R(longAllUser), longAllGrossUsd: R(longAllGross),
         shareDex: dexUser > 0 ? Math.min(1, longUser / dexUser) : null, shareAll: dexUser + rialtoOnly > 0 ? Math.min(1, longUser / (dexUser + rialtoOnly)) : null };
     });
     /* Perps volume since launch rides on its own stream (F.perps), keyed by share. */
@@ -885,8 +912,8 @@ export async function indexRwa(latest, tm, opts = {}) {
       coverage: totalDexUsd > 0 ? coveredUsd / totalDexUsd : null,   // share of today's DEX stock value whose stream has reached the head
       tokensPartial: universe.filter((a) => !complete(a)).map((a) => sym(a)),
       hookCursor: F.hook.cursor, hookPartial: !!F.hook.partial, rialtoCursor: F.rialto.cursor, rialtoPartial: !!F.rialto.partial, poolSign,
-      reconcile, pricedAt: "today",
-      totals: { dexVolUsd: sum("dexVolUsd"), rialtoVolUsd: sum("rialtoVolUsd"), allVolUsd: sum("allVolUsd"), longVolUsd: sum("longVolUsd"), longAllVolUsd: sum("longAllVolUsd"),
+      reconcile, pricedAt: opts.priceAt ? "each day's own hourly Chainlink answer" : "today",
+      totals: { dexVolUsd: sum("dexVolUsd"), rialtoVolUsd: sum("rialtoVolUsd"), allVolUsd: sum("allVolUsd"), longVolUsd: sum("longVolUsd"), longAllVolUsd: sum("longAllVolUsd"), longAllGrossUsd: sum("longAllGrossUsd"),
         shareDex: sum("dexVolUsd") > 0 ? Math.min(1, sum("longVolUsd") / sum("dexVolUsd")) : null, shareAll: sum("allVolUsd") > 0 ? Math.min(1, sum("longVolUsd") / sum("allVolUsd")) : null,
         shareDex7d: last7.reduce((s, r) => s + r.dexVolUsd, 0) > 0 ? Math.min(1, last7.reduce((s, r) => s + r.longVolUsd, 0) / last7.reduce((s, r) => s + r.dexVolUsd, 0)) : null,
         covered: covered.size, perpVolUsd: sum("perpVolUsd"), perpUserVolUsd: sum("perpUserVolUsd"), perpsPartial: !!F.perps?.partial, perpsSince: F.perps ? (rows.find((r) => r.perpVolUsd > 0)?.t ?? null) : null },

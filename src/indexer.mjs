@@ -20,6 +20,7 @@ import { indexPerps } from "./tasks/perps.mjs";
 import { indexStockSupply } from "./tasks/stocksupply.mjs";
 import { indexBackingBackfill, cohortPairs } from "./tasks/backfill.mjs";
 import { indexStockPrices } from "./tasks/stockpx.mjs";
+import { indexRegistry, indexFeeds, indexHourlyPrices } from "./tasks/registry.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -499,8 +500,19 @@ if (!fast && !flag("no-launchpad")) {
       try {
         ({ perps, pools: perpPools } = await indexPerps(latest, tm, { store, anchorUsd: anchors, deadline: Date.now() + opt("perps-budget", deep ? 600 : 240) * 1000 }));
       } catch (e) { softFail("LongX perps", e, "the previous perps block stays in place"); perps = readData("rwa.json")?.perps ?? null; }
+      /* Robinhood's listing registry, every Chainlink aggregator on the chain and
+         their hourly answers: the universe and the prices LONG's dashboard uses.
+         All three are cheap and cursor-resumed; a failure leaves the older
+         bytecode-and-head-price path in place rather than blanking the tab. */
+      let registry = null, priceAt = null, feeds = null, hourly = null;
+      try {
+        registry = await indexRegistry(latest, { store, deadline: Date.now() + opt("registry-budget", 120) * 1000 });
+        feeds = await indexFeeds(latest, registry, { store, deadline: Date.now() + opt("feeds-budget", 240) * 1000 });
+        hourly = await indexHourlyPrices(latest, tm, feeds, { store, deadline: Date.now() + opt("hourly-budget", deep ? 420 : 180) * 1000 });
+        priceAt = hourly.priceAt;
+      } catch (e) { softFail("registry and hourly prices", e, "the bytecode universe and head prices stay in place"); }
       const rwa = await indexRwa(latest, tm, {
-        store, pools: census.pools, symbols, decimals, anchorUsd: anchors, perpPools,
+        store, pools: census.pools, symbols, decimals, anchorUsd: anchors, perpPools, registry, priceAt,
         swaps: { counts: rank.counts, volume: rank.volume, last: rank.last, blocks: Math.round(C.BLOCKS_PER_DAY / 12), total: rank.swaps, truncated: rank.truncated },
         prior: readData("rwa.json"), deadline: rwaDeadline,
       });
@@ -537,6 +549,11 @@ if (!fast && !flag("no-launchpad")) {
           catch (e) { softFail("score retest", e, "the previous retest stays in place"); rwa.scoreTest = readData("rwa.json")?.scoreTest ?? null; }
         } catch (e) { softFail("backing backfill", e, "the previous backfill stays in place"); rwa.backing.backfill = readData("rwa.json")?.backing?.backfill ?? null; }
       }
+      rwa.registry = registry ? { tokens: Object.keys(registry.tokens).length, partial: !!registry.partial,
+        byClass: Object.values(registry.tokens).reduce((m, t) => ((m[t.assetClass] = (m[t.assetClass] || 0) + 1), m), {}),
+        feeds: feeds ? Object.keys(feeds.feeds).length : 0, pricedTokens: feeds ? new Set(Object.values(feeds.feeds).map((f) => f.token)).size : 0,
+        hourlyAnswers: hourly ? Object.values(hourly.at).reduce((s, a) => s + a.length, 0) : 0,
+        method: "Robinhood's stock factory announces every listing (name, symbol); names containing 'Dollar' are dropped and the rest classed treasury/commodity/etf/stock by name, as LONG's Dune queries do. Prices are every Chainlink aggregator on the chain, found by its update event and identified by its own description(), folded to the last answer of each UTC hour and forward-filled." } : null;
       writeData("rwa.json", rwa);
     } catch (e) {
       softFail("stock capture", e, "the previous rwa.json stays in place");

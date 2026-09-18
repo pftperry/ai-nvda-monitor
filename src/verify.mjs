@@ -492,6 +492,13 @@ if (rwa && rwa.tokens?.length) {
       check("backfill dollar prices, where present, are positive and consistent with the stock close", pd.every((o) => o.days.every((d) => d.priceUsd == null || (d.priceUsd > 0 && d.stockUsd > 0 && Math.abs(d.priceUsd - d.priceInStock * d.stockUsd) <= 1e-9 * Math.max(1, d.priceUsd)))));
       warn("backfill has a dollar leg for most pair-days", (F.usdDays || 0) >= 0.8 * pd.reduce((s, o) => s + o.days.length, 0), `${F.usdDays || 0} of ${pd.reduce((s, o) => s + o.days.length, 0)} pair-days priced in dollars`);
     }
+    if (K.registry) {
+      const G = K.registry;
+      check("listing registry has tokens and a class breakdown", G.tokens > 0 && G.byClass && Object.keys(G.byClass).length > 0);
+      warn("listing registry has finished scanning", !G.partial, "still scanning the stock factory");
+      warn("most listed tokens have a Chainlink feed", G.pricedTokens >= 0.5 * G.tokens, `${G.pricedTokens} of ${G.tokens} listed tokens priced by a discovered feed`);
+      warn("hourly Chainlink answers are being folded", G.hourlyAnswers > 1000, `${G.hourlyAnswers} hourly answers stored`);
+    }
     if (K.scoreTest) {
       const T = K.scoreTest;
       check("score retest covers both samples with a history row for this week", T.pairDays > 0 && T.all?.cohort?.tape && T.all?.survivors?.tape && Array.isArray(T.history) && T.history.length > 0);

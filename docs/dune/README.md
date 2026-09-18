@@ -33,6 +33,13 @@ non-browser clients; fetch from a page at dune.com). Re-fetch when the dashboard
 | Stock-pair share, trader share | 37.7%, 30.6% | not computed | missing |
 | Rialto, same day | | $1.23M daily vs $26K rolling | two folds disagree; the tx-based definition replaces both |
 
+## Measured on chain, 17-18 Sep 2026
+
+- **Registry**: the stock factory has announced **204** tokens (182 stock, 16 etf, 3 commodity, 3 treasury) after dropping names containing "Dollar". Our bytecode universe had 169 and every one of them is in the registry, so the gap is 35 listed tokens we never counted (ARM, GLW, NOK, FICO, BND, INOD, XNDU, JEPQ, CRDO and others). Dune reports 394 rows because its registry also carries the Rialto-wrapped copies.
+- **Feeds**: **65** Chainlink aggregators exist on the chain. `description()` returns the same string Dune regexes out of the aggregator's bytecode ("Robinhood PLTR / USD", "RHNVDA / USD"), so an `eth_call` replaces the bytecode regex. Dune's LONG-side price map is a hard-coded 30 plus a 38-token derived list; live discovery is a superset, so our LONG volume can exceed his for pairs whose numeraire only recently got a feed. Worth stating rather than hiding.
+- **Rialto changed its venue event on 15 Sep 2026.** The old fill event `0x4b02af49…` stops at block 64,676,631. The venue now emits `0x824a7dbf…`: topic1 = trader, topic2 = token in, topic3 = token out, 15 data words, where w0 = amount out (quoted), w1 = w2 = amount in, w3 = amount out (actual). On a buy (token in = USDG) w1 equals the transaction's largest USDG transfer exactly; on a sell (token out = USDG) w3 is net of the venue fee and runs about 0.7% under Dune's max-transfer figure. **This alone explains the 46x disagreement between our two Rialto folds:** the rolling window still reads the dead event, so it reports almost nothing.
+- **v3 stock liquidity**: the v3 factory `0x1f7d7550…2efa` holds about $4.10M of stock across 112 pools, led by GOOGL $1.0M and RDDT $0.87M. Real, but too small on its own to explain the volume-share gap.
+
 ## Plan
 
 1. **Hourly prices** (`stockpx`): fold `AnswerUpdated` per hour, forward-fill; add the
