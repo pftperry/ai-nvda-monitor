@@ -211,7 +211,7 @@ footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border
 .ctile .val.bad { color: var(--sell); }
 .captured { display: inline-block; height: 8px; border-radius: 2px; background: var(--buy); vertical-align: middle; margin-right: 6px; }
 .captured.long { background: var(--series-3); }
-@media (max-width: 620px) { .tiles, .tiles.three { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .tiles, .tiles.three, .tiles.four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .dial-hd { display: flex; align-items: baseline; gap: 10px; }
 .dial-name { font: 700 10.5px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--text-muted); }
 .dial-hd b { font: 700 22px/1 var(--sans); letter-spacing: -.02em; }

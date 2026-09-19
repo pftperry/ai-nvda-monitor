@@ -3406,7 +3406,14 @@ function renderRwaKpis(R, D, pending) {
   const comp = (D?.compounding || []).slice(1);
   const now = Math.floor(Date.now() / 1000), d7 = sumOf(comp.filter((r) => r.t >= now - 8 * 86400 && r.t < Math.floor(now / 86400) * 86400), (r) => r.addUsd);
   const win = ss?.windowHours ? `${ss.windowHours}h` : "window";
-  host.innerHTML = `<div class="tiles three">
+  /* Stock volume and perps volume are measured apart, as LONG's own dashboard keeps
+     them, but the protocol quotes their sum. Adding them here is the only place the
+     two meet, and the note says what went into it so the halves stay recoverable. */
+  const stockVol = ZT?.longAllVolUsd ?? null, perpVol = ZT?.perpUserVolUsd ?? null;
+  const combined = stockVol != null ? stockVol + (perpVol || 0) : null;
+  host.innerHTML = `<div class="tiles four">
+    ${tile("Traded through LONG since launch", combined == null ? "—" : `$${compact(combined)}`,
+      combined == null ? "stream pending" : `$${compact(stockVol)} of tokenized stock${perpVol ? ` and $${compact(perpVol)} of LongX perps` : ""}, user swaps only`, "", "hero")}
     ${tile("Tokenized stock held by LONG", L && T.longShare != null ? pctLevel(T.longShare, 1) : "—",
       L ? `of every stock token on the chain, in LONG's pools and vault · $${compact(L.usd + T.vaultUsd)} of $${compact(T.supplyUsd)}` : "position replay pending", "", "hero")}
     ${tile("Stock liquidity LONG runs", L ? `$${compact(L.usd)}` : "—",
