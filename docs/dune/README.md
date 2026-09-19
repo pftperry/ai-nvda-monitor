@@ -57,3 +57,26 @@ non-browser clients; fetch from a page at dune.com). Re-fetch when the dashboard
 6. **Approximations, stated on the page**: the launchpad-token set is every non-registry,
    non-quote (USDG/WETH/ETH) token that appears opposite a stock, not Adam Tehc's 85-heuristic
    classifier; trader share needs `tx.from` per trade and is deferred.
+
+## Decision, 19 Sep 2026: keep the wider measurement
+
+The definitions are mirrored; the scope deliberately is not. Ours counts more of the
+chain than the dashboard does, and that stays:
+
+- **Universe**: 204 listed tokens from Robinhood's registry against the 68 numeraires
+  the dashboard can price (30 hard-coded feeds plus a 38-token derived list). Volume in
+  pairs it cannot value counts here.
+- **Venues**: every DEX we can find, including a v2 and a v3 factory with ~2,475 stock
+  pools. `dex.trades` only carries the DEXes Dune has decoded.
+- **Prices**: feeds discovered live from their own update event and named by
+  `description()`, plus pool-derived hourly prices for the feedless two thirds.
+
+Consequence, measured 19 Sep: LONG gross volume $1.453B here against $1.342B there
+(+8.3%); market denominator $10.274B against $8.345B (+23%); share of all stock
+trading 14.06% against 16.08%; stock TVL $14.9M against $15.4M.
+
+**Do not narrow these to match.** Closing the gap means discarding real, measured
+volume so the totals agree with a narrower census. The page states its own scope
+instead (universe, venues, routed-leg rule, hourly pricing) so a reader knows what the
+number covers. TVL and the share are close enough to publish; the two volume totals are
+ours and should be described as ours.

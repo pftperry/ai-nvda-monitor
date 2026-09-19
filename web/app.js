@@ -4671,13 +4671,24 @@ function renderMethod() {
       the pools together take the whole order, which is what a router achieves). <b>Coverage</b> uses the stock tokens'
       own transfer event, which no other contract on the chain emits: a short window of it is scanned each slow-path run
       and unioned over the trailing day, so the universe is every stock token actually in use, listed on LONG or not.
+      <b>The universe</b> is Robinhood's own listing registry: every token its stock factory announced, stablecoins
+      dropped by name, 204 of them. An earlier version classified tokens by bytecode and found 169, all of which are in
+      the registry, so that reading was a strict subset. <b>The venues</b> are every DEX on the chain, not one: the v4
+      PoolManager, a v2-style factory, a v3-style factory carrying thousands of stock pools, and Robinhood's own Rialto,
+      which replaced its fill event in September and is read in both formats. A trade with no launchpad token is skipped
+      when its transaction also holds a stock-by-launchpad trade, so one arbitrage route through two pools counts once.
+      Both choices make the market measured here larger than a narrower census of the same chain: that is deliberate,
+      and the figures are ours rather than a reproduction of anyone else's.
       <b>Volume share</b> is reported two ways. This site's own: the stock leg of every PoolManager swap in the census
       window, LONG-hooked pools over all pools. And LONG's Dune definition (queries 8032229 and 8237276), rebuilt here
       from the same events: LONG volume from the hook's own per-swap event (topic <code>0x1d9f7b5e…</code>, LONG v4 pools
       only, with the buyback contract's legs flagged and excluded from "user volume") plus graduated v2/v3 pools' own
       Swap events, over a denominator of every DEX stock swap plus Robinhood's Rialto venue (USDG transfers touching
       <code>0x4262…c7e8</code>). <b>Prices</b> for stocks come from the same Chainlink aggregators LONG's dashboard reads
-      (<code>latestAnswer()</code>, 8 decimals), with the busiest USDG pool's print as the fallback for feedless stocks.
+      (<code>AnswerUpdated</code>, 8 decimals), discovered from their own update event and identified by calling
+      <code>description()</code> rather than from a fixed list, folded to the last answer of each UTC hour and carried
+      across market closes. Two thirds of the registry has no feed at all; those are priced hourly from the sqrtPrice of
+      their own USDG pools, median per hour.
       <b>Outside LPs</b> are distinct non-protocol addresses with positive net liquidity in the replayed ladders.
       <b>Yield</b> is the last week's compounding annualised against protocol-owned liquidity, at today's prices, so a
       run-rate rather than a return. <b>Cross-venue basis</b> is NVDA implied by AI/NVDA × AI/USDG against the NVDA/USDG
@@ -4708,8 +4719,10 @@ function renderMethod() {
       the live balance by verify); all-venue volume is the gross of those legs less the hook's and buyback contract's fee legs, plus Rialto's own
       fill event for fills Robinhood settled itself (its pool-routed fills pass through one router pair and are counted once).
       LONG's side is the hook's per-swap event: stock amounts as volume, buyback legs excluded; pool-perspective running sums as
-      "held", which is Dune's definition and so an upper bound like theirs. Everything is valued at today's prices, so a bar's
-      height moves with the stock like a balance sheet would, and only complete UTC days are drawn; the per-day series cover
+      "held", which is Dune's definition and so an upper bound like theirs. A day's flow is valued at that day's own hourly
+      Chainlink answer, so a trade is worth what the stock was worth when it happened rather than what it is worth now;
+      balances and inventory still carry today's price, so a bar's height moves with the stock like a balance sheet
+      would, and only complete UTC days are drawn; the per-day series cover
       the stocks whose transfer stream has reached the head, and the card states their share of DEX stock value. One limit
       is stated rather than hidden: under v4 flash accounting a multi-hop route that hands a stock from one pool to the next
       inside the manager moves no token, so transfer-basis volume misses those legs while the hook's event records them.
