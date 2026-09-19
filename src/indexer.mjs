@@ -22,6 +22,7 @@ import { indexBackingBackfill, cohortPairs } from "./tasks/backfill.mjs";
 import { indexStockPrices } from "./tasks/stockpx.mjs";
 import { indexRegistry, indexFeeds, indexHourlyPrices, indexDerivedPrices, combinedPriceReader } from "./tasks/registry.mjs";
 import { indexVenues, indexVenueSwaps, indexRialto } from "./tasks/venues.mjs";
+import { indexBigTrades } from "./tasks/bigtrades.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -334,8 +335,10 @@ try {
 }
 // cursor is what the next fast run appends from; windowFrom is where this scan began.
 if (routing) writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, cursor: latest, ...routing });
-writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape,
+let bigTrades = null;   // filled once the AI price is known, a few steps down
+const writeTape = () => writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape, bigTrades,
   big: { since: flow.bigSince, minAi: 1000, trades: flow.big, method: "every swap of 1,000 AI or more in the four flagship pools over the last 24 hours, with the pool's price before and after it (price impact in the pool's own quote, which is the AI/USD impact with the quote token held still); merged across runs so a two-hour refresh still shows the whole day" } });
+writeTape();   // once now, again after the big trades land
 
 /* NVDA in dollars, so the vault and AI's beta to its anchor can be stated in
    money. Two or three small requests; the venues are cached after the first run. */
@@ -359,6 +362,17 @@ try {
     .filter((p) => p.pairSymbol === "USDG")
     .sort((a, b) => b.totalSwaps - a.totalSwaps)[0];
   const aiUsd = usdgPool?.hourly?.filter((h) => h.close > 0).at(-1)?.close ?? 0;
+  /* The day's largest AI trades, grouped by transaction across every AI pool rather
+     than by leg across four. A router splitting one order over eight pools is one
+     trade; read leg by leg it disappears into ordinary flow. */
+  if (aiUsd > 0) {
+    try {
+      const aiPools = (all.length ? all : (readData("pools.json")?.pools || []));
+      bigTrades = await indexBigTrades(latest, tm, { store, pools: aiPools, aiUsd,
+        minUsd: opt("big-trade-floor", 25_000), deadline: Date.now() + opt("bigtrades-budget", fast ? 90 : 240) * 1000 });
+      writeTape();
+    } catch (e) { softFail("big trades", e, "the tape keeps its per-leg list"); }
+  }
   if (!(aiUsd > 0)) {
     console.log("  no AI/USDG close available, so no dollar anchor; skipping depth");
   } else {
