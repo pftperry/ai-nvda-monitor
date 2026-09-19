@@ -804,6 +804,35 @@ function renderBigTrades() {
   $("#bigNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Window from ${tsFmt(B.since)}, every one of the ${B.poolsScanned} AI pools in the census, ${B.legsSeen.toLocaleString()} swap legs grouped into trades by transaction. ${routed} of these were routed across more than one pool; read leg by leg they look like ordinary flow, which is how a $1.7M sell hid here before. AI legs are valued at the current AI price; impact is each touched pool's own price before the transaction against after it.</p>`;
 }
 
+/* Buy and sell pressure by wallet, and whether it is one holder or a crowd. */
+function renderTraders() {
+  const T = S.tape?.traders, host = $("#tTraders");
+  if (!T?.topSellers) { host.innerHTML = `<tr><td class="muted">Attribution runs on the next standard index.</td></tr>`; $("#traderKpis").innerHTML = ""; $("#traderNote").innerHTML = ""; return; }
+  const C = T.concentration, pc = (v) => v == null ? "—" : pctLevel(v, 0);
+  /* Gross selling says little on its own: the busiest seller here also bought more
+     than it sold. Net is what tells you a wallet is leaving. */
+  const netOut = T.topSellers.filter((r) => r.netAi < 0).sort((a, b) => a.netAi - b.netAi);
+  const dumping = netOut.filter((r) => r.holderRank != null);
+  $("#traderKpis").innerHTML = `<div class="tiles four">
+    ${tile("Busiest seller's share", pc(C.sellTop1), `of everything sold · top five ${pc(C.sellTop5)}, top ten ${pc(C.sellTop10)} · ${C.sellers} selling wallets`, C.sellTop1 > 0.35 ? "bad" : "", "hero")}
+    ${tile("Busiest buyer's share", pc(C.buyTop1), `of everything bought · top five ${pc(C.buyTop5)} · ${C.buyers} buying wallets`)}
+    ${tile("Sold vs bought", `$${compact(T.totalSoldUsd)} / $${compact(T.totalBoughtUsd)}`, `${T.tradesAttributed.toLocaleString()} trades attributed from ${T.transfersSeen.toLocaleString()} transfers`)}
+    ${tile("Top-25 holders selling", dumping.length, dumping.length ? dumping.map((r) => `#${r.holderRank} cut ${pctLevel(r.sharePctOfBalance, 0)} of its stack`).join(" · ") : "no ranked holder ended the day net down", dumping.length ? "bad" : "")}
+  </div>`;
+  const addr = (r) => `<span class="mono" title="${r.address}">${r.address.slice(0, 10)}…</span>${r.holderRank ? ` <span class="badge tier venue">holder #${r.holderRank}</span>` : ""}`;
+  const rows = [...T.topSellers].sort((a, b) => b.soldAi - a.soldAi).slice(0, 15);
+  host.innerHTML = `<thead><tr><th class="r">#</th><th>Wallet</th><th class="r">Sold</th><th class="r">Bought</th><th class="r" title="bought minus sold: negative means the wallet left with less AI than it started">Net</th><th class="r">Trades</th><th class="r">Of its stack</th></tr></thead><tbody>` +
+    rows.map((r, i) => `<tr>
+      <td class="r muted mono">${i + 1}</td><td>${addr(r)}</td>
+      <td class="r mono down">$${compact(r.soldUsd)}</td>
+      <td class="r mono up">${r.boughtUsd ? "$" + compact(r.boughtUsd) : "—"}</td>
+      <td class="r mono ${r.netAi < 0 ? "down" : "up"}"><b>${r.netAi < 0 ? "−" : "+"}${compact(Math.abs(r.netAi) * T.aiUsd)}</b></td>
+      <td class="r mono">${r.sellTx + r.buyTx}</td>
+      <td class="r mono">${r.sharePctOfBalance == null ? "—" : pctLevel(r.sharePctOfBalance, 0)}</td>
+    </tr>`).join("") + "</tbody>";
+  $("#traderNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Window from ${tsFmt(T.since)}. A wallet appearing high on both sides is making a market, not leaving: read the net column. Of the ${C.sellers} wallets that sold, the busiest was ${pc(C.sellTop1)} of the total, so selling ${C.sellTop1 > 0.35 ? "is concentrated in few hands" : "is spread across the crowd rather than driven by one holder"}. Stack share is what a ranked holder sold against the balance the holders task last measured.</p>`;
+}
+
 /* The per-leg card, kept for a tape published before trades were grouped. */
 function renderBigTradesLegacy(B, names, host) {
   if (!B?.trades?.length) { host.innerHTML = `<tr><td class="muted">No trade over the floor in the last 24 hours.</td></tr>`; $("#bigKpis").innerHTML = ""; $("#bigNote").innerHTML = ""; return; }
@@ -907,6 +936,7 @@ function renderFlow() {
   ], p.rollups);
 
   renderBigTrades();
+  renderTraders();
   const names = S.tape?.pools || [];   // the tape is optional; a missing file must not blank the tab
   table($("#tTape"), [
     { h: "Time", f: (r) => tsFmt(r.t) },

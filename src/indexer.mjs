@@ -23,6 +23,7 @@ import { indexStockPrices } from "./tasks/stockpx.mjs";
 import { indexRegistry, indexFeeds, indexHourlyPrices, indexDerivedPrices, combinedPriceReader } from "./tasks/registry.mjs";
 import { indexVenues, indexVenueSwaps, indexRialto } from "./tasks/venues.mjs";
 import { indexBigTrades } from "./tasks/bigtrades.mjs";
+import { indexTraders } from "./tasks/traders.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -335,8 +336,8 @@ try {
 }
 // cursor is what the next fast run appends from; windowFrom is where this scan began.
 if (routing) writeData("routing.json", { updatedAt: now, windowFrom: routingFrom, cursor: latest, ...routing });
-let bigTrades = null;   // filled once the AI price is known, a few steps down
-const writeTape = () => writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape, bigTrades,
+let bigTrades = null, traders = null;   // filled once the AI price is known, a few steps down
+const writeTape = () => writeData("tape.json", { updatedAt: now, pools: flow.perPool.map((p) => p.pairSymbol), swaps: flow.tape, bigTrades, traders,
   big: { since: flow.bigSince, minAi: 1000, trades: flow.big, method: "every swap of 1,000 AI or more in the four flagship pools over the last 24 hours, with the pool's price before and after it (price impact in the pool's own quote, which is the AI/USD impact with the quote token held still); merged across runs so a two-hour refresh still shows the whole day" } });
 writeTape();   // once now, again after the big trades land
 
@@ -372,6 +373,16 @@ try {
         minUsd: opt("big-trade-floor", 25_000), deadline: Date.now() + opt("bigtrades-budget", fast ? 90 : 240) * 1000 });
       writeTape();
     } catch (e) { softFail("big trades", e, "the tape keeps its per-leg list"); }
+      /* Who traded, and how concentrated it was. One pass over AI's transfer tape;
+         inside a transaction routers net to nothing, so the wallet left most negative
+         sold and the most positive bought. Joined to the holder ranks so a top holder
+         selling is named rather than inferred. */
+      try {
+        const hs = readData("holders.json")?.topHolders || [];
+        traders = await indexTraders(latest, tm, { aiUsd, topHolders: hs, windowSecs: 86_400,
+          minAi: opt("trader-floor", 5_000), deadline: Date.now() + opt("traders-budget", fast ? 90 : 240) * 1000 });
+        writeTape();
+      } catch (e) { softFail("trader concentration", e, "the tape keeps its previous attribution"); }
   }
   if (!(aiUsd > 0)) {
     console.log("  no AI/USDG close available, so no dollar anchor; skipping depth");
