@@ -1034,15 +1034,22 @@ function renderDistribution() {
   /* The exhibit: measures down, dates across, with a health arrow on the week and on
      the whole run. Direction-of-good is declared per measure because for holders up is
      healthy and for concentration down is; without that a coloured arrow is decoration. */
-  /* Snapshots land every four hours, so a single snapshot’s arrivals and exits are a
-     four-hour flow. Beside point-in-time stocks that reads as a day and is not one, so
-     the flow columns sum the six snapshots ending at each date. */
+  /* Snapshots land every four hours, so one snapshot's arrivals and exits are a
+     four-hour flow. Summing six of them gives the right NET over a day and the wrong
+     GROSS: a wallet that leaves and comes back inside the window is counted in both
+     totals, so the sums run high. Measured against a chain replay of the same day,
+     the sums said 2,592 arrived and 1,615 left where the distinct wallets were 2,190
+     and 1,213, while the net agreed exactly at +977 -- as it must, since both sides
+     of the double-count cancel and what is left is the change in the holder count.
+     So the net is summed over the day and the gross is shown for the one period it
+     was actually measured over. Distinct daily gross needs the holder SET from
+     twenty-four hours back, which the artifact does not carry. */
   const idxOf = new Map(snaps.map((s, i) => [s.t, i]));
-  const flow24 = (s) => {
-    const i = idxOf.get(s.t); if (i == null) return { arrived: null, left: null };
-    let a = 0, l = 0, n = 0;
-    for (let k = Math.max(0, i - 5); k <= i; k++) { a += snaps[k].newHolders || 0; l += snaps[k].exits || 0; n++; }
-    return n ? { arrived: a, left: l } : { arrived: null, left: null };
+  const net24 = (s) => {
+    const i = idxOf.get(s.t); if (i == null) return null;
+    let n = 0;
+    for (let k = Math.max(0, i - 5); k <= i; k++) n += (snaps[k].newHolders || 0) - (snaps[k].exits || 0);
+    return n;
   };
   const colOf = (s) => ({
     holders: s.holders,
@@ -1052,8 +1059,8 @@ function renderDistribution() {
     top10: s.top?.[0], top50: s.top?.[1], top100: s.top?.[2],
     /* measured or absent; the old top-100 extrapolation is gone, see above */
     nak: s.nakamoto ?? null,
-    arrived: flow24(s).arrived, left: flow24(s).left,
-    net: flow24(s).arrived == null ? null : flow24(s).arrived - flow24(s).left,
+    arrived: s.newHolders, left: s.exits,
+    net: net24(s),
     heldAi: s.heldAi, price: s.price, t: s.t,
   });
   const cols = [["Launch", daily[0]], ["3 wks", ago(21)], ["2 wks", ago(14)], ["1 wk", ago(7)], ["Now", last]]
@@ -1083,9 +1090,9 @@ function renderDistribution() {
     ["r", "Top 50 wallets", "top50", fPct, "down", dPP, dPP],
     ["r", "Top 100 wallets", "top100", fPct, "down", dPP, dPP],
     ["r", "Wallets to reach 50%", "nak", fNum, "up", dAbs, dAbs],
-    ["h", "Period flows"],
-    ["r", "Wallets arrived, 24h", "arrived", fNum, "up", dAbs, null],
-    ["r", "Wallets exited, 24h", "left", fNum, "down", dAbs, null],
+    ["h", "Wallet flow"],
+    ["r", "Wallets arrived, last 4h", "arrived", fNum, "up", dAbs, null],
+    ["r", "Wallets exited, last 4h", "left", fNum, "down", dAbs, null],
     ["r", "Net wallets, 24h", "net", fNum, "up", dAbs, null],
     ["h", "Supply"],
     ["r", "AI held by wallets", "heldAi", fM, "up", dPc, dX],
