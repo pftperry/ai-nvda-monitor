@@ -1029,6 +1029,78 @@ function renderDistribution() {
     ${tile("Holders", last.holders.toLocaleString(), `${first.holders.toLocaleString()} at launch · ${last.newHolders ? last.newHolders.toLocaleString() + " new and " + last.exits.toLocaleString() + " gone in the last period" : ""}`)}
     ${tile("Top 50 / top 100", `${pctLevel(t50, 0)} / ${pctLevel(t100, 0)}`, `${sgn(pp(d30.top?.[1], t50))} and ${sgn(pp(d30.top?.[2], t100))} in 30 days`)}
   </div>`;
+  /* The exhibit: measures down, dates across, with a health arrow on the week and on
+     the whole run. Direction-of-good is declared per measure because for holders up is
+     healthy and for concentration down is; without that a coloured arrow is decoration. */
+  const colOf = (s) => ({
+    holders: s.holders,
+    over100: s.buckets ? s.buckets[2] + s.buckets[3] + s.buckets[4] : null,
+    over10k: s.buckets ? s.buckets[4] : null,
+    w10k: s.aboveAi?.[0], w100k: s.aboveAi?.[1], w1m: s.aboveAi?.[2],
+    top10: s.top?.[0], top50: s.top?.[1], top100: s.top?.[2],
+    nak: s.nakamoto ?? (s.top?.[2] > 0.5 ? Math.round(50 / (100 * s.top[2]) * 100) : null),
+    arrived: s.newHolders, left: s.exits,
+    net: s.newHolders == null ? null : s.newHolders - s.exits,
+    heldAi: s.heldAi, price: s.price, t: s.t,
+  });
+  const cols = [["Launch", daily[0]], ["3 wks", ago(21)], ["2 wks", ago(14)], ["1 wk", ago(7)], ["Now", last]]
+    .filter(([, s]) => s).map(([label, s]) => ({ label, ...colOf(s) }));
+  const uniq = []; const seenT = new Set();
+  for (const c of cols) { if (seenT.has(c.t)) continue; seenT.add(c.t); uniq.push(c); }
+  const curC = uniq.at(-1), wkC = uniq[uniq.length - 2];
+  const MIN = "\u2212", UP = "\u25B2", DN = "\u25BC";
+  const fNum = (v) => v == null ? "n/a" : Math.round(v).toLocaleString().replace("-", MIN);
+  const fPct = (v) => v == null ? "n/a" : pctLevel(v, 1);
+  const fM = (v) => v == null ? "n/a" : compact(v);
+  const fUsd = (v) => v == null ? "n/a" : "$" + v.toFixed(4);
+  const dPP = (a, b) => `${100 * (b - a) >= 0 ? "+" : MIN}${Math.abs(100 * (b - a)).toFixed(1)} pp`;
+  const dPc = (a, b) => !a ? "n/a" : `${b >= a ? "+" : MIN}${(Math.abs(b / a - 1) * 100).toFixed(1)}%`;
+  const dX = (a, b) => !a ? "n/a" : `${(b / a).toFixed(b / a >= 10 ? 0 : 1)}\u00d7`;
+  const dAbs = (a, b) => `${b - a >= 0 ? "+" : MIN}${Math.abs(b - a).toLocaleString()}`;
+  const SPEC = [
+    ["h", "Holders"],
+    ["r", "Total wallets", "holders", fNum, "up", dPc, dX],
+    ["r", "Holding over $100", "over100", fNum, "up", dPc, dX],
+    ["r", "Holding over $10,000", "over10k", fNum, "up", dPc, dX],
+    ["r", "Holding over 10,000 AI", "w10k", fNum, "up", dPc, dX],
+    ["r", "Holding over 100,000 AI", "w100k", fNum, "up", dPc, dX],
+    ["r", "Holding over 1,000,000 AI", "w1m", fNum, "up", dPc, dX],
+    ["h", "Concentration, share of holder-owned supply"],
+    ["r", "Top 10 wallets", "top10", fPct, "down", dPP, dPP],
+    ["r", "Top 50 wallets", "top50", fPct, "down", dPP, dPP],
+    ["r", "Top 100 wallets", "top100", fPct, "down", dPP, dPP],
+    ["r", "Wallets to reach 50%", "nak", fNum, "up", dAbs, dAbs],
+    ["h", "Period flows"],
+    ["r", "Wallets arrived", "arrived", fNum, "up", dAbs, null],
+    ["r", "Wallets exited", "left", fNum, "down", dAbs, null],
+    ["r", "Net change", "net", fNum, "up", dAbs, null],
+    ["h", "Supply"],
+    ["r", "AI held by wallets", "heldAi", fM, "up", dPc, dX],
+    ["r", "Price", "price", fUsd, "up", dPc, dX],
+  ];
+  const baseOf = (k) => uniq.find((c) => c[k] != null);
+  let goodN = 0, badN = 0;
+  /* only the week column feeds the tally: the run column is measured against a
+     655-wallet launch, so it is green by construction and would drown the signal */
+  const cell = (v, good, dir, tally) => {
+    const h = !good || !dir ? 0 : (dir === (good === "up" ? 1 : -1) ? 1 : -1);
+    if (tally) { if (h === 1) goodN++; else if (h === -1) badN++; }
+    return `<td class="r mono chg ${h === 1 ? "up" : h === -1 ? "down" : "muted"}">${h ? `<span class="ar">${dir > 0 ? UP : DN}</span>` : ""}${v}</td>`;
+  };
+  const body = SPEC.map((row) => {
+    if (row[0] === "h") return `<tr class="grp"><td colspan="${uniq.length + 3}">${row[1]}</td></tr>`;
+    const [, label, key, fmt, good, wfmt, lfmt] = row;
+    const z = curC[key], b = baseOf(key), a = b ? b[key] : null, aw = wkC ? wkC[key] : null;
+    const wDir = aw == null || z == null ? 0 : z > aw ? 1 : z < aw ? -1 : 0;
+    const lDir = a == null || z == null ? 0 : z > a ? 1 : z < a ? -1 : 0;
+    return `<tr><td>${label}</td>` +
+      uniq.map((c, i) => `<td class="r mono${i === uniq.length - 1 ? " now" : ""}">${fmt(c[key])}</td>`).join("") +
+      cell(aw == null || z == null ? "n/a" : wfmt(aw, z), good, wDir, true) +
+      (lfmt ? cell(a == null || z == null ? "n/a" : lfmt(a, z), good, lDir) : `<td class="r mono muted">n/m</td>`) +
+      "</tr>";
+  }).join("");
+  $("#tDist").innerHTML = `<thead><tr><th>&nbsp;</th>${uniq.map((c, i) => `<th class="r${i === uniq.length - 1 ? " now" : ""}">${c.label}<span class="d">${dayFmt(c.t)}</span></th>`).join("")}    <th class="r">Week<span class="d">vs. 1 wk</span></th><th class="r">Run<span class="d">vs. first</span></th></tr></thead><tbody>${body}</tbody>`;
+  $("#distScore").innerHTML = `<p class="muted" style="margin:8px 0 0">Arrows read the direction that is good for the token, which is up for holder counts and down for concentration. Week by week, <b class="up">${goodN}</b> measures improving and <b class="down">${badN}</b> deteriorating.</p>`;
   /* Launch, three weeks, two weeks, one week, now: the same measure at five points,
      so the direction is legible without reading a curve. */
   const marks = [["Launch", daily[0]], ["3 weeks ago", ago(21)], ["2 weeks ago", ago(14)], ["1 week ago", ago(7)], ["Now", last]]

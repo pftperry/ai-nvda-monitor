@@ -463,3 +463,16 @@ dl.gloss dd { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-se
 
 #distCard .cap { font: 600 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); margin: 14px 0 2px; }
 #distCard h4.subhead { margin-top: 22px; }
+
+/* distribution exhibit: measures down, dates across */
+table.exhibit { width: 100%; border-collapse: collapse; }
+table.exhibit thead th { font: 700 11px/1.2 var(--mono); text-align: right; padding: 0 10px 6px; border-bottom: 2px solid var(--text-secondary); white-space: nowrap; }
+table.exhibit thead th:first-child { text-align: left; }
+table.exhibit thead th .d { display: block; font: 400 10px/1.3 var(--mono); color: var(--muted); margin-top: 2px; }
+table.exhibit tbody td { padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 13px; white-space: nowrap; }
+table.exhibit tbody td:first-child { text-align: left; }
+table.exhibit tbody td.now { font-weight: 700; }
+table.exhibit thead th.now, table.exhibit tbody td.now { background: color-mix(in srgb, var(--series-1) 7%, transparent); }
+table.exhibit tbody tr.grp td { border-bottom: 1px solid var(--text-secondary); padding: 15px 10px 4px; font: 700 10px/1.2 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--text-secondary); }
+table.exhibit td.chg { font-weight: 600; }
+table.exhibit td.chg .ar { font-size: 10px; margin-right: 4px; }
