@@ -1032,6 +1032,16 @@ function renderDistribution() {
   /* The exhibit: measures down, dates across, with a health arrow on the week and on
      the whole run. Direction-of-good is declared per measure because for holders up is
      healthy and for concentration down is; without that a coloured arrow is decoration. */
+  /* Snapshots land every four hours, so a single snapshot’s arrivals and exits are a
+     four-hour flow. Beside point-in-time stocks that reads as a day and is not one, so
+     the flow columns sum the six snapshots ending at each date. */
+  const idxOf = new Map(snaps.map((s, i) => [s.t, i]));
+  const flow24 = (s) => {
+    const i = idxOf.get(s.t); if (i == null) return { arrived: null, left: null };
+    let a = 0, l = 0, n = 0;
+    for (let k = Math.max(0, i - 5); k <= i; k++) { a += snaps[k].newHolders || 0; l += snaps[k].exits || 0; n++; }
+    return n ? { arrived: a, left: l } : { arrived: null, left: null };
+  };
   const colOf = (s) => ({
     holders: s.holders,
     over100: s.buckets ? s.buckets[2] + s.buckets[3] + s.buckets[4] : null,
@@ -1039,8 +1049,8 @@ function renderDistribution() {
     w10k: s.aboveAi?.[0], w100k: s.aboveAi?.[1], w1m: s.aboveAi?.[2],
     top10: s.top?.[0], top50: s.top?.[1], top100: s.top?.[2],
     nak: s.nakamoto ?? (s.top?.[2] > 0.5 ? Math.round(50 / (100 * s.top[2]) * 100) : null),
-    arrived: s.newHolders, left: s.exits,
-    net: s.newHolders == null ? null : s.newHolders - s.exits,
+    arrived: flow24(s).arrived, left: flow24(s).left,
+    net: flow24(s).arrived == null ? null : flow24(s).arrived - flow24(s).left,
     heldAi: s.heldAi, price: s.price, t: s.t,
   });
   const cols = [["Launch", daily[0]], ["3 wks", ago(21)], ["2 wks", ago(14)], ["1 wk", ago(7)], ["Now", last]]
@@ -1071,9 +1081,9 @@ function renderDistribution() {
     ["r", "Top 100 wallets", "top100", fPct, "down", dPP, dPP],
     ["r", "Wallets to reach 50%", "nak", fNum, "up", dAbs, dAbs],
     ["h", "Period flows"],
-    ["r", "Wallets arrived", "arrived", fNum, "up", dAbs, null],
-    ["r", "Wallets exited", "left", fNum, "down", dAbs, null],
-    ["r", "Net change", "net", fNum, "up", dAbs, null],
+    ["r", "Wallets arrived, 24h", "arrived", fNum, "up", dAbs, null],
+    ["r", "Wallets exited, 24h", "left", fNum, "down", dAbs, null],
+    ["r", "Net wallets, 24h", "net", fNum, "up", dAbs, null],
     ["h", "Supply"],
     ["r", "AI held by wallets", "heldAi", fM, "up", dPc, dX],
     ["r", "Price", "price", fUsd, "up", dPc, dX],
