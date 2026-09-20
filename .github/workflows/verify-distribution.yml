@@ -1,0 +1,60 @@
+name: Verify distribution
+
+# Manual only. This recomputes every published holder figure from the chain and
+# compares, which means replaying millions of Transfer logs -- far too expensive
+# to put on the five-minute schedule, and it has no business competing with the
+# indexer for the RPC on a cron.
+on:
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: "Concurrent block segments"
+        required: false
+        default: "6"
+        type: string
+      budget:
+        description: "Wall-clock budget, minutes"
+        required: false
+        default: "90"
+        type: string
+
+permissions:
+  contents: read
+
+# Its own group, not the indexer's. It writes nothing, so it cannot corrupt
+# published data by overlapping -- and queueing it behind a long indexing run
+# would mean a dispatch silently cancelled by the next push, which is how a
+# repair dispatch was lost before.
+concurrency:
+  group: verify-distribution
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The artifacts under test. Restored from the same cache the indexer
+      # writes, so this checks what the site is actually serving rather than
+      # whatever was last committed.
+      - name: Restore generated artifacts
+        uses: actions/cache@v4
+        with:
+          path: web/data
+          key: indexer-data-v6-verify-${{ github.run_id }}
+          restore-keys: indexer-data-v6-
+
+      # Same secret handling as the indexer: the dedicated endpoint's URL carries
+      # its API key, so it only ever exists as a repository secret and never
+      # reaches the log. RPC_LABEL prints the host, not the path.
+      - name: Replay AI transfers and compare
+        timeout-minutes: 110
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
+          VERIFY_WORKERS: ${{ github.event.inputs.workers }}
+          VERIFY_BUDGET_MIN: ${{ github.event.inputs.budget }}
+        run: node tools/verify-distribution.mjs
