@@ -460,3 +460,6 @@ dl.gloss dd { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-se
 @media (max-width: 720px) { .miles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .miles .mile { border-left: 0; padding-left: 0; border-top: 1px solid var(--border); }
   .miles .mile:nth-child(-n+2) { border-top: 0; } }
+
+#distCard .cap { font: 600 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); margin: 14px 0 2px; }
+#distCard h4.subhead { margin-top: 22px; }

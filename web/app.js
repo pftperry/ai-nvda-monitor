@@ -1063,6 +1063,53 @@ function renderDistribution() {
     <text x="${PL}" y="${Hh - 8}" class="axis">${dayFmt(rows[0].t)}</text>
     <text x="${(PL + iw).toFixed(1)}" y="${Hh - 8}" class="axis" text-anchor="end">${dayFmt(rows.at(-1).t)}</text>
   </svg>`;
+  /* The base itself: how many wallets, how many carry real size, whether arrivals
+     beat departures, and whether buyers stay. Dust is most of any holder count, so
+     the second chart is the one that says whether the base is real. */
+  const wrows = daily.filter((s) => s.holders > 0);
+  lineChart($("#cWallets"), wrows, { xKey: "t", yKey: "holders", area: true, zeroBase: true, color: "var(--series-1)",
+    xFmt: dayFmt, fmt: (v) => compact(v),
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${r.holders.toLocaleString()} wallets hold AI</div>` });
+  const grew = wrows.length > 1 ? wrows.at(-1).holders - wrows[0].holders : 0;
+  $("#takeWallets").innerHTML = takeEl(grew > 0 ? "pos" : "neu",
+    `<b>${last.holders.toLocaleString()}</b> wallets hold AI, from ${first.holders.toLocaleString()} at launch. A wallet count on its own flatters: most of any holder list is dust, which is what the next chart strips out.`);
+  /* buckets are [dust, small, mid, large, whale] by dollar value; $100+ is index 2 up */
+  const brows = daily.filter((s) => Array.isArray(s.buckets) && s.buckets.length >= 5)
+    .map((s) => ({ t: s.t, real: s.buckets[2] + s.buckets[3] + s.buckets[4], whales: s.buckets[4] }));
+  if (brows.length > 1) {
+    lineChart($("#cRealBase"), brows, { xKey: "t", yKey: "real", area: true, zeroBase: true, color: "var(--series-3)",
+      xFmt: dayFmt, fmt: (v) => compact(v),
+      tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${r.real.toLocaleString()} wallets hold more than $100</div><div class="k">${r.whales.toLocaleString()} hold more than $10k</div>` });
+    const b0 = brows[0], b1 = brows.at(-1);
+    const shareNow = last.holders > 0 ? b1.real / last.holders : null;
+    $("#takeRealBase").innerHTML = takeEl(b1.real > b0.real ? "pos" : "warn",
+      `<b>${b1.real.toLocaleString()}</b> wallets hold more than $100 of AI, against ${b0.real.toLocaleString()} when the series starts, and <b>${b1.whales.toLocaleString()}</b> hold more than $10k.
+       That is ${shareNow == null ? "—" : pctLevel(shareNow, 0)} of all holders, so the rest is dust: a base grows when this line does, not when the headline count does.`);
+  }
+  /* churn: arrivals against departures, and whether buying wallets outnumber selling */
+  const crows = daily.filter((s) => s.newHolders != null && s.exits != null);
+  if (crows.length > 1) {
+    groupedBars($("#cChurn"), crows.slice(-60), { xKey: "t", weekends: true, keys: ["newHolders", "exits"],
+      colors: ["var(--buy)", "var(--sell)"], labels: ["Arrived", "Left"], xFmt: dayFmt, fmt: (v) => compact(v),
+      tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${r.newHolders.toLocaleString()} wallets arrived</div><div>${r.exits.toLocaleString()} left</div><div class="k">${r.buyers ? r.buyers.toLocaleString() + " bought, " + r.sellers.toLocaleString() + " sold" : ""}</div>` });
+    const w = crows.slice(-7);
+    const arr = sumOf(w, (r) => r.newHolders), left = sumOf(w, (r) => r.exits);
+    $("#takeChurn").innerHTML = takeEl(arr > left ? "pos" : "warn",
+      `Over the last seven periods <b>${arr.toLocaleString()}</b> wallets arrived and <b>${left.toLocaleString()}</b> left, a net <b>${arr - left >= 0 ? "+" : "−"}${Math.abs(arr - left).toLocaleString()}</b>.
+       Churn is normal; a base is forming while arrivals stay ahead of departures.`);
+  }
+  /* retention: of the wallets that first bought in a week, how many still hold */
+  const coh = (H.cohorts || []).filter((c) => c.retention != null);
+  if (coh.length > 1) {
+    barChart($("#cRetain"), coh, { xKey: "t", yKey: "retention", color: "var(--series-4, var(--series-1))",
+      xFmt: dayFmt, fmt: (v) => pctLevel(v, 0),
+      tip: (c) => `<div class="k">week of ${dayFmt(c.t)}</div><div>${pctLevel(c.retention, 0)} of ${c.acquired.toLocaleString()} wallets still hold</div><div class="k">${compact(c.ai)} AI between them</div>` });
+    const best = coh.reduce((a, b) => b.retention > a.retention ? b : a);
+    const recent = coh.slice(-4), avg = recent.reduce((s, c) => s + c.retention, 0) / recent.length;
+    $("#takeRetain").innerHTML = takeEl(avg >= 0.2 ? "pos" : "neu",
+      `Of the wallets that first bought in a given week, <b>${pctLevel(avg, 0)}</b> of the last four weeks\u2019 cohorts still hold, and the best week retained ${pctLevel(best.retention, 0)}.
+       Retention is what separates a base from a queue of people passing through.`);
+  }
   const g = last.gini, hhi = last.hhi;
   $("#readDist").innerHTML = takeEl(chg30 < 0 ? "pos" : chg30 > 0.2 ? "warn" : "neu",
     `The top ten wallets hold <b>${pctLevel(t10, 1)}</b> of holder-owned supply, ${t10 < 0.5 ? "inside the 50% the research calls healthy" : "above the 50% the research calls healthy"}${t10 < 0.2 ? " and within reach of the under-15% the major chains sit at" : ""}.
