@@ -1017,15 +1017,17 @@ function renderDistribution() {
   const chg30 = pp(d30.top?.[0], t10), chg7 = pp(d7.top?.[0], t10);
   const verdict = chg30 == null ? "" : chg30 < -0.2 ? "improving" : chg30 > 0.2 ? "concentrating" : "flat";
   const sgn = (v, d = 1) => v == null ? "—" : `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(d)} pp`;
-  /* the Nakamoto count is exact once the metric lands; before that it is bracketed
-     by the top-100 share, which the history has carried since launch */
-  const nak = last.nakamoto ?? (t100 > 0.5 ? Math.round(100 * 0.5 / t100) : null);
-  const nakExact = last.nakamoto != null;
+  /* Counted, or not shown. This used to fall back to 50 / top-100-share when the
+     measured count was missing, which reads like an estimate and is not one: it
+     assumes the top hundred are all the same size. They are not, so it lands high,
+     and high is the flattering direction here. An independent chain replay put the
+     true count at 88 on 20 Sep while that formula was printing 95. */
+  const nak = last.nakamoto ?? null;
   $("#distKpis").innerHTML = `<div class="tiles four">
     ${tile("Top 10 wallets hold", t10 == null ? "—" : pctLevel(t10, 1),
       `of holder-owned supply · healthy under 50%, the major chains under 15% · ${sgn(chg30)} in 30 days, ${verdict}`, t10 > 0.5 ? "bad" : "", "hero")}
     ${tile("Wallets to pass half the supply", nak == null ? "—" : nak.toLocaleString(),
-      nakExact ? "the Nakamoto coefficient, counted exactly" : "bracketed from the top-100 share until the exact count lands")}
+      nak == null ? "the Nakamoto coefficient, counted on the next four-hourly snapshot" : "the Nakamoto coefficient, counted exactly")}
     ${tile("Holders", last.holders.toLocaleString(), `${first.holders.toLocaleString()} at launch · ${last.newHolders ? last.newHolders.toLocaleString() + " new and " + last.exits.toLocaleString() + " gone in the last period" : ""}`)}
     ${tile("Top 50 / top 100", `${pctLevel(t50, 0)} / ${pctLevel(t100, 0)}`, `${sgn(pp(d30.top?.[1], t50))} and ${sgn(pp(d30.top?.[2], t100))} in 30 days`)}
   </div>`;
@@ -1048,7 +1050,8 @@ function renderDistribution() {
     over10k: s.buckets ? s.buckets[4] : null,
     w10k: s.aboveAi?.[0], w100k: s.aboveAi?.[1], w1m: s.aboveAi?.[2],
     top10: s.top?.[0], top50: s.top?.[1], top100: s.top?.[2],
-    nak: s.nakamoto ?? (s.top?.[2] > 0.5 ? Math.round(50 / (100 * s.top[2]) * 100) : null),
+    /* measured or absent; the old top-100 extrapolation is gone, see above */
+    nak: s.nakamoto ?? null,
     arrived: flow24(s).arrived, left: flow24(s).left,
     net: flow24(s).arrived == null ? null : flow24(s).arrived - flow24(s).left,
     heldAi: s.heldAi, price: s.price, t: s.t,

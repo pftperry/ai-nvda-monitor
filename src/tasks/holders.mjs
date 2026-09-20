@@ -12,7 +12,11 @@ const WEEK = 7 * 86400;
 /* Bumped when the state gains fields a replay from genesis has to fill. A seed
    with a newer schema is adopted over a cache that is merely further along,
    because the cache cannot backfill what it never recorded. */
-export const HOLDER_STATE_SCHEMA = 4;   // 4: actors netted per transaction (buyers, sellers, whale wallets)
+/* 5: snapshots carry gini, nakamoto, hhi, top1pct and medianAi. The bump is what
+   forces the point -- those fields are computed as a snapshot is taken and are
+   never backfilled into one already stored, so without a replay from genesis the
+   whole history stays blank and only the newest four-hourly row has them. */
+export const HOLDER_STATE_SCHEMA = 5;   // 4: actors netted per transaction (buyers, sellers, whale wallets)
 
 /* Addresses that hold AI as machinery rather than as an owner. The pool manager
    holds every v4 pool's inventory, the vault holds the locked leg, the splitter
