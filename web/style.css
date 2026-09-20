@@ -441,3 +441,10 @@ dl.gloss .g { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 0
 dl.gloss dt { font-weight: 600; font-size: 12px; color: var(--text); }
 dl.gloss dd { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
 @media (max-width: 720px) { dl.gloss { grid-template-columns: 1fr; } dl.gloss .g { grid-template-columns: 1fr; gap: 2px; } }
+
+/* distribution chart: benchmark lines and their labels */
+#cDist .thr { stroke-dasharray: 4 4; stroke-width: 1.5; }
+#cDist .thr.warn { stroke: color-mix(in srgb, var(--warning) 70%, transparent); }
+#cDist .thr.good { stroke: color-mix(in srgb, var(--series-3) 70%, transparent); }
+#cDist .thrlab { font: 600 11px var(--mono); fill: var(--text-secondary); }
+#cDist .axis { font: 400 11px var(--mono); fill: var(--muted); }

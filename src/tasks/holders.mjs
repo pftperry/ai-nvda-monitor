@@ -163,6 +163,43 @@ export async function indexHolders(latest, tm, opts = {}) {
       for (let i = 0; i < Math.min(n, sizes.length); i++) s += sizes[i];
       return held > 0 ? +(s / held).toFixed(4) : null;
     });
+    /* The distribution metrics the literature actually uses, all computed from the
+       sorted balances already in hand.
+
+       GINI is the standard inequality measure, 0 when every wallet holds the same and
+       1 when one wallet holds everything. Token holder sets sit high by nature because
+       dust wallets are numerous, so the level matters less than the direction.
+
+       NAKAMOTO is the count of wallets that together pass half the supply. It is the
+       blunt question a reader wants answered: how many people would have to agree to
+       move this market. Bigger is healthier.
+
+       HHI is the competition regulators' concentration index, the sum of squared
+       percentage shares. Above 2,500 a market is "highly concentrated" in antitrust
+       terms, which is a useful anchor even though it was written for firms.
+
+       Machinery is already out of the balances, so pools and the vault do not flatter
+       or distort any of these. */
+    const n = sizes.length;
+    let gini = null, nakamoto = null, hhi = null, top1pct = null, medianAi = null;
+    if (n > 1 && held > 0) {
+      /* sizes are sorted descending; the Gini sum wants ascending rank j = n - i */
+      let weighted = 0, sq = 0;
+      for (let i = 0; i < n; i++) {
+        weighted += (n - i) * sizes[i];
+        const share = sizes[i] / held;
+        sq += share * share;
+      }
+      gini = +((2 * weighted) / (n * held) - (n + 1) / n).toFixed(4);
+      hhi = Math.round(sq * 10_000);
+      let cum = 0;
+      for (let i = 0; i < n; i++) { cum += sizes[i]; if (cum > held / 2) { nakamoto = i + 1; break; } }
+      const onePct = Math.max(1, Math.ceil(n * 0.01));
+      let s1 = 0;
+      for (let i = 0; i < onePct; i++) s1 += sizes[i];
+      top1pct = +(s1 / held).toFixed(4);
+      medianAi = +sizes[n >> 1].toFixed(4);
+    }
     let newHolders = 0, exits = 0;
     for (const a of curr) if (!prevHolders.has(a)) newHolders++;
     for (const a of prevHolders) if (!curr.has(a)) exits++;
@@ -175,6 +212,7 @@ export async function indexHolders(latest, tm, opts = {}) {
       aboveAi: byAi,
       heldAi: Math.round(held),
       top,
+      gini, nakamoto, hhi, top1pct, medianAi,
       newHolders, exits,
       // wallets that netted AI in, or out, through a pool during the period
       buyers: periodBuyers.size, sellers: periodSellers.size,

@@ -385,6 +385,22 @@
   <section class="panel" id="p-float" role="tabpanel" aria-labelledby="tab-float" hidden>
     <div class="grid g4" id="floatTiles"></div>
 
+    <div class="card" id="distCard">
+      <h3>How spread out the holders are</h3>
+      <p class="sub">Concentration measured the way the research does, against the thresholds it uses: a token is healthy under 50% in the top ten, and the major chains sit below 15%. Machinery is excluded, so pools and the vault neither flatter nor distort it.</p>
+      <div id="distKpis"></div>
+      <div id="cDist"></div>
+      <div id="readDist"></div>
+      <details class="method" id="distMethod">
+        <summary>What each measure is</summary>
+        <p><b>Top 10 / 50 / 100</b> is the share of holder-owned supply in that many largest wallets. The common heuristic is that under 50% in the top ten is healthy and over 70% is a warning; Bitcoin and Ethereum sit under 15%.</p>
+        <p><b>Nakamoto coefficient</b> is how many wallets would have to act together to move more than half the supply. Higher is harder to corner.</p>
+        <p><b>Gini</b> runs 0 (every wallet equal) to 1 (one wallet holds everything). Token holder sets read high because dust wallets are numerous, so the direction matters more than the level.</p>
+        <p><b>HHI</b> is the concentration index competition regulators use, the sum of squared percentage shares. Above 2,500 counts as highly concentrated in antitrust terms.</p>
+        <p>Gini, HHI and the Nakamoto count are computed from every balance at the moment of each snapshot and begin from the run that introduced them; the top-ten, top-fifty and top-hundred series run back to launch.</p>
+      </details>
+    </div>
+
     <div class="card">
       <h3>Where the supply is</h3>
       <p class="sub">Genesis mint decomposed into gone for good, immobilised, and free to trade.</p>

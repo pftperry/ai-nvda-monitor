@@ -1000,6 +1000,68 @@ function renderBurn() {
  */
 const HOLDER_AI_INDEX = 1;   // which of aiThresholds the line and the verdict track
 
+/* Distribution: the concentration measures the research uses, and whether they are
+   moving the right way. One series against its benchmarks reads better than three
+   lines at once, so the chart is top-ten share with the thresholds drawn on it. */
+function renderDistribution() {
+  const H = S.holders, snaps = H?.snapshots || [];
+  if (snaps.length < 2) { $("#distKpis").innerHTML = ""; $("#cDist").innerHTML = ""; $("#readDist").innerHTML = ""; return; }
+  const last = snaps.at(-1), first = snaps[0];
+  const dayOf = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+  /* one row per day, the last snapshot of each */
+  const daily = snaps.filter((s, i) => i === snaps.length - 1 || dayOf(s.t) !== dayOf(snaps[i + 1].t));
+  const ago = (n) => daily[Math.max(0, daily.length - 1 - n)];
+  const d30 = ago(30), d7 = ago(7);
+  const pp = (a, b) => a == null || b == null ? null : (b - a) * 100;
+  const t10 = last.top?.[0], t50 = last.top?.[1], t100 = last.top?.[2];
+  const chg30 = pp(d30.top?.[0], t10), chg7 = pp(d7.top?.[0], t10);
+  const verdict = chg30 == null ? "" : chg30 < -0.2 ? "improving" : chg30 > 0.2 ? "concentrating" : "flat";
+  const sgn = (v, d = 1) => v == null ? "—" : `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(d)} pp`;
+  /* the Nakamoto count is exact once the metric lands; before that it is bracketed
+     by the top-100 share, which the history has carried since launch */
+  const nak = last.nakamoto ?? (t100 > 0.5 ? Math.round(100 * 0.5 / t100) : null);
+  const nakExact = last.nakamoto != null;
+  $("#distKpis").innerHTML = `<div class="tiles four">
+    ${tile("Top 10 wallets hold", t10 == null ? "—" : pctLevel(t10, 1),
+      `of holder-owned supply · healthy under 50%, the major chains under 15% · ${sgn(chg30)} in 30 days, ${verdict}`, t10 > 0.5 ? "bad" : "", "hero")}
+    ${tile("Wallets to pass half the supply", nak == null ? "—" : nak.toLocaleString(),
+      nakExact ? "the Nakamoto coefficient, counted exactly" : "bracketed from the top-100 share until the exact count lands")}
+    ${tile("Holders", last.holders.toLocaleString(), `${first.holders.toLocaleString()} at launch · ${last.newHolders ? last.newHolders.toLocaleString() + " new and " + last.exits.toLocaleString() + " gone in the last period" : ""}`)}
+    ${tile("Top 50 / top 100", `${pctLevel(t50, 0)} / ${pctLevel(t100, 0)}`, `${sgn(pp(d30.top?.[1], t50))} and ${sgn(pp(d30.top?.[2], t100))} in 30 days`)}
+  </div>`;
+  /* chart: top-ten share with the two thresholds the research names */
+  const rows = daily.filter((s) => s.top?.[0] != null);
+  const W = 900, Hh = 240, PL = 46, PR = 116, PT = 14, PB = 26;
+  const iw = W - PL - PR, ih = Hh - PT - PB;
+  const ymax = Math.max(0.55, maxOf(rows.map((r) => r.top[0])) * 1.1);
+  const X = (i) => PL + (i / Math.max(1, rows.length - 1)) * iw;
+  const Y = (v) => PT + ih - (v / ymax) * ih;
+  const path = rows.map((r, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(r.top[0]).toFixed(1)}`).join(" ");
+  const band = (v, label, cls) => `<line x1="${PL}" y1="${Y(v).toFixed(1)}" x2="${PL + iw}" y2="${Y(v).toFixed(1)}" class="thr ${cls}"/>` +
+    `<text x="${PL + iw + 8}" y="${(Y(v) + 4).toFixed(1)}" class="thrlab">${label}</text>`;
+  const ticks = [0, 0.15, 0.25, 0.5].filter((v) => v <= ymax).map((v) =>
+    `<text x="${PL - 10}" y="${(Y(v) + 4).toFixed(1)}" class="axis" text-anchor="end">${pctLevel(v, 0)}</text>`).join("");
+  $("#cDist").innerHTML = `<svg viewBox="0 0 ${W} ${Hh}" width="100%" height="${Hh}" role="img" aria-label="Top ten wallet share over time against the healthy and major-chain thresholds">
+    ${ticks}
+    ${band(0.5, "50% · healthy limit", "warn")}
+    ${band(0.15, "15% · major chains", "good")}
+    <path d="${path} L ${X(rows.length - 1).toFixed(1)} ${Y(0)} L ${X(0).toFixed(1)} ${Y(0)} Z" fill="var(--series-1)" opacity=".12"/>
+    <path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="2.5" stroke-linejoin="round"/>
+    <circle cx="${X(rows.length - 1).toFixed(1)}" cy="${Y(rows.at(-1).top[0]).toFixed(1)}" r="4.5" fill="var(--series-1)"/>
+    <text x="${(X(rows.length - 1) + 10).toFixed(1)}" y="${(Y(rows.at(-1).top[0]) + 4).toFixed(1)}" class="thrlab" fill="var(--series-1)">${pctLevel(rows.at(-1).top[0], 1)} today</text>
+    <text x="${PL}" y="${Hh - 8}" class="axis">${dayFmt(rows[0].t)}</text>
+    <text x="${(PL + iw).toFixed(1)}" y="${Hh - 8}" class="axis" text-anchor="end">${dayFmt(rows.at(-1).t)}</text>
+  </svg>`;
+  const g = last.gini, hhi = last.hhi;
+  $("#readDist").innerHTML = takeEl(chg30 < 0 ? "pos" : chg30 > 0.2 ? "warn" : "neu",
+    `The top ten wallets hold <b>${pctLevel(t10, 1)}</b> of holder-owned supply, ${t10 < 0.5 ? "inside the 50% the research calls healthy" : "above the 50% the research calls healthy"}${t10 < 0.2 ? " and within reach of the under-15% the major chains sit at" : ""}.
+     Since launch that has fallen from <b>${pctLevel(first.top[0], 1)}</b> while holders went from ${first.holders.toLocaleString()} to <b>${last.holders.toLocaleString()}</b>, so the supply is spreading rather than pooling.
+     Over the last 30 days it moved ${sgn(chg30)} and over 7 days ${sgn(chg7)}: <b>${verdict}</b>.
+     ${nak ? `It would take <b>${nak.toLocaleString()}</b> wallets acting together to move half the supply.` : ""}
+     ${g != null ? `Gini is ${g.toFixed(3)} and HHI ${hhi.toLocaleString()}${hhi > 2500 ? ", which is concentrated by the antitrust yardstick" : ", below the 2,500 antitrust threshold"}.` : ""}
+     <span class="muted">Machinery is excluded from both the wallets and the denominator, so pool and vault balances neither flatter nor distort this.</span>`);
+}
+
 function renderHolders() {
   const h = S.holders;
   const snaps = (h?.snapshots || []).filter((x) => x.holders > 0);
@@ -4936,6 +4998,7 @@ function renderAll() {
   try { renderRwa(); } catch (e) { console.error("renderRwa", e); }
   try { renderBacking(); } catch (e) { console.error("renderBacking", e); }
   try { renderRevenue(); } catch (e) { console.error("renderRevenue", e); }
+  try { renderDistribution(); } catch (e) { console.error("renderDistribution", e); }
   try { renderHolders(); } catch (e) { console.error("renderHolders", e); /* optional; never blank the tab */ }
   renderAges();
   collapseIntros();
