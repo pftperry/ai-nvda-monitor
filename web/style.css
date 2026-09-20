@@ -448,3 +448,15 @@ dl.gloss dd { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-se
 #cDist .thr.good { stroke: color-mix(in srgb, var(--series-3) 70%, transparent); }
 #cDist .thrlab { font: 600 11px var(--mono); fill: var(--text-secondary); }
 #cDist .axis { font: 400 11px var(--mono); fill: var(--muted); }
+
+/* distribution milestones: the same measure at five points in time */
+.miles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 10px 0 14px; }
+.miles .mile { padding: 14px 16px 13px; border-left: 1px solid var(--border); }
+.miles .mile:first-child { border-left: 0; padding-left: 0; }
+.miles .when { font: 600 10.5px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.miles .v { font: 300 34px/1.05 var(--serif, Georgia), serif; letter-spacing: -.02em; margin: 8px 0 6px; }
+.miles .mile.now .v { color: var(--series-1); }
+.miles .k { font-size: 11.5px; line-height: 1.35; color: var(--text-secondary); }
+@media (max-width: 720px) { .miles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .miles .mile { border-left: 0; padding-left: 0; border-top: 1px solid var(--border); }
+  .miles .mile:nth-child(-n+2) { border-top: 0; } }

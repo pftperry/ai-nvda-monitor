@@ -1029,6 +1029,17 @@ function renderDistribution() {
     ${tile("Holders", last.holders.toLocaleString(), `${first.holders.toLocaleString()} at launch · ${last.newHolders ? last.newHolders.toLocaleString() + " new and " + last.exits.toLocaleString() + " gone in the last period" : ""}`)}
     ${tile("Top 50 / top 100", `${pctLevel(t50, 0)} / ${pctLevel(t100, 0)}`, `${sgn(pp(d30.top?.[1], t50))} and ${sgn(pp(d30.top?.[2], t100))} in 30 days`)}
   </div>`;
+  /* Launch, three weeks, two weeks, one week, now: the same measure at five points,
+     so the direction is legible without reading a curve. */
+  const marks = [["Launch", daily[0]], ["3 weeks ago", ago(21)], ["2 weeks ago", ago(14)], ["1 week ago", ago(7)], ["Now", last]]
+    .filter(([, s]) => s && s.top?.[0] != null);
+  const seen = new Set();
+  const mrows = marks.filter(([, s]) => { if (seen.has(s.t)) return false; seen.add(s.t); return true; });
+  $("#distMiles").innerHTML = `<div class="miles">${mrows.map(([label, s], i) => `<div class="mile${i === mrows.length - 1 ? " now" : ""}">
+    <div class="when">${label}</div>
+    <div class="v">${pctLevel(s.top[0], 1)}</div>
+    <div class="k">${s.holders.toLocaleString()} holders · top 100 hold ${pctLevel(s.top[2], 0)}</div>
+  </div>`).join("")}</div>`;
   /* chart: top-ten share with the two thresholds the research names */
   const rows = daily.filter((s) => s.top?.[0] != null);
   const W = 900, Hh = 240, PL = 46, PR = 116, PT = 14, PB = 26;
