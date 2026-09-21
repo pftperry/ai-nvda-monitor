@@ -105,8 +105,12 @@ jobs:
         # repository secret. Without the secret the indexer uses the chain's public
         # endpoint, exactly as before. RPC_LABEL in config.mjs keeps the path, and
         # with it the key, out of the published meta.json.
+        # The wallet-name key is handled the same way and for the same reason: the
+        # site is static, so anything the browser can read is public. The key stays
+        # in CI and only the resolved address-to-name pairs reach names.json.
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
+          FOMO_API_KEY: ${{ secrets.FOMO_API_KEY }}
         run: |
           MODE="${{ github.event.inputs.mode }}"
           # A relayed or manual "auto" run chooses its depth the way a scheduled one does.

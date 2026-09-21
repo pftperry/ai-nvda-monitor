@@ -634,6 +634,19 @@ if (!flag("no-holders") && (store.get("holders") || fs.existsSync("seed/holders-
   }
 }
 
+/* Wallet names, on their own cadence and their own file. Separate from holders.json
+   because it refreshes on a six-hourly quota gate rather than with the chain, and a
+   failed name lookup must never hold up a holder refresh. */
+if (!flag("no-names")) {
+  try {
+    const { indexNames } = await import("./tasks/fomo.mjs");
+    const out = await indexNames({ prior: readData("names.json"), force: flag("rebuild") });
+    writeData("names.json", out.artifact);
+  } catch (e) {
+    softFail("names", e, "the previous names.json stays in place");
+  }
+}
+
 /* An hourly panel of every rating input beside price, for the study of which of
    them actually relate to price and how they should be weighted. Runs after every
    input it records is on disk, so it cannot affect anything it measures. Inputs
