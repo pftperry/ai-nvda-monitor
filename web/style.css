@@ -476,3 +476,17 @@ table.exhibit thead th.now, table.exhibit tbody td.now { background: color-mix(i
 table.exhibit tbody tr.grp td { border-bottom: 1px solid var(--text-secondary); padding: 15px 10px 4px; font: 700 10px/1.2 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--text-secondary); }
 table.exhibit td.chg { font-weight: 600; }
 table.exhibit td.chg .ar { font-size: 10px; margin-right: 4px; }
+
+/* net flow by wallet size: a centre line with bars either side, so direction
+   reads before any number does */
+.flowhead { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 4px 0 10px; flex-wrap: wrap; }
+.flowbars { display: grid; gap: 6px; margin-bottom: 14px; }
+.flowrow { display: grid; grid-template-columns: 96px 1fr 84px; align-items: center; gap: 10px; }
+.flowrow .fl { font-size: 12px; color: var(--text-secondary); }
+.flowrow .ft { position: relative; height: 18px; background: var(--surface-2); border-radius: 3px; }
+.flowrow .ft::before { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--border); }
+.flowrow .fb { position: absolute; top: 2px; bottom: 2px; border-radius: 2px; }
+.flowrow .fb.up { background: var(--up); }
+.flowrow .fb.down { background: var(--down); }
+.flowrow .fv { font-size: 12px; text-align: right; font-weight: 600; }
+@media (max-width: 560px) { .flowrow { grid-template-columns: 72px 1fr 66px; gap: 6px; } .flowrow .fl, .flowrow .fv { font-size: 11px; } }

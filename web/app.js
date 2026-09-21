@@ -548,9 +548,9 @@ function table(host, cols, rows) {
 }
 
 /* ── data ───────────────────────────────────────────────────────────────── */
-const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, poolIdx: 0, hours: 24 };
+const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, names: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -571,15 +571,17 @@ async function refreshData() {
     const meta = await loadJSON("meta.json");
     if (!meta || meta.headBlock === S.meta?.headBlock) return;   // nothing newly indexed
     const [flow, burns] = await Promise.all(["flow.json", "burns.json"].map(loadJSON));
-    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa, revenue] = await Promise.all(
-      OPTIONAL_ARTIFACTS.map((f) => loadJSON(f).catch(() => null))
-    );
-    Object.assign(S, {
-      meta, flow, burns,
-      routing: routing ?? S.routing, bridges: bridges ?? S.bridges,
-      tape: tape ?? S.tape, pools: pools ?? S.pools, depth: depth ?? S.depth, launchpad: launchpad ?? S.launchpad,
-      holders: holders ?? S.holders, prices: prices ?? S.prices, treasury: treasury ?? S.treasury, rwa: rwa ?? S.rwa, revenue: revenue ?? S.revenue,
-    });
+    /* Keyed by filename, not by position. This was a positional destructure against
+       OPTIONAL_ARTIFACTS, which is a list someone adds to: names.json went on the end
+       of the list and not into the destructure, so it loaded fine and landed nowhere,
+       and the ledger quietly showed addresses where it had names. Adding a file to
+       the list is now the whole change. */
+    const loaded = Object.fromEntries(await Promise.all(
+      OPTIONAL_ARTIFACTS.map(async (f) => [f.replace(/\.json$/, ""), await loadJSON(f).catch(() => null)])
+    ));
+    Object.assign(S, { meta, flow, burns });
+    /* a null is a failed fetch, not an empty artifact, so the last good copy stays */
+    for (const [k, v] of Object.entries(loaded)) if (v != null) S[k] = v;
     renderAll();
     refreshLiveTail();   // the live window starts at the new head, so re-scope it
   } catch { /* a failed refresh leaves the last good render in place */ }
@@ -804,6 +806,112 @@ function renderBigTrades() {
   $("#bigNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Window from ${tsFmt(B.since)}, every one of the ${B.poolsScanned} AI pools in the census, ${B.legsSeen.toLocaleString()} swap legs grouped into trades by transaction. ${routed} of these were routed across more than one pool; read leg by leg they look like ordinary flow, which is how a $1.7M sell hid here before. AI legs are valued at the current AI price; impact is each touched pool's own price before the transaction against after it.</p>`;
 }
 
+
+/* The whale ledger: are the big holders leaving, and what did it cost them.
+
+   The measure that carries this panel is OFF PEAK, not any fixed window. The event
+   worth seeing on this token was a single transaction: the rank-four wallet sold
+   25.8% of its stack in one go on 17 September. A 24-hour panel shows a flat day
+   either side of that, a 7-day window catches it for a week and then forgets it.
+   Distance from a wallet's own high never forgets, and needs no window at all. */
+function renderWhaleLedger() {
+  const H = S.holders, L = H?.whaleLedger, host = $("#tLedger");
+  if (!host) return;
+  if (!L?.length) {
+    host.innerHTML = `<tr><td class="muted">The ledger builds on the next full replay.</td></tr>`;
+    $("#ledgerKpis").innerHTML = ""; $("#ledgerFlow").innerHTML = ""; $("#ledgerNote").innerHTML = ""; return;
+  }
+  const names = S.names?.names || {};
+  const px = H.snapshots?.at(-1)?.price ?? null;
+  const nameOf = (a) => names[a.toLowerCase()] || null;
+
+  /* Distribution is counted among wallets that are actually big now. A wallet that
+     was briefly large months ago and left is not evidence about today's tape. */
+  const live = L.filter((r) => r.ai >= 1e6);
+  const shrunk = live.filter((r) => r.offPeak != null && r.offPeak <= -0.1)
+    .sort((a, b) => (b.peak - b.ai) - (a.peak - a.ai));
+  const sum = (k) => live.reduce((s, r) => s + (r[k] || 0), 0);
+  const realized = live.filter((r) => r.realizedUsd > 0).sort((a, b) => b.realizedUsd - a.realizedUsd);
+  const topReal = realized[0];
+  const d = (v) => v == null ? "—" : `${v >= 0 ? "+" : "\u2212"}${compact(Math.abs(v))}`;
+
+  $("#ledgerKpis").innerHTML = `<div class="tiles four">
+    ${tile("Wallets over 10% off their high", shrunk.length,
+      shrunk.length ? shrunk.slice(0, 3).map((r) => `${nameOf(r.address) ? "@" + nameOf(r.address).handle : r.address.slice(0, 8)} ${pctLevel(r.offPeak, 0)}`).join(" \u00b7 ") : "no wallet over 1M AI is meaningfully off its high",
+      shrunk.length ? "bad" : "", "hero")}
+    ${tile("Big-wallet position, 30 days", d(sum("d30")) + " AI",
+      `across ${live.length.toLocaleString()} wallets holding over 1M AI \u00b7 ${d(sum("d7"))} over 7 days, ${d(sum("d1"))} over 24 hours`,
+      sum("d30") < 0 ? "bad" : "")}
+    ${tile("Largest realised profit", topReal ? "$" + compact(topReal.realizedUsd) : "—",
+      topReal ? `${nameOf(topReal.address) ? "@" + nameOf(topReal.address).handle : topReal.address.slice(0, 10)} \u00b7 bought around $${topReal.avgCost?.toFixed(4) ?? "?"}, now ${pctLevel(topReal.offPeak, 1)} off its high` : "no realised selling among the large wallets")}
+    ${tile("Named wallets", `${L.filter((r) => nameOf(r.address)).length} of ${L.length}`,
+      "verified handles from the FOMO trader leaderboard; the rest trade unlabelled")}
+  </div>`;
+
+  renderSizeFlow();
+
+  const rows = L.slice(0, 50);
+  const who = (r) => {
+    const n = nameOf(r.address);
+    return n
+      ? `<b>@${n.handle}</b>${n.name && n.name !== n.handle ? ` <span class="muted">${n.name}</span>` : ""}`
+      : `<span class="mono" title="${r.address}">${r.address.slice(0, 10)}\u2026</span>`;
+  };
+  const chg = (v) => v == null ? '<td class="r mono muted">\u2014</td>'
+    : `<td class="r mono ${v > 0 ? "up" : v < 0 ? "down" : "muted"}">${v === 0 ? "\u2014" : d(v)}</td>`;
+  host.innerHTML = `<thead><tr><th class="r">#</th><th>Wallet</th><th class="r">Position</th>
+      <th class="r">24h</th><th class="r">7d</th><th class="r">30d</th>
+      <th class="r" title="how far below its own largest position this wallet now sits">Off peak</th>
+      <th class="r">Avg cost</th><th class="r" title="position times the gap between the last price and average cost">Unrealised</th>
+      <th class="r" title="booked on sales through a pool, against average cost">Realised</th><th></th></tr></thead><tbody>` +
+    rows.map((r, i) => `<tr>
+      <td class="r muted mono">${i + 1}</td>
+      <td>${who(r)}</td>
+      <td class="r mono"><b>${compact(r.ai)}</b></td>
+      ${chg(r.d1)}${chg(r.d7)}${chg(r.d30)}
+      <td class="r mono ${r.offPeak <= -0.1 ? "down" : "muted"}">${r.offPeak == null ? "\u2014" : r.offPeak === 0 ? "at high" : pctLevel(r.offPeak, 1)}</td>
+      <td class="r mono">${r.avgCost == null ? "\u2014" : "$" + r.avgCost.toFixed(4)}</td>
+      <td class="r mono ${r.unrealizedUsd >= 0 ? "up" : "down"}">${r.unrealizedUsd == null ? "\u2014" : (r.unrealizedUsd < 0 ? "\u2212$" : "$") + compact(Math.abs(r.unrealizedUsd))}</td>
+      <td class="r mono ${r.realizedUsd > 0 ? "up" : r.realizedUsd < 0 ? "down" : "muted"}">${!r.realizedUsd ? "\u2014" : (r.realizedUsd < 0 ? "\u2212$" : "$") + compact(Math.abs(r.realizedUsd))}</td>
+      <td class="r">${r.history ? spark(r.history.map((p) => p[1]), r.d30 < 0 ? "var(--down)" : "var(--up)") : ""}</td>
+    </tr>`).join("") + "</tbody>";
+
+  const dev = L.find((r) => nameOf(r.address)?.handle === "Natan_benish");
+  $("#ledgerNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Top 50 by current position, of ${L.length.toLocaleString()} wallets the ledger follows.     Unrealised marks the position at ${px == null ? "the last price" : "$" + px.toFixed(4)}; realised is booked only on sales through a pool, so moving tokens between your own addresses never shows as a gain.     ${dev ? `The protocol\u2019s own wallet is in this table at ${compact(dev.ai)} AI, ${dev.offPeak === 0 ? "at its high" : pctLevel(dev.offPeak, 1) + " off its high"}, with ${dev.realizedUsd ? "$" + compact(dev.realizedUsd) + " realised" : "nothing realised"}.` : ""}</p>`;
+}
+
+/* Who is doing the selling, by how much the seller already held.
+
+   Banded by size rather than by rank because rank needs a sort per transaction and
+   separates wallets holding almost the same amount. Net, not gross: a market maker
+   moves enormous volume both ways and says nothing about direction. */
+function renderSizeFlow() {
+  const H = S.holders, host = $("#ledgerFlow");
+  if (!host) return;
+  const rows = H?.flowBySize, bands = H?.sizeBands;
+  if (!rows?.length || !bands?.length) { host.innerHTML = ""; return; }
+  const win = S.flowWin || 7;
+  const use = rows.slice(-win);
+  const net = bands.map((b, i) => ({
+    label: b.label,
+    net: use.reduce((s, r) => s + ((r.bands[i]?.buy || 0) - (r.bands[i]?.sell || 0)), 0),
+    wallets: Math.max(...use.map((r) => r.bands[i]?.wallets || 0)),
+  }));
+  const span = Math.max(1, ...net.map((n) => Math.abs(n.net)));
+  /* the page's own segmented control, so this panel does not invent a fourth
+     button style; aria-pressed is what the stylesheet keys the active state off */
+  const btn = (n, label) => `<button aria-pressed="${win === n}" data-flowwin="${n}">${label}</button>`;
+  host.innerHTML = `<div class="flowhead"><span class="muted">Net AI by how much the wallet held before the trade</span>
+      <span class="seg">${btn(1, "24h")}${btn(7, "7d")}${btn(30, "30d")}</span></div>
+    <div class="flowbars">${net.map((n) => `<div class="flowrow">
+      <span class="fl">${n.label}</span>
+      <span class="ft"><span class="fb ${n.net >= 0 ? "up" : "down"}" style="width:${(Math.abs(n.net) / span * 50).toFixed(1)}%;${n.net >= 0 ? "left:50%" : "right:50%"}"></span></span>
+      <span class="fv mono ${n.net >= 0 ? "up" : "down"}">${n.net >= 0 ? "+" : "\u2212"}${compact(Math.abs(n.net))}</span>
+    </div>`).join("")}</div>`;
+  host.querySelectorAll("[data-flowwin]").forEach((b) => b.addEventListener("click", () => {
+    S.flowWin = Number(b.dataset.flowwin); renderSizeFlow();
+  }));
+}
 /* Buy and sell pressure by wallet, and whether it is one holder or a crowd. */
 function renderTraders() {
   const T = S.tape?.traders, host = $("#tTraders");
@@ -819,7 +927,7 @@ function renderTraders() {
     ${tile("Sold vs bought", `$${compact(T.totalSoldUsd)} / $${compact(T.totalBoughtUsd)}`, `${T.tradesAttributed.toLocaleString()} trades attributed from ${T.transfersSeen.toLocaleString()} transfers`)}
     ${tile("Top-25 holders selling", dumping.length, dumping.length ? dumping.map((r) => `#${r.holderRank} cut ${pctLevel(r.sharePctOfBalance, 0)} of its stack`).join(" · ") : "no ranked holder ended the day net down", dumping.length ? "bad" : "")}
   </div>`;
-  const addr = (r) => `<span class="mono" title="${r.address}">${r.address.slice(0, 10)}…</span>${r.holderRank ? ` <span class="badge tier venue">holder #${r.holderRank}</span>` : ""}`;
+  const addr = (r) => `${addrCell(r.address)}${r.holderRank ? ` <span class="badge tier venue">holder #${r.holderRank}</span>` : ""}`;
   const rows = [...T.topSellers].sort((a, b) => b.soldAi - a.soldAi).slice(0, 15);
   host.innerHTML = `<thead><tr><th class="r">#</th><th>Wallet</th><th class="r">Sold</th><th class="r">Bought</th><th class="r" title="bought minus sold: negative means the wallet left with less AI than it started">Net</th><th class="r">Trades</th><th class="r">Of its stack</th></tr></thead><tbody>` +
     rows.map((r, i) => `<tr>
@@ -936,6 +1044,7 @@ function renderFlow() {
   ], p.rollups);
 
   renderBigTrades();
+  renderWhaleLedger();
   renderTraders();
   const names = S.tape?.pools || [];   // the tape is optional; a missing file must not blank the tab
   table($("#tTape"), [
@@ -1365,9 +1474,27 @@ function knownName(a) {
   const treasury = (S.treasury?.treasuryWallets || []).some((w) => w.address === lc);
   return k[lc] || S.treasury?.identities?.[lc]?.short || (treasury ? "LONG treasury wallet" : null);
 }
+/* A trader's own handle, from the FOMO leaderboard, verified rows only. Kept apart
+   from knownName because the two are different claims: knownName says "this address
+   is the fee splitter", a fact about the protocol, while this says "a person posting
+   under this handle has proved they control this wallet". A contract label always
+   wins, or a router that happens to rank on a leaderboard gets introduced as a
+   person. */
+const traderHandle = (a) => S.names?.names?.[(a || "").toLowerCase()]?.handle || null;
+
 const addrCell = (a) => {
-  const name = knownName(a);
-  return `<span class="mono" title="${a}">${name ? `<b>${name}</b> ` : ""}${short(a)}</span>`;
+  const name = knownName(a), handle = traderHandle(a);
+  /* the @ is doing real work: it tells a reader that "Salem" is somebody's handle
+     and "fee splitter" is a machine, with no legend to look up.
+
+     Both can be true and they answer different questions, so both are shown: the
+     second-largest holder is labelled "personal FOMO trading wallet" by the
+     treasury task AND is @Natan_benish, and dropping either one loses something.
+     The handle leads because a name is what a reader scans for. */
+  const label = handle && name ? `<b>@${handle}</b> <span class="muted">${name}</span> `
+    : handle ? `<b>@${handle}</b> `
+    : name ? `<b>${name}</b> ` : "";
+  return `<span class="mono" title="${a}">${label}${short(a)}</span>`;
 };
 
 /** Columns for a whale-move table, shared by the Investor View card and the Float tab. */
@@ -5185,10 +5312,14 @@ async function boot() {
     const [meta, flow, burns] = await Promise.all(
       ["meta.json", "flow.json", "burns.json"].map(loadJSON)
     );
-    const [routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa, revenue] = await Promise.all(
-      OPTIONAL_ARTIFACTS.map((f) => loadJSON(f).catch(() => null))
-    );
-    Object.assign(S, { meta, flow, burns, routing, bridges, tape, pools, depth, launchpad, holders, prices, treasury, rwa, revenue });
+    /* Keyed by filename, like the refresh path. The same positional destructure
+       lived in both places and drifted in both: names.json was appended to
+       OPTIONAL_ARTIFACTS and to neither list, so it fetched successfully on every
+       load and was thrown away, and the ledger showed bare addresses. */
+    const loaded = Object.fromEntries(await Promise.all(
+      OPTIONAL_ARTIFACTS.map(async (f) => [f.replace(/\.json$/, ""), await loadJSON(f).catch(() => null)])
+    ));
+    Object.assign(S, { meta, flow, burns }, loaded);
   } catch (e) {
     $("#boot").remove();
     $("#bootErr").innerHTML = `<div class="err"><b>Could not load indexed data.</b><br>
