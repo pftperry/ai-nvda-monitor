@@ -12,11 +12,14 @@ const WEEK = 7 * 86400;
 /* Bumped when the state gains fields a replay from genesis has to fill. A seed
    with a newer schema is adopted over a cache that is merely further along,
    because the cache cannot backfill what it never recorded. */
-/* 5: snapshots carry gini, nakamoto, hhi, top1pct and medianAi. The bump is what
-   forces the point -- those fields are computed as a snapshot is taken and are
-   never backfilled into one already stored, so without a replay from genesis the
-   whole history stays blank and only the newest four-hourly row has them. */
-export const HOLDER_STATE_SCHEMA = 5;   // 4: actors netted per transaction (buyers, sellers, whale wallets)
+/* The bump is what forces a replay, and these fields need one: every value here is
+   computed as a snapshot is taken and is never written back into one already
+   stored, so a resumed cache leaves the history blank and fills only the newest
+   four-hourly row.
+     5: gini, nakamoto, hhi, top1pct, medianAi per snapshot
+     6: the whale ledger (per-wallet position history and cost basis) and flow
+        banded by the seller's size */
+export const HOLDER_STATE_SCHEMA = 6;   // 6: whale ledger (per-wallet position history, cost basis) and size-banded flow
 
 /* Addresses that hold AI as machinery rather than as an owner. The pool manager
    holds every v4 pool's inventory, the vault holds the locked leg, the splitter
@@ -65,7 +68,34 @@ export const WHALE_MIN_AI = 250_000;
 const WHALE_MIN = BigInt(WHALE_MIN_AI) * 10n ** 18n;
 const WHALE_KEEP = 400;          // in state
 const WHALE_PUBLISH = 200;       // in the artifact
-const TOP_HOLDERS_PUBLISH = 25;
+const TOP_HOLDERS_PUBLISH = 50;
+
+/* The ledger follows wallets THROUGH the top, not wallets currently in it.
+   Tracking only today's top 50 hides the event worth seeing: a holder that sells
+   most of its position drops down the list, so the table loses the row at the
+   moment it starts to matter. Measured on this token, the rank-4 wallet sold 25.8%
+   of its stack in one transaction on 17 September; a few more like that and it
+   leaves a top-50 view entirely. So membership is "was ever in the top 100 at any
+   snapshot", and it is never revoked. */
+const LEDGER_RANKS = 100;
+
+/* Bands for "who is doing the selling", by what the wallet held BEFORE the trade.
+   Size, not rank: rank needs a sort at every transaction and says less anyway,
+   because rank 40 and rank 400 can hold within a rounding error of each other on a
+   long tail like this one. The top band is drawn at 10M AI, which is roughly where
+   this token's top fifty begins. */
+const SIZE_BANDS = [
+  { key: "mega",  label: "10M+ AI",      lo: 10e6, hi: Infinity },
+  { key: "large", label: "1M - 10M",     lo: 1e6,  hi: 10e6 },
+  { key: "mid",   label: "100k - 1M",    lo: 1e5,  hi: 1e6 },
+  { key: "small", label: "10k - 100k",   lo: 1e4,  hi: 1e5 },
+  { key: "retail", label: "under 10k",   lo: 0,    hi: 1e4 },
+];
+const FLOW_DAYS_KEEP = 120;
+/* Position history is published one point per day. Snapshots are four-hourly and
+   six times the rows buys nothing on a chart that spans months; the four-hourly
+   detail stays in the state for the flow arithmetic. */
+const LEDGER_DAILY = true;
 
 /**
  * Who holds AI, in dollars, every four hours since genesis.
@@ -120,6 +150,37 @@ export async function indexHolders(latest, tm, opts = {}) {
   const firstSeenFromGenesis = prev.firstSeenFromGenesis === true || startCursor < GENESIS_BLOCK;
   const whales = prev.whales ? prev.whales.slice() : [];
 
+  /* The whale ledger: who the big wallets are, what they have done with the
+     position, and what it cost them.
+
+     `tracked` is the membership set (see LEDGER_RANKS), `ledger` the position of
+     each member at every snapshot, and `basis` the running cost of each member's
+     stack.
+
+     Cost is average-cost, which is the convention a reader will assume and the
+     only one that survives wallets with hundreds of fills. Two rules keep it
+     honest. A transaction that touched the pool manager is a TRADE and prices at
+     the hour's close: a buy raises quantity and cost, a sale books realised profit
+     against the average and leaves the average alone. A transaction that touched no
+     pool is a MOVE, not a trade, and books nothing -- quantity and cost leave the
+     sender pro rata and arrive at the receiver at the same average. Treating a move
+     as a sale is the standard way these numbers go wrong: a wallet consolidating
+     across two of its own addresses would otherwise print a realised gain it never
+     made. */
+  const tracked = new Set(prev.tracked || []);
+  const ledger = new Map(Object.entries(prev.ledger || {}));
+  const basis = new Map(Object.entries(prev.basis || {}).map(([a, v]) => [a, { ...v }]));
+  /* Day -> per-band buy and sell totals. Wallet sets are rebuilt from the state's
+     counts on resume rather than persisted: the count is what gets published and
+     carrying fifty thousand addresses per day would dwarf the rest of the state. */
+  const flowBySize = new Map(Object.entries(prev.flowBySize || {}).map(([d, bands]) =>
+    [Number(d), bands.map((b) => ({ buy: b.buy, sell: b.sell, wallets: new Set(), resumedWallets: b.wallets || 0 }))]));
+  const basisOf = (a) => {
+    let s = basis.get(a);
+    if (!s) { s = { qty: 0, cost: 0, realized: 0, bought: 0, sold: 0, firstBuyT: null, lastTradeT: null }; basis.set(a, s); }
+    return s;
+  };
+
   /* Churn is a SET DIFFERENCE between snapshots, not a count of transitions.
      Counting every zero-to-funded transition looked right and read 382,640 wallets
      funded in a week against 44,803 holders: routers and aggregators receive and
@@ -167,6 +228,25 @@ export async function indexHolders(latest, tm, opts = {}) {
       for (let i = 0; i < Math.min(n, sizes.length); i++) s += sizes[i];
       return held > 0 ? +(s / held).toFixed(4) : null;
     });
+    /* Ledger membership, by selection rather than a second sort. `sizes` is already
+       ordered, so the balance at rank LEDGER_RANKS is the cut, and one more pass over
+       the balances names everyone at or above it. Ties can admit a few extra wallets,
+       which costs nothing and beats an arbitrary tiebreak. Membership is additive:
+       once a wallet has been this big it keeps its row however far it falls. */
+    const cut = sizes.length >= LEDGER_RANKS ? sizes[LEDGER_RANKS - 1] : 0;
+    for (const [a, b] of balances) {
+      if (b <= 0n || MACHINERY.has(a)) continue;
+      if (Number(b / 10n ** 12n) / 1e6 >= cut) tracked.add(a);
+    }
+    /* One position row per tracked wallet per snapshot, including wallets that have
+       gone to zero: a balance of nothing after a large balance is the whole story on
+       an exit, and a missing row would read as "no data" instead. */
+    for (const a of tracked) {
+      const b = balances.get(a) || 0n;
+      let arr = ledger.get(a);
+      if (!arr) { arr = []; ledger.set(a, arr); }
+      arr.push([t, +(Number(b / 10n ** 12n) / 1e6).toFixed(2)]);
+    }
     /* The distribution metrics the literature actually uses, all computed from the
        sorted balances already in hand.
 
@@ -252,6 +332,44 @@ export async function indexHolders(latest, tm, opts = {}) {
       if (d === 0n || MACHINERY.has(a)) continue;
       if (pool) { if (d > 0n) periodBuyers.add(a); else periodSellers.add(a); }
       const mag = d < 0n ? -d : d;
+      const ai = Number(mag / 10n ** 12n) / 1e6;
+      /* The balance the wallet had BEFORE this transaction. flushTx runs when the
+         NEXT transaction's first row arrives, so this one is already applied and the
+         delta has to come back off. Getting this backwards would file a wallet that
+         just sold its whole stack under "held nothing", which is the opposite of
+         what the chart is for. */
+      const heldBefore = Number(((balances.get(a) || 0n) - d) / 10n ** 12n) / 1e6;
+      if (pool) {
+        /* Where the day's flow came from, by how big the wallet already was. This is
+           the direct test of "are the big holders distributing": it needs no rank, no
+           labels and no attribution beyond the netting already done above. */
+        const day = Math.floor(first.ts / 86400) * 86400;
+        let row = flowBySize.get(day);
+        if (!row) { row = SIZE_BANDS.map(() => ({ buy: 0, sell: 0, wallets: new Set() })); flowBySize.set(day, row); }
+        const band = SIZE_BANDS.findIndex((b) => heldBefore >= b.lo && heldBefore < b.hi);
+        if (band >= 0) {
+          row[band][d > 0n ? "buy" : "sell"] += ai;
+          row[band].wallets.add(a);
+        }
+      }
+      if (tracked.has(a)) {
+        const s = basisOf(a), px = priceAt(first.ts) ?? 0;
+        s.lastTradeT = first.ts;
+        if (!pool) {
+          /* A move, not a trade. Quantity leaves at the average it came in at, so
+             the average is untouched and nothing is realised. */
+          if (d < 0n && s.qty > 0) { const take = Math.min(ai, s.qty); s.cost -= take * (s.cost / s.qty); s.qty -= take; }
+          else if (d > 0n) { s.qty += ai; s.cost += ai * px; }
+        } else if (d > 0n) {
+          s.qty += ai; s.cost += ai * px; s.bought += ai;
+          if (s.firstBuyT == null) s.firstBuyT = first.ts;
+        } else {
+          const avg = s.qty > 0 ? s.cost / s.qty : px;
+          const take = Math.min(ai, s.qty);
+          s.realized += take * (px - avg);
+          s.cost -= take * avg; s.qty -= take; s.sold += ai;
+        }
+      }
       if (mag >= WHALE_MIN) {
         whales.push({
           t: first.ts, block: first.block,
@@ -351,6 +469,61 @@ export async function indexHolders(latest, tm, opts = {}) {
       since: firstSeen.get(a) ?? null,
     }));
 
+  /* The whale ledger. One row per tracked wallet: where the position stands, how it
+     has moved over the windows a reader actually asks about, what it cost, and what
+     is still on the table.
+
+     `peak` and `offPeak` are the pair that answer the distribution question without
+     needing a window at all. A wallet 40% off its own high has distributed, whenever
+     it happened; a wallet at its high has not, however busy its tape looks. */
+  const nowT = snaps.length ? snaps[snaps.length - 1].t : null;
+  const lastPrice = snaps.length ? snaps[snaps.length - 1].price : null;
+  const at = (arr, t) => {
+    /* the last reading at or before t, so a young wallet reports no change rather
+       than a fabricated one against a zero it never held */
+    let v = null;
+    for (const [ts, bal] of arr) { if (ts > t) break; v = bal; }
+    return v;
+  };
+  const whaleLedger = [...tracked].map((a) => {
+    const hist = ledger.get(a) || [];
+    const cur = Number((balances.get(a) || 0n) / 10n ** 12n) / 1e6;
+    const s = basis.get(a) || null;
+    let peak = 0, peakT = null;
+    for (const [ts, bal] of hist) if (bal > peak) { peak = bal; peakT = ts; }
+    const avg = s && s.qty > 0 ? s.cost / s.qty : null;
+    const daily = [];
+    let lastDay = null;
+    for (const [ts, bal] of hist) {
+      const d = Math.floor(ts / 86400) * 86400;
+      if (d === lastDay) daily[daily.length - 1] = [d, bal];
+      else { daily.push([d, bal]); lastDay = d; }
+    }
+    return {
+      address: a,
+      ai: Math.round(cur),
+      since: firstSeen.get(a) ?? null,
+      d1: nowT == null ? null : Math.round(cur - (at(hist, nowT - 86400) ?? cur)),
+      d7: nowT == null ? null : Math.round(cur - (at(hist, nowT - 7 * 86400) ?? cur)),
+      d30: nowT == null ? null : Math.round(cur - (at(hist, nowT - 30 * 86400) ?? cur)),
+      peak: Math.round(peak), peakT,
+      offPeak: peak > 0 ? +((cur / peak) - 1).toFixed(4) : null,
+      avgCost: avg == null ? null : +avg.toFixed(6),
+      realizedUsd: s ? Math.round(s.realized) : null,
+      unrealizedUsd: avg == null || lastPrice == null ? null : Math.round(cur * (lastPrice - avg)),
+      boughtAi: s ? Math.round(s.bought) : null,
+      soldAi: s ? Math.round(s.sold) : null,
+      lastTradeT: s ? s.lastTradeT : null,
+      history: LEDGER_DAILY ? daily : hist,
+    };
+  }).sort((x, y) => y.ai - x.ai);
+
+  const flowRows = [...flowBySize.entries()].sort((a, b) => a[0] - b[0]).slice(-FLOW_DAYS_KEEP)
+    .map(([t, bands]) => ({
+      t,
+      bands: bands.map((b) => ({ buy: Math.round(b.buy), sell: Math.round(b.sell), wallets: Math.max(b.wallets.size, b.resumedWallets || 0) })),
+    }));
+
   return {
     state: {
       schema: HOLDER_STATE_SCHEMA,
@@ -362,6 +535,11 @@ export async function indexHolders(latest, tm, opts = {}) {
       prevHolders: [...prevHolders],
       periodBuyers: [...periodBuyers], periodSellers: [...periodSellers],   // the period still open at the cursor
       seedCursor: prev.seedCursor ?? null,   // which committed seed this state descends from
+      tracked: [...tracked],
+      ledger: Object.fromEntries(ledger),
+      basis: Object.fromEntries(basis),
+      flowBySize: Object.fromEntries([...flowBySize].map(([d, bands]) =>
+        [d, bands.map((b) => ({ buy: +b.buy.toFixed(2), sell: +b.sell.toFixed(2), wallets: Math.max(b.wallets.size, b.resumedWallets || 0) }))])),
     },
     artifact: {
       complete, cursor,
@@ -375,6 +553,9 @@ export async function indexHolders(latest, tm, opts = {}) {
       firstSeenFromGenesis,
       cohorts: cohortRows,
       topHolders,
+      whaleLedger,
+      sizeBands: SIZE_BANDS.map(({ key, label, lo, hi }) => ({ key, label, lo, hi: hi === Infinity ? null : hi })),
+      flowBySize: flowRows,
       whales: whales.slice(-WHALE_PUBLISH).reverse(),
     },
   };
