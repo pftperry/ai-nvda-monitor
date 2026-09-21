@@ -96,6 +96,8 @@ const FLOW_DAYS_KEEP = 120;
    six times the rows buys nothing on a chart that spans months; the four-hourly
    detail stays in the state for the flow arithmetic. */
 const LEDGER_DAILY = true;
+/* How many rows carry that series. See the note where it is applied. */
+const LEDGER_HISTORY_ROWS = 200;
 
 /**
  * Who holds AI, in dollars, every four hours since genesis.
@@ -487,7 +489,13 @@ export async function indexHolders(latest, tm, opts = {}) {
   };
   const whaleLedger = [...tracked].map((a) => {
     const hist = ledger.get(a) || [];
-    const cur = Number((balances.get(a) || 0n) / 10n ** 12n) / 1e6;
+    /* The position AS OF THE LAST SNAPSHOT, not the live balance at the cursor.
+       Those differ by whatever the wallet did in the part-hours since, and mixing
+       them makes a row disagree with itself: a market maker showed a headline
+       10,105,285 against a history ending at 10,380,621, and the accumulator
+       contract showed a balance above its own peak. Every figure in the row now
+       comes off the same instant, so the sparkline ends where the number says. */
+    const cur = hist.length ? hist[hist.length - 1][1] : Number((balances.get(a) || 0n) / 10n ** 12n) / 1e6;
     const s = basis.get(a) || null;
     let peak = 0, peakT = null;
     for (const [ts, bal] of hist) if (bal > peak) { peak = bal; peakT = ts; }
@@ -517,6 +525,14 @@ export async function indexHolders(latest, tm, opts = {}) {
       history: LEDGER_DAILY ? daily : hist,
     };
   }).sort((x, y) => y.ai - x.ai);
+  /* Membership never lapses, so the ledger accumulates: 836 wallets have been in the
+     top 100 at some point across 415 snapshots. Every row keeps its summary, which is
+     small, but only the largest carry a position series -- seventy points each across
+     836 rows is most of a megabyte on a page people open on a phone. Ranked by the
+     bigger of current and peak, so a wallet that has sold down keeps its chart. */
+  const byPeak = [...whaleLedger].sort((x, y) => Math.max(y.ai, y.peak) - Math.max(x.ai, x.peak));
+  const withHistory = new Set(byPeak.slice(0, LEDGER_HISTORY_ROWS).map((r) => r.address));
+  for (const r of whaleLedger) if (!withHistory.has(r.address)) r.history = null;
 
   const flowRows = [...flowBySize.entries()].sort((a, b) => a[0] - b[0]).slice(-FLOW_DAYS_KEEP)
     .map(([t, bands]) => ({
