@@ -550,7 +550,7 @@ function table(host, cols, rows) {
 /* ── data ───────────────────────────────────────────────────────────────── */
 const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, names: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -774,7 +774,28 @@ function renderBigTrades() {
      published before that existed. */
   const B = S.tape?.bigTrades, legacy = S.tape?.big, names = S.tape?.pools || [], host = $("#tBig");
   if (!B?.trades?.length) return renderBigTradesLegacy(legacy, names, host);
-  const rows = B.trades;
+  /* The window is cut here rather than in the indexer: every trade already carries
+     its timestamp and the list is only the largest forty, so filtering in the page
+     is exact and costs nothing. Measured against the data's OWN window end, not the
+     clock, or a tape indexed twenty minutes ago would quietly drop its newest
+     trades out of the "last hour". */
+  const endT = (B.since || 0) + (B.windowSecs || 86400);
+  const BIG_WINS = [["1h", 3600], ["12h", 12 * 3600], ["24h", 86400]];
+  const bpick = S.bigWin || "24h";
+  const bsecs = (BIG_WINS.find(([k]) => k === bpick) || BIG_WINS[2])[1];
+  const rows = B.trades.filter((r) => r.t >= endT - bsecs);
+  const bbtn = ([k]) => `<button aria-pressed="${bpick === k}" data-bigwin="${k}">${k}</button>`;
+  const bswitch = `<div class="flowhead"><span class="muted">Window</span>
+      <span class="seg">${BIG_WINS.map(bbtn).join("")}</span></div>`;
+  if (!rows.length) {
+    $("#bigKpis").innerHTML = bswitch;
+    host.innerHTML = `<tr><td class="muted">No trade over $${compact(B.minUsd)} in the last ${bpick}.</td></tr>`;
+    $("#bigNote").innerHTML = "";
+    $("#bigKpis").querySelectorAll("[data-bigwin]").forEach((b) => b.addEventListener("click", () => {
+      S.bigWin = b.dataset.bigwin; renderBigTrades();
+    }));
+    return;
+  }
   const buys = rows.filter((r) => r.buy), sells = rows.filter((r) => !r.buy);
   const sum = (a) => a.reduce((s, r) => s + r.usd, 0);
   const hourOf = (t) => Math.floor(t / 3600) * 3600;
@@ -782,12 +803,12 @@ function renderBigTrades() {
   for (const r of sells) byHour.set(hourOf(r.t), (byHour.get(hourOf(r.t)) || 0) + r.usd);
   const worst = [...byHour].sort((a, b) => b[1] - a[1])[0];
   const routed = rows.filter((r) => r.legs > 1).length;
-  $("#bigKpis").innerHTML = `<div class="tiles four">
+  $("#bigKpis").innerHTML = bswitch + `<div class="tiles four">
     ${tile("Largest sell", sells.length ? `$${compact(sells[0].usd)}` : "—",
       sells.length ? `${compact(sells[0].ai)} AI at ${tsFmt(sells[0].t)}${sells[0].legs > 1 ? `, routed through ${sells[0].legs} pools` : ""} · ${pctSigned(sells[0].impact)} on the pools it touched` : "none over the floor", "bad")}
     ${tile("Largest buy", buys.length ? `$${compact(buys[0].usd)}` : "—",
       buys.length ? `${compact(buys[0].ai)} AI at ${tsFmt(buys[0].t)}${buys[0].legs > 1 ? `, routed through ${buys[0].legs} pools` : ""} · ${pctSigned(buys[0].impact)}` : "none over the floor")}
-    ${tile("Sells vs buys", `$${compact(sum(sells))} / $${compact(sum(buys))}`, `${sells.length} sells and ${buys.length} buys over $${compact(B.minUsd)}`)}
+    ${tile("Sells vs buys", `$${compact(sum(sells))} / $${compact(sum(buys))}`, `${sells.length} sells and ${buys.length} buys over $${compact(B.minUsd)} in the last ${bpick}`)}
     ${tile("Heaviest selling hour", worst ? tsFmt(worst[0]).replace(/:\d\d/, ":00") : "—", worst ? `$${compact(worst[1])} of large sells landed in that hour` : "")}
   </div>`;
   const shortTx = (tx) => tx ? `<span class="mono muted" title="${tx}">${tx.slice(0, 10)}…</span>` : "";
@@ -803,7 +824,10 @@ function renderBigTrades() {
       <td class="r mono ${r.impact == null ? "" : r.impact >= 0 ? "up" : "down"}">${pctSigned(r.impact)}</td>
       <td>${shortTx(r.tx)}</td>
     </tr>`).join("") + "</tbody>";
-  $("#bigNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Window from ${tsFmt(B.since)}, every one of the ${B.poolsScanned} AI pools in the census, ${B.legsSeen.toLocaleString()} swap legs grouped into trades by transaction. ${routed} of these were routed across more than one pool; read leg by leg they look like ordinary flow, which is how a $1.7M sell hid here before. AI legs are valued at the current AI price; impact is each touched pool's own price before the transaction against after it.</p>`;
+  $("#bigKpis").querySelectorAll("[data-bigwin]").forEach((b) => b.addEventListener("click", () => {
+    S.bigWin = b.dataset.bigwin; renderBigTrades();
+  }));
+  $("#bigNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Showing the last ${bpick} of a tape indexed over 24 hours from ${tsFmt(B.since)}, every one of the ${B.poolsScanned} AI pools in the census, ${B.legsSeen.toLocaleString()} swap legs grouped into trades by transaction. ${routed} of these were routed across more than one pool; read leg by leg they look like ordinary flow, which is how a $1.7M sell hid here before. AI legs are valued at the current AI price; impact is each touched pool's own price before the transaction against after it.</p>`;
 }
 
 
@@ -853,10 +877,13 @@ function renderWhaleLedger() {
   const rows = L.slice(0, 50);
   const who = (r) => {
     const n = nameOf(r.address);
-    return n
+    const cell = n
       ? `<b>@${n.handle}</b>${n.name && n.name !== n.handle ? ` <span class="muted">${n.name}</span>` : ""}`
-      : `<span class="mono" title="${r.address}">${r.address.slice(0, 10)}\u2026</span>`;
+      : `<span class="mono" title="${r.address}">${r.address.slice(0, 10)}…</span>`;
+    /* a pool in a holder ranking is liquidity other people deposited, not a position */
+    return cell + (isContractAddr(r.address) ? ` <span class="badge tier na" title="contract code that is not an EIP-7702 delegation: pooled liquidity or a router, not a holder">contract</span>` : "");
   };
+
   const chg = (v) => v == null ? '<td class="r mono muted">\u2014</td>'
     : `<td class="r mono ${v > 0 ? "up" : v < 0 ? "down" : "muted"}">${v === 0 ? "\u2014" : d(v)}</td>`;
   host.innerHTML = `<thead><tr><th class="r">#</th><th>Wallet</th><th class="r">Position</th>
@@ -1503,6 +1530,22 @@ function knownName(a) {
    person. */
 const traderHandle = (a) => S.names?.names?.[(a || "").toLowerCase()]?.handle || null;
 
+/* Contracts the indexer proved are not people. Only contracts are published, and an
+   address with no entry is treated as a person, which is the safe way round: a
+   missing artifact should not brand every wallet on the page as a machine.
+
+   Worth knowing before reading this: most accounts here DO have code. 56 of the 116
+   addresses the page displays are EIP-7702 delegated EOAs, which is what a FOMO
+   wallet is, and they are people. "Has code" would have hidden twenty named humans
+   and kept the pools. */
+let contractSet = null, contractSrc = null;
+const isContractAddr = (a) => {
+  const list = S.accounts?.contracts;
+  if (!list) return false;
+  if (contractSrc !== list) { contractSrc = list; contractSet = new Set(list.map((x) => x.toLowerCase())); }
+  return contractSet.has((a || "").toLowerCase());
+};
+
 const addrCell = (a) => {
   const name = knownName(a), handle = traderHandle(a);
   /* the @ is doing real work: it tells a reader that "Salem" is somebody's handle
@@ -1515,7 +1558,8 @@ const addrCell = (a) => {
   const label = handle && name ? `<b>@${handle}</b> <span class="muted">${name}</span> `
     : handle ? `<b>@${handle}</b> `
     : name ? `<b>${name}</b> ` : "";
-  return `<span class="mono" title="${a}">${label}${short(a)}</span>`;
+  const mark = isContractAddr(a) ? ` <span class="badge tier na" title="this address has contract code that is not an EIP-7702 delegation: a pool, router or proxy rather than a person">contract</span>` : "";
+  return `<span class="mono" title="${a}">${label}${short(a)}</span>${mark}`;
 };
 
 /** Columns for a whale-move table, shared by the Investor View card and the Float tab. */
