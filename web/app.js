@@ -914,14 +914,25 @@ function renderSizeFlow() {
 }
 /* Buy and sell pressure by wallet, and whether it is one holder or a crowd. */
 function renderTraders() {
-  const T = S.tape?.traders, host = $("#tTraders");
-  if (!T?.topSellers) { host.innerHTML = `<tr><td class="muted">Attribution runs on the next standard index.</td></tr>`; $("#traderKpis").innerHTML = ""; $("#traderNote").innerHTML = ""; return; }
+  const A = S.tape?.traders, host = $("#tTraders");
+  if (!A?.topSellers) { host.innerHTML = `<tr><td class="muted">Attribution runs on the next standard index.</td></tr>`; $("#traderKpis").innerHTML = ""; $("#traderNote").innerHTML = ""; return; }
+  /* The panel refreshes four times an hour and still looked frozen, because a
+     trailing day hardly moves: a wallet that sold twenty hours ago tops the list at
+     every refresh until it falls out of the window. So the window is selectable, and
+     an hour is the default -- that is the one that answers "what is happening now".
+     All three are cut from the same scan, so switching costs nothing. */
+  const wins = A.windows || null;
+  const pick = S.traderWin || "1h";
+  const T = wins?.[pick] || wins?.["24h"] || A;
   const C = T.concentration, pc = (v) => v == null ? "—" : pctLevel(v, 0);
   /* Gross selling says little on its own: the busiest seller here also bought more
      than it sold. Net is what tells you a wallet is leaving. */
   const netOut = T.topSellers.filter((r) => r.netAi < 0).sort((a, b) => a.netAi - b.netAi);
   const dumping = netOut.filter((r) => r.holderRank != null);
-  $("#traderKpis").innerHTML = `<div class="tiles four">
+  const wbtn = (k) => `<button aria-pressed="${pick === k}" data-traderwin="${k}">${k}</button>`;
+  const switcher = wins ? `<div class="flowhead"><span class="muted">Window</span>
+      <span class="seg">${Object.keys(wins).map(wbtn).join("")}</span></div>` : "";
+  $("#traderKpis").innerHTML = switcher + `<div class="tiles four">
     ${tile("Busiest seller's share", pc(C.sellTop1), `of everything sold · top five ${pc(C.sellTop5)}, top ten ${pc(C.sellTop10)} · ${C.sellers} selling wallets`, C.sellTop1 > 0.35 ? "bad" : "", "hero")}
     ${tile("Busiest buyer's share", pc(C.buyTop1), `of everything bought · top five ${pc(C.buyTop5)} · ${C.buyers} buying wallets`)}
     ${tile("Sold vs bought", `$${compact(T.totalSoldUsd)} / $${compact(T.totalBoughtUsd)}`, `${T.tradesAttributed.toLocaleString()} trades attributed from ${T.transfersSeen.toLocaleString()} transfers`)}
@@ -938,7 +949,10 @@ function renderTraders() {
       <td class="r mono">${r.sellTx + r.buyTx}</td>
       <td class="r mono">${r.sharePctOfBalance == null ? "—" : pctLevel(r.sharePctOfBalance, 0)}</td>
     </tr>`).join("") + "</tbody>";
-  $("#traderNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Window from ${tsFmt(T.since)}. A wallet appearing high on both sides is making a market, not leaving: read the net column. Of the ${C.sellers} wallets that sold, the busiest was ${pc(C.sellTop1)} of the total, so selling ${C.sellTop1 > 0.35 ? "is concentrated in few hands" : "is spread across the crowd rather than driven by one holder"}. Stack share is what a ranked holder sold against the balance the holders task last measured.</p>`;
+  $("#traderNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Window from ${tsFmt(T.since)}. A wallet appearing high on both sides is making a market, not leaving: read the net column. Of the ${C.sellers} wallets that sold, the busiest was ${pc(C.sellTop1)} of the total, so selling ${C.sellTop1 > 0.35 ? "is concentrated in few hands" : "is spread across the crowd rather than driven by one holder"}. Stack share is what a ranked holder sold against the balance the holders task last measured.${wins ? ` The whole tape is rescanned every few minutes; a longer window simply changes more slowly, because a wallet stays in it until it ages out.` : ""}</p>`;
+  $("#traderKpis").querySelectorAll("[data-traderwin]").forEach((b) => b.addEventListener("click", () => {
+    S.traderWin = b.dataset.traderwin; renderTraders();
+  }));
 }
 
 /* The per-leg card, kept for a tape published before trades were grouped. */
