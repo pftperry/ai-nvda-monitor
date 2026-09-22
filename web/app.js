@@ -923,8 +923,15 @@ function renderTraders() {
      All three are cut from the same scan, so switching costs nothing. */
   const wins = A.windows || null;
   const pick = S.traderWin || "1h";
-  const T = wins?.[pick] || wins?.["24h"] || A;
+  /* the day's key is "1d", not "24h": winLabel rolls a full day up to days. Falling
+     back through both keeps this working whichever side is redeployed first. */
+  const T = wins?.[pick] || wins?.["1d"] || wins?.["24h"] || A;
   const C = T.concentration, pc = (v) => v == null ? "—" : pctLevel(v, 0);
+  /* A concentration share means nothing when almost nobody traded. In a quiet hour
+     two dozen wallets change hands and the busiest is a fifth of the tape by
+     arithmetic, not because a whale is leaving -- so below this many sellers the
+     figure is shown without the alarm colour and the note says why. */
+  const thin = C.sellers < 40;
   /* Gross selling says little on its own: the busiest seller here also bought more
      than it sold. Net is what tells you a wallet is leaving. */
   const netOut = T.topSellers.filter((r) => r.netAi < 0).sort((a, b) => a.netAi - b.netAi);
@@ -933,7 +940,7 @@ function renderTraders() {
   const switcher = wins ? `<div class="flowhead"><span class="muted">Window</span>
       <span class="seg">${Object.keys(wins).map(wbtn).join("")}</span></div>` : "";
   $("#traderKpis").innerHTML = switcher + `<div class="tiles four">
-    ${tile("Busiest seller's share", pc(C.sellTop1), `of everything sold · top five ${pc(C.sellTop5)}, top ten ${pc(C.sellTop10)} · ${C.sellers} selling wallets`, C.sellTop1 > 0.35 ? "bad" : "", "hero")}
+    ${tile("Busiest seller's share", pc(C.sellTop1), `of everything sold · top five ${pc(C.sellTop5)}, top ten ${pc(C.sellTop10)} · ${C.sellers} selling wallets${thin ? ", too few to read much into" : ""}`, !thin && C.sellTop1 > 0.35 ? "bad" : "", "hero")}
     ${tile("Busiest buyer's share", pc(C.buyTop1), `of everything bought · top five ${pc(C.buyTop5)} · ${C.buyers} buying wallets`)}
     ${tile("Sold vs bought", `$${compact(T.totalSoldUsd)} / $${compact(T.totalBoughtUsd)}`, `${T.tradesAttributed.toLocaleString()} trades attributed from ${T.transfersSeen.toLocaleString()} transfers`)}
     ${tile("Top-25 holders selling", dumping.length, dumping.length ? dumping.map((r) => `#${r.holderRank} cut ${pctLevel(r.sharePctOfBalance, 0)} of its stack`).join(" · ") : "no ranked holder ended the day net down", dumping.length ? "bad" : "")}
@@ -949,7 +956,7 @@ function renderTraders() {
       <td class="r mono">${r.sellTx + r.buyTx}</td>
       <td class="r mono">${r.sharePctOfBalance == null ? "—" : pctLevel(r.sharePctOfBalance, 0)}</td>
     </tr>`).join("") + "</tbody>";
-  $("#traderNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Window from ${tsFmt(T.since)}. A wallet appearing high on both sides is making a market, not leaving: read the net column. Of the ${C.sellers} wallets that sold, the busiest was ${pc(C.sellTop1)} of the total, so selling ${C.sellTop1 > 0.35 ? "is concentrated in few hands" : "is spread across the crowd rather than driven by one holder"}. Stack share is what a ranked holder sold against the balance the holders task last measured.${wins ? ` The whole tape is rescanned every few minutes; a longer window simply changes more slowly, because a wallet stays in it until it ages out.` : ""}</p>`;
+  $("#traderNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Window from ${tsFmt(T.since)}. A wallet appearing high on both sides is making a market, not leaving: read the net column. Of the ${C.sellers} wallets that sold, the busiest was ${pc(C.sellTop1)} of the total, so selling ${thin ? "looks concentrated mostly because the window is quiet: with this few wallets one ordinary trade dominates the share, and a longer window is the one to read" : C.sellTop1 > 0.35 ? "is concentrated in few hands" : "is spread across the crowd rather than driven by one holder"}. Stack share is what a ranked holder sold against the balance the holders task last measured.${wins ? ` The whole tape is rescanned every few minutes; a longer window simply changes more slowly, because a wallet stays in it until it ages out.` : ""}</p>`;
   $("#traderKpis").querySelectorAll("[data-traderwin]").forEach((b) => b.addEventListener("click", () => {
     S.traderWin = b.dataset.traderwin; renderTraders();
   }));
