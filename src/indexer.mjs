@@ -24,6 +24,7 @@ import { indexRegistry, indexFeeds, indexHourlyPrices, indexDerivedPrices, combi
 import { indexVenues, indexVenueSwaps, indexRialto } from "./tasks/venues.mjs";
 import { indexBigTrades } from "./tasks/bigtrades.mjs";
 import { indexTraders } from "./tasks/traders.mjs";
+import { classifyAccounts, CONTRACT } from "./tasks/accounts.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -379,7 +380,14 @@ try {
          selling is named rather than inferred. */
       try {
         const hs = readData("holders.json")?.topHolders || [];
-        traders = await indexTraders(latest, tm, { aiUsd, topHolders: hs, windowSecs: 86_400,
+        /* Pools and routers net AI inside a transaction exactly as a trader does, so
+           without this they rank as people. One of them held both the top buyer and
+           the top seller slot in every window, which is what a pool looks like from
+           outside. The set is whatever the classifier has already proved to be a
+           contract; anything new is caught on the run after it first appears. */
+        const knownContracts = Object.entries(store.get("accountKinds") || {})
+          .filter(([, v]) => v.kind === CONTRACT).map(([a]) => a);
+        traders = await indexTraders(latest, tm, { aiUsd, topHolders: hs, extraMachinery: knownContracts, windowSecs: 86_400,
           minAi: opt("trader-floor", 5_000), deadline: Date.now() + opt("traders-budget", fast ? 90 : 240) * 1000 });
         writeTape();
       } catch (e) { softFail("trader concentration", e, "the tape keeps its previous attribution"); }
@@ -631,6 +639,34 @@ if (!flag("no-holders") && (store.get("holders") || fs.existsSync("seed/holders-
     }
   } catch (e) {
     softFail("holders", e, "the previous holders.json stays in place");
+  }
+}
+
+/* Which of the displayed addresses are people and which are plumbing.
+   Runs after holders and traders so it sees everything the page will actually show,
+   and writes only the contracts: that is the short list, and the page treats an
+   address it has no entry for as a person, which is the safe default. */
+if (!flag("no-accounts")) {
+  try {
+    const H = readData("holders.json"), T = readData("tape.json");
+    const seen = new Set();
+    for (const r of H?.topHolders || []) seen.add(r.address);
+    for (const r of (H?.whaleLedger || []).slice(0, 150)) seen.add(r.address);
+    for (const w of (H?.whales || []).slice(0, 120)) if (w.wallet) seen.add(w.wallet);
+    for (const win of Object.values(T?.traders?.windows || {})) {
+      for (const r of win.topSellers || []) seen.add(r.address);
+      for (const r of win.topBuyers || []) seen.add(r.address);
+    }
+    const kinds = await classifyAccounts([...seen], { store, deadline: Date.now() + 60_000 });
+    const contracts = [...kinds].filter(([, k]) => k === CONTRACT).map(([a]) => a);
+    writeData("accounts.json", {
+      updatedAt: Math.floor(Date.now() / 1000),
+      checked: kinds.size,
+      contracts,
+      note: "addresses the page shows that are contracts rather than people. An EOA that delegated under EIP-7702 is a person with an upgraded wallet, not a contract, and is deliberately absent from this list.",
+    });
+  } catch (e) {
+    softFail("account kinds", e, "the previous accounts.json stays in place");
   }
 }
 
