@@ -661,7 +661,14 @@ if (!flag("no-accounts")) {
       for (const r of win.topBuyers || []) seen.add(r.address);
     }
     const kinds = await classifyAccounts([...seen], { store, deadline: Date.now() + 60_000 });
-    const contracts = [...kinds].filter(([, k]) => k === CONTRACT).map(([a]) => a);
+    /* EVERY contract the classifier has ever proved, not only those on the page this
+       run. It used to be the latter, which undoes itself: once a pool is excluded as
+       machinery it stops being displayed, drops out of this list, and the next
+       holder rebuild -- which reads this file -- puts it straight back into the
+       holder figures. Measured: the first run after the rebuild published zero
+       contracts. The cache is the durable record; this file mirrors it. */
+    const contracts = Object.entries(store.get("accountKinds") || {})
+      .filter(([, v]) => v.kind === CONTRACT).map(([a]) => a).sort();
     writeData("accounts.json", {
       updatedAt: Math.floor(Date.now() / 1000),
       checked: kinds.size,
