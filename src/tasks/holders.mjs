@@ -18,8 +18,10 @@ const WEEK = 7 * 86400;
    four-hourly row.
      5: gini, nakamoto, hhi, top1pct, medianAi per snapshot
      6: the whale ledger (per-wallet position history and cost basis) and flow
-        banded by the seller's size */
-export const HOLDER_STATE_SCHEMA = 6;   // 6: whale ledger (per-wallet position history, cost basis) and size-banded flow
+        banded by the seller's size
+     7: contracts proved by eth_getCode (pools, routers, proxies) excluded as
+        machinery, and counted as pool contact for the trade/move split */
+export const HOLDER_STATE_SCHEMA = 7;   // 6: whale ledger (per-wallet position history, cost basis) and size-banded flow
 
 /* Addresses that hold AI as machinery rather than as an owner. The pool manager
    holds every v4 pool's inventory, the vault holds the locked leg, the splitter
@@ -136,6 +138,21 @@ export async function indexHolders(latest, tm, opts = {}) {
   const priceAt = opts.priceAt || (() => null);
   const prev = opts.state || {};
 
+  /* Machinery for THIS replay: the fixed protocol set plus contracts the account
+     classifier has proved are not people -- v3 pools and routers holding other
+     people's liquidity, which ranked as holders (one at #11 with 10.56M AI) and put
+     1.64pp into the published top-100 share.
+
+     The extra set is pinned in the state and only a replay from genesis adopts a
+     new one. A set that grew mid-history would leave the early snapshots computed
+     with a pool counted as a holder and the later ones without it, and the series
+     would show a concentration drop that is nothing but a change of definition.
+     Contracts discovered after the seed are badged on the page until the next
+     rebuild picks them up. */
+  const extraMachinery = (prev.extraMachinery ?? opts.extraMachinery ?? []).map((a) => a.toLowerCase());
+  const machinery = new Set([...MACHINERY, ...extraMachinery]);
+  const extraPools = new Set(extraMachinery);
+
   const balances = new Map();
   for (const [a, v] of Object.entries(prev.balances || {})) balances.set(a, BigInt(v));
   let supply = BigInt(prev.supply || "0");
@@ -196,7 +213,7 @@ export async function indexHolders(latest, tm, opts = {}) {
      cursor standing in for the last boundary's set. One row of churn is then
      approximate rather than every current holder reading as new. */
   if (!prevHolders.size && prev.snaps?.length) {
-    for (const [a, b] of balances) if (b > 0n && !MACHINERY.has(a)) prevHolders.add(a);
+    for (const [a, b] of balances) if (b > 0n && !machinery.has(a)) prevHolders.add(a);
   }
 
   const snapshot = (t) => {
@@ -208,7 +225,7 @@ export async function indexHolders(latest, tm, opts = {}) {
     const sizes = [];
     const curr = new Set();
     for (const [a, b] of balances) {
-      if (b <= 0n || MACHINERY.has(a)) continue;
+      if (b <= 0n || machinery.has(a)) continue;
       holders++;
       curr.add(a);
       const ai = Number(b / 10n ** 12n) / 1e6;
@@ -237,7 +254,7 @@ export async function indexHolders(latest, tm, opts = {}) {
        once a wallet has been this big it keeps its row however far it falls. */
     const cut = sizes.length >= LEDGER_RANKS ? sizes[LEDGER_RANKS - 1] : 0;
     for (const [a, b] of balances) {
-      if (b <= 0n || MACHINERY.has(a)) continue;
+      if (b <= 0n || machinery.has(a)) continue;
       if (Number(b / 10n ** 12n) / 1e6 >= cut) tracked.add(a);
     }
     /* One position row per tracked wallet per snapshot, including wallets that have
@@ -325,13 +342,13 @@ export async function indexHolders(latest, tm, opts = {}) {
     const delta = new Map();
     let pool = false;
     for (const x of txRows) {
-      if (x.from === POOL_MANAGER || x.to === POOL_MANAGER) pool = true;
+      if (x.from === POOL_MANAGER || x.to === POOL_MANAGER || extraPools.has(x.from) || extraPools.has(x.to)) pool = true;
       if (x.from !== BURN_ADDRESS) delta.set(x.from, (delta.get(x.from) || 0n) - x.value);
       if (x.to !== BURN_ADDRESS) delta.set(x.to, (delta.get(x.to) || 0n) + x.value);
     }
     const first = txRows[0];
     for (const [a, d] of delta) {
-      if (d === 0n || MACHINERY.has(a)) continue;
+      if (d === 0n || machinery.has(a)) continue;
       if (pool) { if (d > 0n) periodBuyers.add(a); else periodSellers.add(a); }
       const mag = d < 0n ? -d : d;
       const ai = Number(mag / 10n ** 12n) / 1e6;
@@ -414,7 +431,7 @@ export async function indexHolders(latest, tm, opts = {}) {
       else {
         const before = balances.get(x.to) || 0n;
         balances.set(x.to, before + x.value);
-        if (before <= 0n && x.value > 0n && !MACHINERY.has(x.to)) {
+        if (before <= 0n && x.value > 0n && !machinery.has(x.to)) {
           txFresh.add(x.to);
           if (!firstSeen.has(x.to)) firstSeen.set(x.to, ts);
         }
@@ -448,7 +465,7 @@ export async function indexHolders(latest, tm, opts = {}) {
      "holders are up" -- a count can rise while every early buyer leaves. */
   const cohorts = new Map();
   for (const [a, t] of firstSeen) {
-    if (MACHINERY.has(a)) continue;
+    if (machinery.has(a)) continue;
     const w = Math.floor(t / WEEK) * WEEK;
     let c = cohorts.get(w);
     if (!c) cohorts.set(w, (c = { t: w, acquired: 0, holding: 0, ai: 0 }));
@@ -462,7 +479,7 @@ export async function indexHolders(latest, tm, opts = {}) {
   /* The largest wallets, named. Addresses are public by construction; what the
      page adds is the balance, its share, and when the wallet first held AI. */
   const topHolders = [...balances]
-    .filter(([a, b]) => b > 0n && !MACHINERY.has(a))
+    .filter(([a, b]) => b > 0n && !machinery.has(a))
     .sort((x, y) => (y[1] > x[1] ? 1 : y[1] < x[1] ? -1 : 0))
     .slice(0, TOP_HOLDERS_PUBLISH)
     .map(([a, b]) => ({
@@ -551,6 +568,7 @@ export async function indexHolders(latest, tm, opts = {}) {
       prevHolders: [...prevHolders],
       periodBuyers: [...periodBuyers], periodSellers: [...periodSellers],   // the period still open at the cursor
       seedCursor: prev.seedCursor ?? null,   // which committed seed this state descends from
+      extraMachinery,                         // pinned for the life of this replay
       tracked: [...tracked],
       ledger: Object.fromEntries(ledger),
       basis: Object.fromEntries(basis),
@@ -563,7 +581,7 @@ export async function indexHolders(latest, tm, opts = {}) {
       topRanks: TOP_RANKS,
       whaleMinAi: WHALE_MIN_AI,
       buckets: HOLDER_BUCKETS.map(({ key, label, lo, hi }) => ({ key, label, lo, hi: hi === Infinity ? null : hi })),
-      machineryExcluded: [...MACHINERY],
+      machineryExcluded: [...machinery],
       reconciliation: { residualAi: +residualAi.toFixed(6), negativeBalances: negative },
       snapshots: snaps,
       firstSeenFromGenesis,

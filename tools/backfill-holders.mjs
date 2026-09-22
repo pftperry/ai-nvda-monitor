@@ -28,9 +28,17 @@ const latest = await blockNumber();
 await tm.build(tm.toJSON().at(-1)?.[0] ?? latest, latest);
 const flow = JSON.parse(fs.readFileSync("web/data/flow.json", "utf8"));
 const t0 = Date.now();
+/* The contracts the account classifier has proved are pools, routers or proxies.
+   A rebuild is the only moment a new set can be adopted without splitting the
+   history across two definitions, so it reads the latest list here. Missing is not
+   fatal: the replay then excludes only the fixed protocol machinery, as before. */
+let extraMachinery = [];
+try { extraMachinery = JSON.parse(fs.readFileSync("web/data/accounts.json", "utf8")).contracts || []; } catch {}
+console.log(`excluding ${extraMachinery.length} classified contract(s) as machinery`);
 const out = await indexHolders(latest, tm, {
   state: rebuild ? null : store.get("holders"),
   priceAt: usdPriceLookup(flow.pools),
+  extraMachinery,
 });
 if (rebuild) {
   fs.mkdirSync("seed", { recursive: true });

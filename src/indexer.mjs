@@ -628,6 +628,9 @@ if (!flag("no-holders") && (store.get("holders") || fs.existsSync("seed/holders-
     const prior = readData("holders.json");
     const out = await indexHolders(latest, tm, {
       state: await pickHolderState(store.get("holders"), "seed/holders-state.json.gz"),
+      /* only consulted when there is no state to resume; a resumed replay keeps the
+         set it was built with, so the history never mixes two definitions */
+      extraMachinery: Object.entries(store.get("accountKinds") || {}).filter(([, v]) => v.kind === CONTRACT).map(([a]) => a),
       priceAt: usdPriceLookup(flowOut),
       deadline: Date.now() + budget * 1000,
     });
