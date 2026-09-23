@@ -550,7 +550,7 @@ function table(host, cols, rows) {
 /* ── data ───────────────────────────────────────────────────────────────── */
 const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, names: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -3894,6 +3894,82 @@ function renderRwaKpis(R, D, pending) {
 /* LongX perps: the vaults' USDG on Lighter, what depositors hold, and the LONG pools
    anchored to vault shares. Read from rwa.perps (perps.mjs) plus the perps buckets
    rwa keeps apart from the stock figures. */
+/* The LongX flywheel. Measured numbers only: what was seeded, what has been bought
+   out, what AI came in, what is left. No comparison against anything the protocol
+   said it would do -- the chain's figures stand on their own and do not date.
+
+   "Seeded" and "bought out" are only computed for a pool whose AI all arrived by
+   swap, which is how a single-sided seed looks from outside: the AI it holds matches
+   the AI swappers paid in. A pool that was stocked with AI on both sides from the
+   start has no seed in that sense, and giving it one would be invented. */
+function renderFlywheel() {
+  const F = S.flywheel, host = $("#tFly");
+  if (!host) return;
+  if (!F?.totals) {
+    host.innerHTML = `<tr><td class="muted">The flywheel builds on the next index run.</td></tr>`;
+    $("#flyTiles").innerHTML = ""; $("#cFly").innerHTML = ""; $("#readFly").innerHTML = ""; return;
+  }
+  const T = F.totals;
+  /* the indexer classifies each pool; older artifacts without `kind` fall back to
+     treating every pool as part of the flywheel, which is what they reported */
+  const kindOf = (p) => p.kind || "seeded";
+  const seeded = F.pools.filter((p) => kindOf(p) === "seeded").map((p) => {
+    const seed = (p.reservesPair || 0) + (p.netPairOut || 0);
+    return { ...p, seed, seedUsd: seed * (p.pairPriceUsd || 0), outPct: seed > 0 ? p.netPairOut / seed : null };
+  });
+  const seedUsd = T.seedUsd ?? seeded.reduce((s, p) => s + p.seedUsd, 0);
+  const leftUsd = T.seedLeftUsd ?? seeded.reduce((s, p) => s + (p.reservesPair || 0) * (p.pairPriceUsd || 0), 0);
+  const outPct = T.seedBoughtOut ?? (seedUsd > 0 ? 1 - leftUsd / seedUsd : null);
+  const day = F.daily.at(-1);
+  const sgn = (v) => `${v >= 0 ? "+" : "\u2212"}${compact(Math.abs(v))}`;
+
+  $("#flyTiles").innerHTML = `<div class="tiles four">
+    ${tile("AI absorbed by the seeded pools", `${compact(T.netAi)} AI`,
+      `$${compact(T.netAiUsdNow || 0)} at today's price \u00b7 $${compact(T.netAiUsdAtTime || 0)} at the price paid \u00b7 ${T.pctOfSupply == null ? "" : pctLevel(T.pctOfSupply, 3) + " of supply"}`, "", "hero")}
+    ${tile("Latest day", day ? `${sgn(day.netAi)} AI` : "\u2014",
+      `${day ? dayFmt(day.t) + " \u00b7 " : ""}${sgn(T.last7dAi)} over 7 days, ${sgn(T.last30dAi)} over 30`, day && day.netAi < 0 ? "bad" : "")}
+    ${tile("Seed bought out", outPct == null ? "\u2014" : pctLevel(outPct, 0),
+      seedUsd ? `$${compact(seedUsd)} of vault tokens seeded single-sided, $${compact(leftUsd)} still in the pools` : "no single-sided seed found")}
+    ${tile("Room left at today's prices", leftUsd ? `$${compact(leftUsd)}` : "\u2014",
+      leftUsd ? "the most AI the remaining seed can absorb unless vault tokens rise or more is added" : "")}
+  </div>`;
+
+  lineChart($("#cFly"), F.daily.map((d) => ({ t: d.t, v: d.cumAi })), {
+    xKey: "t", yKey: "v", zeroBase: true, area: true, color: "var(--series-1)",
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${compact(r.v)} AI absorbed to date</div>`,
+  });
+
+  host.innerHTML = `<thead><tr><th>Pool</th><th class="r">Swaps</th><th class="r">AI in</th><th class="r">AI out</th>
+      <th class="r">Absorbed</th><th class="r">Seeded</th><th class="r" title="share of the single-sided seed that swappers have taken out">Bought out</th>
+      <th class="r">AI held</th><th class="r">Vault tokens left</th></tr></thead><tbody>` +
+    F.pools.filter((p) => p.swaps > 0).map((p) => {
+      const s = seeded.find((x) => x.poolId === p.poolId);
+      return `<tr>
+        <td><b>AI / ${p.pair}</b> <span class="mono muted" title="${p.poolId}">${p.poolId.slice(0, 8)}\u2026</span>${kindOf(p) === "seeded" ? "" : kindOf(p) === "emptied"
+          ? ` <span class="badge tier na" title="the liquidity has been withdrawn, so whatever swappers paid in has left with it; not counted">emptied</span>`
+          : ` <span class="badge tier na" title="AI arrived by deposit as well as by swap, so this is a trading venue and its swap flow is drift rather than absorption; not counted">two-sided</span>`}</td>
+        <td class="r mono">${p.swaps.toLocaleString()}</td>
+        <td class="r mono">${compact(p.aiIn)}</td>
+        <td class="r mono">${compact(p.aiOut)}</td>
+        <td class="r mono ${p.netAi >= 0 ? "up" : "down"}"><b>${sgn(p.netAi)}</b></td>
+        <td class="r mono">${s ? compact(s.seed) + ` <span class="muted">$${compact(s.seedUsd)}</span>` : "\u2014"}</td>
+        <td class="r mono">${s && s.outPct != null ? pctLevel(s.outPct, 0) : "\u2014"}</td>
+        <td class="r mono">${p.reservesAi == null ? "\u2014" : compact(p.reservesAi)}</td>
+        <td class="r mono">${p.reservesPair == null ? "\u2014" : compact(p.reservesPair) + (p.pairPriceUsd ? ` <span class="muted">$${compact(p.reservesPair * p.pairPriceUsd)}</span>` : "")}</td>
+      </tr>`;
+    }).join("") + "</tbody>";
+
+  const nv = seeded.find((p) => p.pair === "NVDAx3L");
+  const nvSupply = (S.rwa?.perps?.vaults || []).find((v) => v.symbol === "NVDAx3L")?.supply;
+  const others = F.pools.filter((p) => kindOf(p) !== "seeded" && p.swaps > 0);
+  $("#readFly").innerHTML = `<p class="muted" style="margin:8px 0 0">The headline and the chart count the ${seeded.length} seeded pool(s) only, ${T.swaps.toLocaleString()} swaps since they opened. ` +
+    `${others.length ? `${others.length} other AI/vault pool(s) are listed but not counted: two-sided venues whose swap flow is ordinary trading, and pools whose liquidity was withdrawn. Across every pair the swap flow nets ${compact(T.allPairsNetAi ?? 0)} AI. ` : ""}` +
+    `${seeded.length ? `In the single-sided pools the AI held matches the AI swapped in, which is what a seed of vault tokens alone looks like: every AI there came from a buyer. ` : ""}` +
+    `${nv && nvSupply ? `The NVDAx3L pool was seeded with ${pctLevel(nv.seed / nvSupply, 1)} of NVDAx3L supply and now holds ${pctLevel((nv.reservesPair || 0) / nvSupply, 1)}. ` : ""}` +
+    `NVDAx3L targets about three times NVDA's daily move, so a rising NVDA makes the pooled tokens cheap against the market and draws more AI in; a falling one reverses it. ` +
+    `At today's prices the remaining seed caps what this can absorb at about $${compact(T.capacityUsdNow ?? ((T.netAiUsdNow || 0) + leftUsd))} in all, until vault tokens appreciate or more liquidity is added.</p>`;
+}
+
 function renderPerps(R, pending) {
   const P = R?.perps, host = $("#perpsTiles");
   if (!P?.vaults) { host.innerHTML = pending; for (const id of ["#tPerps", "#cPerps", "#readPerps"]) $(id).innerHTML = ""; return; }
@@ -4167,6 +4243,7 @@ function renderRwa() {
   try { renderCaptureStrip(R, D); } catch (e) { console.error("renderCaptureStrip", e); }
   try { renderSince(R, pending); } catch (e) { console.error("renderSince", e); }
   try { renderPerps(R, pending); } catch (e) { console.error("renderPerps", e); }
+  try { renderFlywheel(); } catch (e) { console.error("renderFlywheel", e); }
 
   /* ── capture ─────────────────────────────────────────────────────────── */
   if (!R?.tokens?.length) {

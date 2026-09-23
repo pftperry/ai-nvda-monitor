@@ -107,7 +107,26 @@ export async function indexFlywheel(latest, tm, opts = {}) {
     } catch { /* reserves are context; a failed ladder must not cost the flow figures */ }
 
     state.pools[p.poolId] = S;
+    /* How the pool was stocked, read from what it holds.
+
+       SEEDED: every AI in it arrived by swap -- the AI held matches the AI swappers
+       paid in. That is what a single-sided seed of vault tokens looks like, and it is
+       the flywheel proper. EMPTIED: the liquidity has been withdrawn, so whatever
+       swappers paid in has left with it and is in nobody's sink. TWO-SIDED: AI came
+       in by deposit as well as by swap, so this is an ordinary trading venue and its
+       swap flow is drift, not absorption.
+
+       Measured on the first run, these are not hypothetical: an emptied pool had
+       taken in 4,075 AI and then released it, and two older trading pools with 23,000
+       swaps between them had drifted +37K. Counting either as flywheel would have
+       overstated it. */
+    const netAiNow = S.aiIn - S.aiOut;
+    const kind = reservesAi == null ? "unknown"
+      : (reservesAi < 1 && (reservesPair ?? 0) < 1e-6) ? "emptied"
+      : (netAiNow > 0 && Math.abs(reservesAi - netAiNow) <= Math.max(500, netAiNow * 0.05)) ? "seeded"
+      : "two-sided";
     out.push({
+      kind,
       poolId: p.poolId, pair: v.symbol, vault: v.token, fee: p.fee,
       createdBlock: p.createdBlock ?? null, swaps: S.swaps,
       aiIn: +S.aiIn.toFixed(2), aiOut: +S.aiOut.toFixed(2), netAi: +(S.aiIn - S.aiOut).toFixed(2),
@@ -119,9 +138,12 @@ export async function indexFlywheel(latest, tm, opts = {}) {
     });
   }
 
-  /* one daily series across all flywheel pools, with a running total */
+  /* The daily series is the flywheel alone: the seeded pools. Two-sided venues and
+     emptied pools are kept out so the line shows absorption, not trading drift. */
+  const seededIds = new Set(out.filter((r) => r.kind === "seeded").map((r) => r.poolId));
   const days = new Map();
-  for (const S of Object.values(state.pools)) {
+  for (const [id, S] of Object.entries(state.pools)) {
+    if (!seededIds.has(id)) continue;
     for (const [d, r] of Object.entries(S.daily)) {
       const x = days.get(+d) || { aiIn: 0, aiOut: 0, usdIn: 0, usdOut: 0 };
       x.aiIn += r.aiIn; x.aiOut += r.aiOut; x.usdIn += r.usdIn; x.usdOut += r.usdOut;
@@ -135,32 +157,45 @@ export async function indexFlywheel(latest, tm, opts = {}) {
       netUsd: Math.round(r.usdIn - r.usdOut), cumAi: Math.round(cum), cumUsdAtTime: Math.round(cumUsd) };
   });
 
-  const netAi = out.reduce((s, r) => s + r.netAi, 0);
+  const seeded = out.filter((r) => r.kind === "seeded");
+  const netAi = seeded.reduce((s, r) => s + r.netAi, 0);
+  /* the seed is what the pool holds now plus what swappers took out of it */
+  const seedOf = (r) => (r.reservesPair || 0) + (r.netPairOut || 0);
+  const seedUsd = seeded.reduce((s, r) => s + seedOf(r) * (r.pairPriceUsd || 0), 0);
+  const leftUsd = seeded.reduce((s, r) => s + (r.reservesPair || 0) * (r.pairPriceUsd || 0), 0);
+  const allNet = out.reduce((s, r) => s + r.netAi, 0);
   const totals = {
+    seededPools: seeded.length,
+    seedUsd: Math.round(seedUsd), seedLeftUsd: Math.round(leftUsd),
+    seedBoughtOut: seedUsd > 0 ? +(1 - leftUsd / seedUsd).toFixed(4) : null,
+    heldAi: Math.round(seeded.reduce((s, r) => s + (r.reservesAi || 0), 0)),
+    /* the ceiling on what this seed can still take in, at today's prices */
+    capacityUsdNow: aiUsd ? Math.round(netAi * aiUsd + leftUsd) : null,
+    allPairsNetAi: Math.round(allNet),
     pools: out.length,
-    swaps: out.reduce((s, r) => s + r.swaps, 0),
-    aiIn: Math.round(out.reduce((s, r) => s + r.aiIn, 0)),
-    aiOut: Math.round(out.reduce((s, r) => s + r.aiOut, 0)),
+    swaps: seeded.reduce((s, r) => s + r.swaps, 0),
+    aiIn: Math.round(seeded.reduce((s, r) => s + r.aiIn, 0)),
+    aiOut: Math.round(seeded.reduce((s, r) => s + r.aiOut, 0)),
     netAi: Math.round(netAi),
     netAiUsdNow: aiUsd ? Math.round(netAi * aiUsd) : null,
     /* dollars at the price on the day each AI went in, which is what it cost the
        buyers; the figure above re-marks it all at today's price */
     netAiUsdAtTime: daily.length ? daily.at(-1).cumUsdAtTime : null,
     pctOfSupply: aiSupply ? +(netAi / aiSupply).toFixed(6) : null,
-    reservesAi: Math.round(out.reduce((s, r) => s + (r.reservesAi || 0), 0)),
-    reservesPairUsd: Math.round(out.reduce((s, r) => s + (r.reservesPair || 0) * (r.pairPriceUsd || 0), 0)),
+    reservesAi: Math.round(seeded.reduce((s, r) => s + (r.reservesAi || 0), 0)),
+    reservesPairUsd: Math.round(leftUsd),
     last7dAi: Math.round(daily.slice(-7).reduce((s, r) => s + r.netAi, 0)),
     last30dAi: Math.round(daily.slice(-30).reduce((s, r) => s + r.netAi, 0)),
   };
 
-  log(`  flywheel: ${out.length} AI/vault pool(s), ${swapsRead.toLocaleString()} new swap(s); net ${totals.netAi.toLocaleString()} AI absorbed` +
+  log(`  flywheel: ${seeded.length} seeded of ${out.length} AI/vault pool(s), ${swapsRead.toLocaleString()} new swap(s); ${totals.netAi.toLocaleString()} AI absorbed by the seeded pools` +
     `${totals.netAiUsdNow != null ? ` ($${totals.netAiUsdNow.toLocaleString()} now)` : ""}; reserves ${totals.reservesAi.toLocaleString()} AI + $${totals.reservesPairUsd.toLocaleString()} vault tokens${partial ? " (partial)" : ""}`);
 
   return {
     state,
     artifact: {
       aiUsd, aiSupply, partial, pools: out.sort((a, b) => b.netAi - a.netAi), totals, daily,
-      method: "Every swap in every AI pool whose other token is a LongX vault token, from the pool's creation. Absorbed AI is the AI swappers paid into these pools minus the AI swappers took out; liquidity deposits and withdrawals are excluded because they are parked, not absorbed. The figure falls when vault tokens are sold back into the pools. It is not burned: the AI sits in withdrawable liquidity positions. Reserves are what the pools hold now, valued from their full position history at the live price, and include liquidity from any provider.",
+      method: "Every swap in every AI pool whose other token is a LongX vault token, from the pool's creation. The headline and the daily series cover only pools seeded single-sided with vault tokens, identified by holding the same AI that swappers paid in; two-sided trading venues and emptied pools are listed but not counted. Absorbed AI is the AI swappers paid into these pools minus the AI swappers took out; liquidity deposits and withdrawals are excluded because they are parked, not absorbed. The figure falls when vault tokens are sold back into the pools. It is not burned: the AI sits in withdrawable liquidity positions. Reserves are what the pools hold now, valued from their full position history at the live price, and include liquidity from any provider.",
     },
   };
 }
