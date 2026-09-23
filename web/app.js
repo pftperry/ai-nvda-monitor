@@ -4007,6 +4007,47 @@ function renderFlywheel() {
     })() + `</p>`;
 }
 
+/* The engine test, day by day: NVDA's move beside the AI the NVDAx3L pool took in
+   or gave back. The premise is that the first drives the second. Measured numbers
+   and a verdict that waits for enough days; nothing here quotes what the programme
+   was expected to do. */
+function renderFlywheelEngine() {
+  const F = S.flywheel, host = $("#tFlyNvda"), note = $("#flyEngine");
+  if (!host || !note) return;
+  const E = F?.engine, rows = F?.vsNvda || [];
+  if (!E || !rows.length) { host.innerHTML = ""; note.innerHTML = ""; return; }
+  const sgn = (v) => `${v >= 0 ? "+" : "\u2212"}${compact(Math.abs(v))}`;
+  const pc = (v) => v == null ? "\u2014" : `${v >= 0 ? "+" : "\u2212"}${Math.abs(v * 100).toFixed(2)}%`;
+
+  let verdict;
+  if (E.scoredDays < E.minScoredDays) {
+    verdict = `<b>Not enough days yet.</b> ${E.scoredDays} of the ${E.minScoredDays} trading days the test needs have been scored. ` +
+      `The launch day is left out on purpose: the NVDAx3L pool took in ${sgn(E.launchDayNetAi)} AI then, when the seed went in and the programme was announced, which is demand for the news rather than a response to NVDA.` +
+      (E.scoredDays ? ` So far: absorption moved the way the premise predicts on ${E.agreeingDays} of ${E.scoredDays} scored day(s).` : "");
+  } else {
+    const share = E.agreeingDays / E.scoredDays;
+    const tracks = share >= 0.65 && (E.meanNetAiOnUpDays ?? 0) > 0 && (E.meanNetAiOnDownDays ?? 0) < 0;
+    verdict = `On NVDA-up days the NVDAx3L pool absorbed ${sgn(E.meanNetAiOnUpDays ?? 0)} AI on average (${E.upDays} days); on NVDA-down days ${sgn(E.meanNetAiOnDownDays ?? 0)} (${E.downDays} days). ` +
+      `Absorption moved the way the premise predicts on ${E.agreeingDays} of ${E.scoredDays} scored days${E.correlation != null ? `, correlation ${E.correlation.toFixed(2)}` : ""}. ` +
+      `<b>${tracks ? "Consistent with NVDA driving it." : "Not yet following NVDA."}</b>`;
+  }
+  note.innerHTML = `<p class="muted" style="margin:4px 0 10px">${verdict}</p>`;
+
+  const show = rows.slice(-21).reverse();
+  host.innerHTML = `<thead><tr><th>Day</th><th class="r">NVDA</th><th class="r" title="net AI swapped into the NVDAx3L pool that day">NVDAx3L pool</th>
+      <th class="r" title="OpenAI and Anthropic pools, which do not move with NVDA">Other seeded</th><th>Scored</th></tr></thead><tbody>` +
+    show.map((r) => {
+      const agrees = r.scored && ((r.nvdaChg > 0 && r.nvdaPoolNetAi > 0) || (r.nvdaChg < 0 && r.nvdaPoolNetAi < 0));
+      return `<tr>
+        <td class="mono">${dayFmt(r.t)}</td>
+        <td class="r mono ${r.nvdaChg > 0 ? "up" : r.nvdaChg < 0 ? "down" : "muted"}">${pc(r.nvdaChg)}</td>
+        <td class="r mono ${r.nvdaPoolNetAi > 0 ? "up" : r.nvdaPoolNetAi < 0 ? "down" : "muted"}"><b>${sgn(r.nvdaPoolNetAi)}</b></td>
+        <td class="r mono muted">${sgn(r.otherNetAi)}</td>
+        <td>${r.scored ? (agrees ? `<span class="up">matches</span>` : `<span class="down">against</span>`) : `<span class="muted">${r.excluded}</span>`}</td>
+      </tr>`;
+    }).join("") + "</tbody>";
+}
+
 function renderPerps(R, pending) {
   const P = R?.perps, host = $("#perpsTiles");
   if (!P?.vaults) { host.innerHTML = pending; for (const id of ["#tPerps", "#cPerps", "#readPerps"]) $(id).innerHTML = ""; return; }
@@ -4281,6 +4322,7 @@ function renderRwa() {
   try { renderSince(R, pending); } catch (e) { console.error("renderSince", e); }
   try { renderPerps(R, pending); } catch (e) { console.error("renderPerps", e); }
   try { renderFlywheel(); } catch (e) { console.error("renderFlywheel", e); }
+  try { renderFlywheelEngine(); } catch (e) { console.error("renderFlywheelEngine", e); }
 
   /* ── capture ─────────────────────────────────────────────────────────── */
   if (!R?.tokens?.length) {

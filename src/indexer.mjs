@@ -666,6 +666,8 @@ if (!flag("no-flywheel")) {
       aiSupply: H?.snapshots?.at(-1)?.supply ?? null,
       priceAt: usdPriceLookup(flowOut),
       genesis: C.LONG_GENESIS_BLOCK,
+      /* NVDA's daily Chainlink close, for the test of whether absorption follows NVDA */
+      nvdaCloses: readData("rwa.json")?.stockPx?.stocks?.[C.NVDA.toLowerCase()]?.close || [],
       deadline: Date.now() + opt("flywheel-budget", deep ? 600 : 120) * 1000,
     });
     if (out) {

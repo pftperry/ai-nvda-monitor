@@ -372,6 +372,75 @@ export async function indexFlywheel(latest, tm, opts = {}) {
   if (ceilingNow > 0) state.ceilingDaily[headDay] = ceilingNow;
   const ceilingDaily = Object.entries(state.ceilingDaily).map(([t, v]) => ({ t: +t, ceilingAi: v })).sort((a, b) => a.t - b.t);
 
+  /* THE ENGINE TEST: does absorption follow NVDA?
+
+     The flywheel's premise is causal. NVDA rises, NVDAx3L rises about three times as
+     much, the pool's NVDAx3L becomes cheap against the market, and arbitrage buys it
+     out with AI; NVDA falls and the same arbitrage runs backwards. If that is the
+     engine, the NVDAx3L pool should absorb AI on NVDA-up days and give it back on
+     NVDA-down days. If absorption only ever arrives on announcement days, it is
+     demand for the story, not a mechanism.
+
+     Only the NVDAx3L pool is tested against NVDA. The OpenAI and Anthropic pools
+     hold pre-IPO perps that do not move with NVDA, so pooling them in would dilute
+     the test with flows it cannot explain. They are shown beside it as context.
+
+     Excluded from the scoring: each pool's first day, when the seed went in and the
+     programme was announced, and any day NVDA did not move (the Chainlink close is
+     carried over weekends and holidays). Same-day pairing: an NVDA close is the end
+     of the US session, and arbitrage against a move can land either side of
+     midnight UTC, so a single day can read as a miss that is only a timing split.
+     The verdict waits for enough scored days to mean something. */
+  const MIN_SCORED_DAYS = 10;
+  const closes = new Map((opts.nvdaCloses || []).map(([t, v]) => [Math.floor(t / DAY) * DAY, v]));
+  const nvdaIds = new Set(out.filter((r) => r.kind === "seeded" && /^NVDA/i.test(r.pair)).map((r) => r.poolId));
+  const firstDays = new Set();
+  const perDay = new Map();
+  for (const [id, S] of Object.entries(state.pools)) {
+    if (!seededIds.has(id)) continue;
+    const ds = Object.keys(S.daily).map(Number).sort((a, b) => a - b);
+    if (ds.length) firstDays.add(ds[0]);
+    for (const [d, r] of Object.entries(S.daily)) {
+      const x = perDay.get(+d) || { nvdaPool: 0, other: 0 };
+      if (nvdaIds.has(id)) x.nvdaPool += r.aiIn - r.aiOut; else x.other += r.aiIn - r.aiOut;
+      perDay.set(+d, x);
+    }
+  }
+  const vsNvda = [...perDay.entries()].sort((a, b) => a[0] - b[0]).map(([t, x]) => {
+    const c = closes.get(t), c0 = closes.get(t - DAY);
+    const chg = c != null && c0 ? c / c0 - 1 : null;
+    const moved = chg != null && Math.abs(chg) > 1e-6;
+    const launch = firstDays.has(t);
+    return {
+      t, nvdaClose: c ?? null, nvdaChg: chg == null ? null : +chg.toFixed(5),
+      nvdaPoolNetAi: Math.round(x.nvdaPool), otherNetAi: Math.round(x.other),
+      scored: moved && !launch, excluded: launch ? "launch day" : !moved ? "NVDA did not move" : null,
+    };
+  });
+  const scored = vsNvda.filter((r) => r.scored);
+  const up = scored.filter((r) => r.nvdaChg > 0), down = scored.filter((r) => r.nvdaChg < 0);
+  const mean = (a, k) => a.length ? a.reduce((s, r) => s + r[k], 0) / a.length : null;
+  /* a day "agrees" when absorption moves the way the premise says it should */
+  const agree = scored.filter((r) => (r.nvdaChg > 0 && r.nvdaPoolNetAi > 0) || (r.nvdaChg < 0 && r.nvdaPoolNetAi < 0)).length;
+  let corr = null;
+  if (scored.length >= MIN_SCORED_DAYS) {
+    const xs = scored.map((r) => r.nvdaChg), ys = scored.map((r) => r.nvdaPoolNetAi);
+    const mx = xs.reduce((a, b) => a + b, 0) / xs.length, my = ys.reduce((a, b) => a + b, 0) / ys.length;
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let i = 0; i < xs.length; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; syy += (ys[i] - my) ** 2; }
+    corr = sxx > 0 && syy > 0 ? +(sxy / Math.sqrt(sxx * syy)).toFixed(3) : null;
+  }
+  const engine = {
+    scoredDays: scored.length, minScoredDays: MIN_SCORED_DAYS,
+    upDays: up.length, downDays: down.length,
+    meanNetAiOnUpDays: mean(up, "nvdaPoolNetAi") == null ? null : Math.round(mean(up, "nvdaPoolNetAi")),
+    meanNetAiOnDownDays: mean(down, "nvdaPoolNetAi") == null ? null : Math.round(mean(down, "nvdaPoolNetAi")),
+    agreeingDays: agree,
+    /* only published once there are enough days for it to be more than noise */
+    correlation: corr,
+    launchDayNetAi: Math.round(vsNvda.filter((r) => r.excluded === "launch day").reduce((s, r) => s + r.nvdaPoolNetAi, 0)),
+  };
+
   let cum = 0, cumUsd = 0;
   const daily = [...days.entries()].sort((a, b) => a[0] - b[0]).map(([t, r]) => {
     cum += r.aiIn - r.aiOut; cumUsd += r.usdIn - r.usdOut;
@@ -428,7 +497,7 @@ export async function indexFlywheel(latest, tm, opts = {}) {
   return {
     state,
     artifact: {
-      aiUsd, aiSupply, partial, pools: out.sort((a, b) => b.netAi - a.netAi), totals, daily, ceilingDaily, routing,
+      aiUsd, aiSupply, partial, pools: out.sort((a, b) => b.netAi - a.netAi), totals, daily, ceilingDaily, routing, vsNvda, engine,
       method: "Every swap in every AI pool whose other token is a LongX vault token, from the pool's creation. The headline and the daily series cover only pools seeded single-sided with vault tokens, identified by holding the same AI that swappers paid in; two-sided trading venues and emptied pools are listed but not counted. Absorbed AI is the AI swappers paid into these pools minus the AI swappers took out; liquidity deposits and withdrawals are excluded because they are parked, not absorbed. The figure falls when vault tokens are sold back into the pools. It is not burned: the AI sits in withdrawable liquidity positions. Reserves are what the pools hold now, valued from their full position history at the live price, and include liquidity from any provider.",
     },
   };
