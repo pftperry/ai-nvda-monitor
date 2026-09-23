@@ -212,6 +212,10 @@ function _lineChart(host, rows, o) {
   if (rows.length < 2) { host.innerHTML = '<p class="muted" style="padding:20px 0">Not enough data in range.</p>'; return; }
   const f = frame(host, { height: o.height || 210 });
   const vals = rows.map((r) => r[o.yKey]).filter((v) => isFinite(v));
+  /* o.ref = { value, label }: a dashed level in the series' own units, included in
+     the axis so it is never drawn off the chart. One axis, one unit -- this is for
+     "how far is the line from that level", not for a second measure. */
+  if (o.ref && isFinite(o.ref.value)) vals.push(o.ref.value);
   let min = minOf(vals), max = maxOf(vals);
   const nonNegative = min >= 0;
   if (o.zeroBase) min = Math.min(0, min);
@@ -229,6 +233,15 @@ function _lineChart(host, rows, o) {
     }));
   }
   f.svg.appendChild(mk("path", { d, fill: "none", stroke: o.color || "var(--series-1)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  if (o.ref && isFinite(o.ref.value)) {
+    const ry = Y(o.ref.value);
+    f.svg.appendChild(mk("line", { x1: f.padL, x2: f.padL + f.iw, y1: ry, y2: ry, stroke: "var(--text-secondary)", "stroke-width": 1.2, "stroke-dasharray": "5 4", opacity: ".8" }));
+    if (o.ref.label) {
+      const t = mk("text", { x: f.padL + 6, y: ry - 6, fill: "var(--text-secondary)", "font-size": 11 });
+      t.textContent = o.ref.label;
+      f.svg.appendChild(t);
+    }
+  }
 
   const ch = mk("line", { class: "crosshair", y1: f.padT, y2: f.padT + f.ih, x1: 0, x2: 0, opacity: 0 });
   // >=8px marker so it stays findable under a fingertip
@@ -3930,13 +3943,31 @@ function renderFlywheel() {
       `${day ? dayFmt(day.t) + " \u00b7 " : ""}${sgn(T.last7dAi)} over 7 days, ${sgn(T.last30dAi)} over 30`, day && day.netAi < 0 ? "bad" : "")}
     ${tile("Seed bought out", outPct == null ? "\u2014" : pctLevel(outPct, 0),
       seedUsd ? `$${compact(seedUsd)} of vault tokens seeded single-sided, $${compact(leftUsd)} still in the pools` : "no single-sided seed found")}
-    ${tile("Room left at today's prices", leftUsd ? `$${compact(leftUsd)}` : "\u2014",
-      leftUsd ? "the most AI the remaining seed can absorb unless vault tokens rise or more is added" : "")}
+    ${tile("Ceiling of the current seed", T.ceilingAi ? `${compact(T.ceilingAi)} AI` : "\u2014",
+      T.ceilingAi ? `${T.ceilingFilled == null ? "" : pctLevel(T.ceilingFilled, 0) + " filled \u00b7 "}$${compact(T.ceilingUsdNow || 0)} at today's AI price \u00b7 fills only if vault tokens rise about ${T.riseToFill ? T.riseToFill.toFixed(1) + "x" : "?"} against AI` : "")}
   </div>`;
 
-  lineChart($("#cFly"), F.daily.map((d) => ({ t: d.t, v: d.cumAi })), {
+  /* Absorbed against the ceiling, as one bar. It reads from the first day, where a
+     cumulative line needs at least two, and it answers the only question that
+     matters about capacity: how much of what this seed can ever hold is already in.
+     A tick marks one million AI when that falls inside the ceiling. */
+  const held = F.pools.filter((p) => kindOf(p) === "seeded").reduce((s, p) => s + (p.reservesAi || 0), 0);
+  if (T.ceilingAi > 0) {
+    const pct = Math.min(1, held / T.ceilingAi);
+    const mil = 1e6 / T.ceilingAi;
+    $("#flyBar").innerHTML = `<div class="capbar" role="img" aria-label="${compact(held)} of ${compact(T.ceilingAi)} AI">
+        <div class="capfill" style="width:${(pct * 100).toFixed(1)}%"></div>
+        ${mil < 1 ? `<div class="captick" style="left:${(mil * 100).toFixed(1)}%" title="one million AI"></div>` : ""}
+      </div>
+      <div class="caplbl"><span><b>${compact(held)} AI</b> held</span>${mil < 1 ? `<span class="muted">1M AI mark</span>` : ""}<span>ceiling <b>${compact(T.ceilingAi)} AI</b></span></div>`;
+  } else $("#flyBar").innerHTML = "";
+
+  if (F.daily.length < 2) {
+    $("#cFly").innerHTML = "";
+  } else lineChart($("#cFly"), F.daily.map((d) => ({ t: d.t, v: d.cumAi })), {
     xKey: "t", yKey: "v", zeroBase: true, area: true, color: "var(--series-1)",
-    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${compact(r.v)} AI absorbed to date</div>`,
+    ref: T.ceilingAi ? { value: T.ceilingAi, label: `ceiling of the current seed, ${compact(T.ceilingAi)} AI` } : null,
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${compact(r.v)} AI absorbed to date</div>${T.ceilingAi ? `<div class="k">${pctLevel(r.v / T.ceilingAi, 0)} of the ceiling</div>` : ""}`,
   });
 
   host.innerHTML = `<thead><tr><th>Pool</th><th class="r">Swaps</th><th class="r">AI in</th><th class="r">AI out</th>
@@ -3967,7 +3998,13 @@ function renderFlywheel() {
     `${seeded.length ? `In the single-sided pools the AI held matches the AI swapped in, which is what a seed of vault tokens alone looks like: every AI there came from a buyer. ` : ""}` +
     `${nv && nvSupply ? `The NVDAx3L pool was seeded with ${pctLevel(nv.seed / nvSupply, 1)} of NVDAx3L supply and now holds ${pctLevel((nv.reservesPair || 0) / nvSupply, 1)}. ` : ""}` +
     `NVDAx3L targets about three times NVDA's daily move, so a rising NVDA makes the pooled tokens cheap against the market and draws more AI in; a falling one reverses it. ` +
-    `At today's prices the remaining seed caps what this can absorb at about $${compact(T.capacityUsdNow ?? ((T.netAiUsdNow || 0) + leftUsd))} in all, until vault tokens appreciate or more liquidity is added.</p>`;
+    (T.ceilingAi ? `The ceiling is the AI these positions would hold if every vault token in them were bought out. It is set by the positions' price ranges, not by the market, so vault tokens rising makes it more likely to be reached but cannot raise it; only new liquidity does, which is why its daily history is kept. At today's AI price it would take AI at $${(1e6 / T.ceilingAi).toFixed(3)} for the full ceiling to be worth $1M. ` : "") +
+    (() => {
+      const R = F.routing || {};
+      const done = Object.entries(R).filter(([, r]) => r.complete && r.aiShareOfVolume7d != null);
+      if (!done.length) return "";
+      return `Where the vault tokens trade: over seven days, ${done.map(([k, r]) => `${pctLevel(r.aiShareOfVolume7d, 1)} of ${k} volume went through AI pools, across ${r.activePools.toLocaleString()} active pools`).join("; ")}. The rest trades elsewhere, much of it against launchpad tokens paired with the vault tokens directly.`;
+    })() + `</p>`;
 }
 
 function renderPerps(R, pending) {

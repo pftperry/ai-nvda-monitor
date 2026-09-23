@@ -259,7 +259,7 @@ export async function indexFlywheel(latest, tm, opts = {}) {
     /* What the pool holds now, from its full position history at its live price.
        Context, not the sink: reserves include whatever LPs deposited, the sink is
        only what swappers paid in. */
-    let reservesAi = null, reservesPair = null;
+    let reservesAi = null, reservesPair = null, maxAi = null, riseToEdge = null;
     try {
       S.ladder = await poolTickLadder(p.poolId, latest, S.ladder, { deadline });
       const sqrt = Number(BigInt(S.lastSqrt || p.lastSqrtPriceX96 || "0")) / Q96;
@@ -267,6 +267,28 @@ export async function indexFlywheel(latest, tm, opts = {}) {
         const { a0, a1 } = ladderRawAmounts(S.ladder.net || {}, sqrt);
         reservesAi = (aiIs0 ? a0 : a1) / 1e18;
         reservesPair = (aiIs0 ? a1 : a0) / 10 ** pairDec;
+        /* THE CEILING. Buy out every vault token and the price walks to the edge of
+           the liquidity, where each position is 100% AI. That amount is fixed by the
+           positions, not by the market: vault tokens appreciating makes arbitrage
+           more likely to walk the price there but cannot move the edge. So this is the
+           most AI the pool can ever hold, and only new liquidity raises it.
+
+           Which edge: price is token1 per token0, and buying vault tokens pushes AI
+           in. With AI as token0 that lowers the price, so the edge is below the lowest
+           tick; with AI as token1 it raises it, so the edge is above the highest.
+
+           riseToEdge is how far the vault token must climb, priced in AI, for the
+           pool to get there. Measured on the first three seeded pools it was about 9x
+           each, for a combined ceiling of 1,213,182 AI. */
+        const ticks = Object.keys(S.ladder.net || {}).map(Number).sort((a, b) => a - b);
+        if (ticks.length >= 2) {
+          const edgeTick = aiIs0 ? ticks[0] : ticks[ticks.length - 1];
+          const beyond = aiIs0 ? edgeTick - 1 : edgeTick + 1;
+          const full = ladderRawAmounts(S.ladder.net, Math.pow(1.0001, beyond / 2));
+          maxAi = (aiIs0 ? full.a0 : full.a1) / 1e18;
+          const curTick = Math.floor(Math.log(sqrt * sqrt) / Math.log(1.0001));
+          riseToEdge = Math.pow(1.0001, Math.abs(edgeTick - curTick));
+        }
       }
     } catch { /* reserves are context; a failed ladder must not cost the flow figures */ }
 
@@ -299,6 +321,8 @@ export async function indexFlywheel(latest, tm, opts = {}) {
       reservesAi: reservesAi == null ? null : +reservesAi.toFixed(2),
       reservesPair: reservesPair == null ? null : +reservesPair.toFixed(4),
       reservesUsd: reservesAi == null ? null : Math.round((reservesAi * (aiUsd || 0)) + (reservesPair * (v.priceUsd || 0))),
+      maxAi: maxAi == null ? null : Math.round(maxAi),
+      riseToEdge: riseToEdge == null ? null : +riseToEdge.toFixed(2),
     });
   }
 
@@ -339,6 +363,15 @@ export async function indexFlywheel(latest, tm, opts = {}) {
       days.set(+d, x);
     }
   }
+  /* the ceiling, recorded once per day at the last run of the day. It only moves
+     when liquidity is added to or removed from the seeded pools, so a step in this
+     series is the protocol changing the programme, not the market */
+  const ceilingNow = Math.round(out.filter((r) => r.kind === "seeded").reduce((s, r) => s + (r.maxAi || 0), 0));
+  const headDay = Math.floor((tm.at(latest) ?? Date.now() / 1000) / DAY) * DAY;
+  state.ceilingDaily = { ...(prev.ceilingDaily || {}) };
+  if (ceilingNow > 0) state.ceilingDaily[headDay] = ceilingNow;
+  const ceilingDaily = Object.entries(state.ceilingDaily).map(([t, v]) => ({ t: +t, ceilingAi: v })).sort((a, b) => a.t - b.t);
+
   let cum = 0, cumUsd = 0;
   const daily = [...days.entries()].sort((a, b) => a[0] - b[0]).map(([t, r]) => {
     cum += r.aiIn - r.aiOut; cumUsd += r.usdIn - r.usdOut;
@@ -358,8 +391,20 @@ export async function indexFlywheel(latest, tm, opts = {}) {
     seedUsd: Math.round(seedUsd), seedLeftUsd: Math.round(leftUsd),
     seedBoughtOut: seedUsd > 0 ? +(1 - leftUsd / seedUsd).toFixed(4) : null,
     heldAi: Math.round(seeded.reduce((s, r) => s + (r.reservesAi || 0), 0)),
-    /* the ceiling on what this seed can still take in, at today's prices */
-    capacityUsdNow: aiUsd ? Math.round(netAi * aiUsd + leftUsd) : null,
+    /* The hard ceiling of the current seed, in AI, and how much of it is filled.
+       This replaces an earlier "capacity at today's prices" that valued the remaining
+       vault tokens at market. That was wrong twice over: at today's prices almost
+       nothing more is absorbed, because the pool is already arbitraged to market, and
+       at the top of the ranges the seed takes in far more, because it sells the last
+       vault tokens at the highest prices in its range. */
+    ceilingAi: Math.round(seeded.reduce((s, r) => s + (r.maxAi || 0), 0)),
+    ceilingUsdNow: aiUsd ? Math.round(seeded.reduce((s, r) => s + (r.maxAi || 0), 0) * aiUsd) : null,
+    ceilingFilled: (() => {
+      const c = seeded.reduce((s, r) => s + (r.maxAi || 0), 0), h = seeded.reduce((s, r) => s + (r.reservesAi || 0), 0);
+      return c > 0 ? +(h / c).toFixed(4) : null;
+    })(),
+    /* the smallest move that would fill every seeded pool, since each fills at its own */
+    riseToFill: seeded.length && seeded.every((r) => r.riseToEdge != null) ? Math.max(...seeded.map((r) => r.riseToEdge)) : null,
     allPairsNetAi: Math.round(allNet),
     pools: out.length,
     swaps: seeded.reduce((s, r) => s + r.swaps, 0),
@@ -378,12 +423,12 @@ export async function indexFlywheel(latest, tm, opts = {}) {
   };
 
   log(`  flywheel: ${seeded.length} seeded of ${out.length} AI/vault pool(s), ${swapsRead.toLocaleString()} new swap(s); ${totals.netAi.toLocaleString()} AI absorbed by the seeded pools` +
-    `${totals.netAiUsdNow != null ? ` ($${totals.netAiUsdNow.toLocaleString()} now)` : ""}; reserves ${totals.reservesAi.toLocaleString()} AI + $${totals.reservesPairUsd.toLocaleString()} vault tokens${partial ? " (partial)" : ""}`);
+    `${totals.netAiUsdNow != null ? ` ($${totals.netAiUsdNow.toLocaleString()} now)` : ""}; ceiling ${totals.ceilingAi.toLocaleString()} AI, ${totals.ceilingFilled != null ? (100 * totals.ceilingFilled).toFixed(1) + "% filled" : "fill unknown"}; reserves ${totals.reservesAi.toLocaleString()} AI + $${totals.reservesPairUsd.toLocaleString()} vault tokens${partial ? " (partial)" : ""}`);
 
   return {
     state,
     artifact: {
-      aiUsd, aiSupply, partial, pools: out.sort((a, b) => b.netAi - a.netAi), totals, daily, routing,
+      aiUsd, aiSupply, partial, pools: out.sort((a, b) => b.netAi - a.netAi), totals, daily, ceilingDaily, routing,
       method: "Every swap in every AI pool whose other token is a LongX vault token, from the pool's creation. The headline and the daily series cover only pools seeded single-sided with vault tokens, identified by holding the same AI that swappers paid in; two-sided trading venues and emptied pools are listed but not counted. Absorbed AI is the AI swappers paid into these pools minus the AI swappers took out; liquidity deposits and withdrawals are excluded because they are parked, not absorbed. The figure falls when vault tokens are sold back into the pools. It is not burned: the AI sits in withdrawable liquidity positions. Reserves are what the pools hold now, valued from their full position history at the live price, and include liquidity from any provider.",
     },
   };
