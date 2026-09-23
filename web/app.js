@@ -221,8 +221,13 @@ function _lineChart(host, rows, o) {
      against a second scale. Their values count toward the axis so nothing is drawn
      off the chart. */
   const refs = (o.refs || []).filter((r) => r && isFinite(r.value));
-  for (const r of refs) vals.push(r.value);
-  for (const ov of o.overlays || []) for (const r of rows) if (isFinite(r[ov.key])) vals.push(r[ov.key]);
+  /* o.scaleToSeries: the axis fits the main series alone. Used when zoomed in, where
+     a level or an average far from price would otherwise stretch the axis and flatten
+     the very line the reader zoomed in to see; those are clipped at the plot edge. */
+  if (!o.scaleToSeries) {
+    for (const r of refs) vals.push(r.value);
+    for (const ov of o.overlays || []) for (const r of rows) if (isFinite(r[ov.key])) vals.push(r[ov.key]);
+  }
   let min = minOf(vals), max = maxOf(vals);
   const nonNegative = min >= 0;
   if (o.zeroBase) min = Math.min(0, min);
@@ -240,6 +245,14 @@ function _lineChart(host, rows, o) {
     }));
   }
   f.svg.appendChild(mk("path", { d, fill: "none", stroke: o.color || "var(--series-1)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  let clip = "";
+  if (o.scaleToSeries) {
+    const cid = "clip" + Math.random().toString(36).slice(2, 10);
+    const defs = mk("defs"), cp = mk("clipPath", { id: cid });
+    cp.appendChild(mk("rect", { x: f.padL, y: f.padT, width: f.iw, height: f.ih }));
+    defs.appendChild(cp); f.svg.appendChild(defs);
+    clip = `url(#${cid})`;
+  }
   for (const ov of o.overlays || []) {
     /* a gap in an overlay (a moving average not yet defined) starts a new segment
        rather than drawing a line across it */
@@ -250,9 +263,12 @@ function _lineChart(host, rows, o) {
       seg += `${on ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `;
       on = true;
     });
-    if (seg) f.svg.appendChild(mk("path", { d: seg, fill: "none", stroke: ov.color, "stroke-width": ov.width || 1.5, "stroke-dasharray": ov.dash || "", opacity: ov.opacity || ".95", "stroke-linejoin": "round" }));
+    if (seg) f.svg.appendChild(mk("path", { d: seg, fill: "none", stroke: ov.color, "stroke-width": ov.width || 1.5, "stroke-dasharray": ov.dash || "", opacity: ov.opacity || ".95", "stroke-linejoin": "round", ...(clip ? { "clip-path": clip } : {}) }));
   }
   for (const r of refs) {
+    /* a level outside the scaled range is not drawn at all: a label pinned to the
+       edge would misstate where it is */
+    if (o.scaleToSeries && (r.value < min || r.value > max)) continue;
     const ry = Y(r.value);
     f.svg.appendChild(mk("line", { x1: f.padL, x2: f.padL + f.iw, y1: ry, y2: ry, stroke: r.color || "var(--text-secondary)", "stroke-width": r.width || 1, "stroke-dasharray": r.dash ?? "4 4", opacity: r.opacity || ".7" }));
     if (r.label) {
@@ -2640,7 +2656,9 @@ function marketState() {
    These are levels people place orders at, which is most of why they sometimes
    hold. They are not a forecast, and the note under the chart says so. */
 const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
-const TA_WINDOW_DAYS = 30;
+/* Zoom. The levels and averages are computed from the full history whatever the
+   range, so zooming never moves a level -- it only changes what is in view. */
+const TA_RANGES = [["3d", 3], ["7d", 7], ["30d", 30], ["All", null]];
 
 /* A reversal of this size confirms a turn. AI moves tens of percent in a week, so a
    small threshold would anchor the levels to noise and re-draw them daily. */
@@ -2750,7 +2768,14 @@ function renderTaChart() {
   }
   const all = hrs.slice(cut).filter((h) => h.close > 0);
   const s20 = smaByTime(all, 20), s50 = smaByTime(all, 50);
-  const startT = (all.at(-1)?.t || 0) - TA_WINDOW_DAYS * 86400;
+  const range = TA_RANGES.find(([k]) => k === (S.taRange || "30d")) || TA_RANGES[2];
+  const startT = range[1] == null ? -Infinity : (all.at(-1)?.t || 0) - range[1] * 86400;
+  const rbtn = ([k]) => `<button aria-pressed="${range[0] === k}" data-tarange="${k}">${k}</button>`;
+  const rh = $("#taRange");
+  if (rh) {
+    rh.innerHTML = `<div class="flowhead"><span class="muted">Range</span><span class="seg">${TA_RANGES.map(rbtn).join("")}</span></div>`;
+    rh.querySelectorAll("[data-tarange]").forEach((b) => b.addEventListener("click", () => { S.taRange = b.dataset.tarange; renderTaChart(); }));
+  }
   const hourly = all.map((h, i) => ({ t: h.t, close: h.close, sma20: s20[i], sma50: s50[i] })).filter((r) => r.t >= startT);
   const live = (S.live?.pointsByPool?.[pool.poolId] || []).filter((p) => p.t > (hourly.at(-1)?.t || 0));
   const last20 = hourly.at(-1)?.sma20 ?? null, last50 = hourly.at(-1)?.sma50 ?? null;
@@ -2765,8 +2790,10 @@ function renderTaChart() {
   const money = (v) => (v < 0.0001 ? `$${v.toExponential(2)}` : `$${v.toFixed(4)}`);
   const key = new Set([0.382, 0.5, 0.618]);
 
+  /* scale to price whenever the view is narrower than the whole history: that is
+     when a far-off level or average would squash the line */
   lineChart(host, rows, {
-    xKey: "t", yKey: "close", color: "var(--series-1)", area: false,
+    xKey: "t", yKey: "close", color: "var(--series-1)", area: false, scaleToSeries: range[1] != null,
     fmt: (v) => (v < 0.01 ? v.toExponential(1) : `$${v.toFixed(3)}`),
     overlays: [
       { key: "sma20", color: "var(--series-2)", width: 1.4 },
