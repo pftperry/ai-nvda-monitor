@@ -43,19 +43,26 @@ const topicAddr = (t) => "0x" + t.slice(26).toLowerCase();
 /* Where each flywheel vault token actually trades.
 
    Holding a large share of a token's supply is not the same as capturing its
-   trading: a pool can sit on 20% of the float while every trade routes somewhere
-   cheaper. The flywheel only turns when vault-token trades go THROUGH an AI pool,
-   because that is what makes someone buy AI. So for each vault token that has an AI
-   pool, this finds every pool holding it -- AI or not, from the pool manager's
-   Initialize log, the token on either side -- and reports what share of its pooled
-   inventory and of its swaps sit in the AI pools.
+   trading: a pool can sit on a fifth of the float while every trade routes
+   somewhere cheaper. The flywheel only turns when vault-token trades go THROUGH an
+   AI pool, because that is what makes someone buy AI. So for each vault token with
+   an AI pool this finds every pool holding it, AI or not, and measures what share
+   of the token's trading volume over the last seven days went through the AI pools.
 
-   Cursor-resumed: the Initialize scan and each pool's swap count extend from where
-   the last run stopped, so after the first run this is a handful of small queries. */
-/* The block a token first moved. No pool can hold a token before it has been
-   minted, so this is the true floor for finding every pool that holds it. Scanned
-   forward in windows and stopped at the first hit, and only ever run once per token:
-   the census cursor carries on from there. */
+   Volume, not swap counts. NVDAx3L turned out to sit in 2,682 pools, most of them
+   launchpad tokens paired against it, and bots trading dust through those rack up
+   counts that say nothing about where the size goes.
+
+   Discovery is cursor-resumed from the block the token first moved, found by
+   scanning its Transfer log forward: starting at the AI pool would miss an older
+   venue such as the USDG pool opened when the vault launched. Activity fetches every
+   pool's swaps in grouped OR-queries (960 pool ids per query), not one query per
+   pool, which is what made the first version run out of time.
+
+   An incomplete scan publishes NO share. The first version ran out of budget
+   part-way through discovery, missed the AI pool, and reported "0.0% of swaps in AI
+   pools" as though that were measured. A share is only computed when discovery
+   reached the head and every activity group finished. */
 async function firstTransferBlock(token, from, latest, deadline) {
   const T = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
   const STEP = 4_000_000;
@@ -68,80 +75,120 @@ async function firstTransferBlock(token, from, latest, deadline) {
   return null;
 }
 
+const ROUTING_WINDOW = 7 * DAY;
+const GROUP = 960;
+const ROUTING_V = 2;
+
 async function routingCensus(tokens, latest, tm, aiPoolIds, prev, opts) {
   const deadline = opts.deadline;
   const state = {};
   const out = {};
+  const headT = tm.at(latest) ?? Math.floor(Date.now() / 1000);
+  const winFrom = tm.blockAt(headT - ROUTING_WINDOW) ?? Math.max(0, latest - Math.round(ROUTING_WINDOW / 0.101));
   for (const [token] of tokens) {
     let P = prev?.[token];
     if (!P) {
-      /* First sight of this token: find where it was born. If the budget runs out
-         before that is known, skip the token for this run rather than start from a
-         guess -- a guessed floor would be saved in the state and never revisited, so
-         an older venue it missed would stay missing for good. */
+      /* first sight: find where the token was born; if the budget runs out first,
+         skip it this run rather than start from a guess that would be saved and
+         never revisited */
       const born = await firstTransferBlock(token, opts.genesis ?? 0, latest, deadline);
       if (born == null) continue;
-      P = { cursor: born - 1, pools: {}, floor: "first-transfer" };
+      P = { cursor: born - 1, pools: {} };
     }
+    /* discovery */
+    let discovered = true;
     if (P.cursor < latest) {
-      let reached = latest, cut = false;
+      let reached = latest;
       for (const slot of [2, 3]) {
         const topics = [TOPICS.INITIALIZE, null, null, null].slice(0, slot + 1);
         topics[slot] = pad(token);
         const r = await getLogsRange({ address: POOL_MANAGER, topics }, P.cursor + 1, latest, { chunk: 20_000_000, deadline });
-        for (const l of r) {
-          const c0 = topicAddr(l.topics[2]), c1 = topicAddr(l.topics[3]);
-          P.pools[l.topics[1]] ||= { c0, c1, cursor: parseInt(l.blockNumber, 16) - 1, swaps: 0, daily: {} };
-        }
-        if (r.truncated) { cut = true; reached = Math.min(reached, r.reachedBlock ?? P.cursor); }
+        for (const l of r) P.pools[l.topics[1]] ||= { c0: topicAddr(l.topics[2]), c1: topicAddr(l.topics[3]) };
+        if (r.truncated) { discovered = false; reached = Math.min(reached, r.reachedBlock ?? P.cursor); }
       }
-      P.cursor = cut ? reached : latest;
+      P.cursor = discovered ? latest : reached;
     }
-    let pooled = 0, pooledAi = 0, swaps = 0, swapsAi = 0, wk = 0, wkAi = 0;
-    const weekAgo = Math.floor((tm.at(latest) ?? Date.now() / 1000) / DAY) * DAY - 6 * DAY;
-    const rows = [];
-    for (const [id, Q] of Object.entries(P.pools)) {
-      if (Q.cursor < latest) {
-        const r = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.SWAP, id] }, Q.cursor + 1, latest, {
-          chunk: 5_000_000, deadline,
+    for (const [id, Q] of Object.entries(P.pools)) P.pools[id] = { c0: Q.c0, c1: Q.c1 };
+    state[token] = P;
+    if (!discovered) {
+      out[token] = { complete: false, reason: "pool discovery did not reach the head this run", pools: Object.keys(P.pools).length };
+      continue;
+    }
+
+    /* Activity, kept as per-day buckets with its own cursor. Re-reading a full week
+       of swaps across every pool on every run would be tens of thousands of logs each
+       time for NVDAx3L alone; resumed, a run reads only what is new. A pool found by
+       discovery cannot have traded before it was created, and discovery reaches the
+       head before activity runs, so a new pool has no swaps behind the cursor. */
+    const ids = Object.keys(P.pools);
+    const A = P.act || (P.act = { cursor: winFrom - 1, days: {} });
+    if (A.cursor < winFrom - 1) A.cursor = winFrom - 1;       // a long gap: nothing older is needed
+    let activityDone = true, scanReached = latest;
+    if (A.cursor < latest) {
+      for (let i = 0; i < ids.length; i += GROUP) {
+        const group = ids.slice(i, i + GROUP);
+        const r = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.SWAP, group] }, A.cursor + 1, latest, {
+          chunk: 2_000_000, deadline,
           onLogs: (logs) => {
             for (const l of logs) {
-              Q.swaps++;
+              const id = l.topics[1], Q = P.pools[id];
+              if (!Q) continue;
               const t = tm.at(parseInt(l.blockNumber, 16));
-              if (t != null) { const d = Math.floor(t / DAY) * DAY; Q.daily[d] = (Q.daily[d] || 0) + 1; }
-              Q.lastSqrt = decodeSwap(l).sqrtPriceX96.toString();
+              if (t == null) continue;
+              const sw = decodeSwap(l);
+              const v = Math.abs(Number(Q.c0 === token ? sw.amount0 : sw.amount1)) / 1e18;
+              const dk = Math.floor(t / DAY) * DAY;
+              const day = A.days[dk] || (A.days[dk] = {});
+              const cell = day[id] || (day[id] = [0, 0]);
+              cell[0] += v; cell[1] += 1;
             }
           },
         });
-        Q.cursor = r.truncated ? (r.reachedBlock ?? Q.cursor) : latest;
+        /* groups share one cursor, so a group that stopped short holds every group back
+           to where it stopped; the others re-read that stretch next run, which is safe
+           only because buckets are rebuilt from this run's cursor, so drop the partial */
+        if (r.truncated) { activityDone = false; scanReached = Math.min(scanReached, r.reachedBlock ?? A.cursor); }
       }
-      /* inventory from the position history, at the pool's last traded price; a pool
-         that has never traded has no price to value at and counts as holding none */
-      let held = 0;
-      if (Q.lastSqrt) {
-        try {
-          Q.ladder = await poolTickLadder(id, latest, Q.ladder, { deadline });
-          const { a0, a1 } = ladderRawAmounts(Q.ladder.net || {}, Number(BigInt(Q.lastSqrt)) / Q96);
-          held = (Q.c0 === token ? a0 : a1) / 1e18;
-        } catch { held = 0; }
-      }
-      const isAi = aiPoolIds.has(id);
-      const w = Object.entries(Q.daily).filter(([d]) => +d >= weekAgo).reduce((s, [, n]) => s + n, 0);
-      pooled += held; swaps += Q.swaps; wk += w;
-      if (isAi) { pooledAi += held; swapsAi += Q.swaps; wkAi += w; }
-      rows.push({ poolId: id, other: Q.c0 === token ? Q.c1 : Q.c0, ai: isAi, held: +held.toFixed(4), swaps: Q.swaps, swaps7d: w });
     }
-    state[token] = P;
+    if (!activityDone) {
+      /* a partial pass would double-count when the stretch is re-read, so discard the
+         buckets this run touched by restoring the cursor and clearing them */
+      out[token] = { complete: false, reason: "the seven-day swap scan did not finish this run", pools: ids.length };
+      P.act = null;                                    // rebuild the window cleanly next run
+      continue;
+    }
+    A.cursor = latest;
+    /* keep only the days that can still fall inside the window */
+    const oldest = Math.floor((headT - ROUTING_WINDOW) / DAY) * DAY;
+    for (const dk of Object.keys(A.days)) if (+dk < oldest) delete A.days[dk];
+
+    const vol = new Map(), cnt = new Map();
+    for (const [dk, day] of Object.entries(A.days)) {
+      if (+dk < oldest) continue;
+      for (const [id, [v, c]] of Object.entries(day)) { vol.set(id, (vol.get(id) || 0) + v); cnt.set(id, (cnt.get(id) || 0) + c); }
+    }
+
+    let total = 0, inAi = 0, swaps = 0, swapsAi = 0;
+    const rows = [];
+    for (const id of ids) {
+      const v = vol.get(id) || 0, c = cnt.get(id) || 0;
+      if (!c) continue;
+      const Q = P.pools[id], isAi = aiPoolIds.has(id);
+      total += v; swaps += c;
+      if (isAi) { inAi += v; swapsAi += c; }
+      rows.push({ poolId: id, other: Q.c0 === token ? Q.c1 : Q.c0, ai: isAi, volume7d: +v.toFixed(4), swaps7d: c });
+    }
+    rows.sort((a, b) => b.volume7d - a.volume7d);
     out[token] = {
-      pools: rows.length,
-      /* whether the census could see back to the token's birth, or only to just
-         before its AI pool; the second can miss an older non-AI venue */
-      coverage: P.floor || "first-transfer",
-      pooled: +pooled.toFixed(4), pooledInAi: +pooledAi.toFixed(4),
-      aiShareOfPooled: pooled > 0 ? +(pooledAi / pooled).toFixed(4) : null,
-      swaps, swapsInAi: swapsAi, aiShareOfSwaps: swaps ? +(swapsAi / swaps).toFixed(4) : null,
-      swaps7d: wk, swaps7dInAi: wkAi, aiShareOfSwaps7d: wk ? +(wkAi / wk).toFixed(4) : null,
-      venues: rows.sort((a, b) => b.held - a.held).slice(0, 12),
+      complete: true, windowDays: ROUTING_WINDOW / DAY,
+      pools: ids.length, activePools: rows.length,
+      volume7d: +total.toFixed(4), volume7dInAi: +inAi.toFixed(4),
+      aiShareOfVolume7d: total > 0 ? +(inAi / total).toFixed(4) : null,
+      swaps7d: swaps, swaps7dInAi: swapsAi,
+      aiShareOfSwaps7d: swaps ? +(swapsAi / swaps).toFixed(4) : null,
+      /* where the AI pools rank among the token's venues by volume, 1 = busiest */
+      aiRank: rows.findIndex((r) => r.ai) + 1 || null,
+      venues: rows.slice(0, 10),
     };
   }
   return { state, out };
@@ -157,11 +204,18 @@ export async function indexFlywheel(latest, tm, opts = {}) {
   const priceAt = opts.priceAt || (() => null);
 
   const vaultBy = new Map(vaults.map((v) => [v.token.toLowerCase(), v]));
-  const targets = pools.filter((p) => p.pairToken && vaultBy.has(p.pairToken.toLowerCase()));
+  /* a pool can drop out of one run's selection and come back in the next (the fast
+     path reuses a smaller pool set), so de-duplicate by id across whatever lists the
+     caller passed rather than trusting any single one to be complete */
+  const byId = new Map();
+  for (const p of pools) if (p?.poolId && p.pairToken && vaultBy.has(p.pairToken.toLowerCase())) byId.set(p.poolId, p);
+  const targets = [...byId.values()];
   if (!targets.length) { log("  flywheel: no AI pool is paired with a LongX vault token"); return null; }
 
   const prev = opts.state?.v === STATE_V ? opts.state : { v: STATE_V, pools: {} };
-  const state = { v: STATE_V, pools: {} };
+  /* carry forward every pool's accumulated state, including pools this run did not
+     select, so a pool that briefly drops out does not rescan from its creation */
+  const state = { v: STATE_V, pools: { ...(prev.pools || {}) } };
   let partial = false, swapsRead = 0;
 
   const out = [];
@@ -248,25 +302,29 @@ export async function indexFlywheel(latest, tm, opts = {}) {
     });
   }
 
-  /* Routing: for each vault token paired with AI, where does it trade at all. Started
-     from the earliest AI pool on that token less a margin, since the perps task only
-     knows vault tokens that exist and the pool manager's history before a token was
-     minted cannot contain a pool for it. */
+  /* Routing: for each vault token paired with AI, where it trades at all. The census
+     state is versioned on its own: the first version could save a discovery that had
+     silently stopped short, and resuming from that would inherit the gap. A version
+     change discards it and starts discovery again from each token's first transfer. */
   let routing = null;
+  const prevRouting = prev.routingV === ROUTING_V ? prev.routing : null;
+  state.routingV = ROUTING_V;
   try {
-    const byToken = new Map();
-    for (const p of targets) {
-      const t = p.pairToken.toLowerCase();
-      const b = Math.max(0, (p.createdBlock || 0) - 2_000_000);
-      byToken.set(t, Math.min(byToken.get(t) ?? Infinity, b));
-    }
+    const tokens = [...new Set(targets.map((p) => p.pairToken.toLowerCase()))].map((t) => [t]);
     const aiIds = new Set(targets.map((p) => p.poolId));
-    const rc = await routingCensus([...byToken], latest, tm, aiIds, prev.routing, { deadline, genesis: opts.genesis });
-    state.routing = rc.state;
+    const rc = await routingCensus(tokens, latest, tm, aiIds, prevRouting, { deadline, genesis: opts.genesis });
+    /* a token skipped this run keeps whatever it had */
+    state.routing = { ...(prevRouting || {}), ...rc.state };
     routing = Object.fromEntries(Object.entries(rc.out).map(([tok, r]) => [vaultBy.get(tok)?.symbol || tok, { token: tok, ...r }]));
   } catch (e) {
     log(`  flywheel: routing census skipped (${e.message})`);
-    state.routing = prev.routing;
+    state.routing = prevRouting;
+  }
+  if (routing) {
+    const parts = Object.entries(routing).map(([k, r]) => r.complete
+      ? `${k} ${r.aiShareOfVolume7d == null ? "no volume" : (100 * r.aiShareOfVolume7d).toFixed(1) + "% of 7d volume in AI pools"} across ${r.activePools} active of ${r.pools}`
+      : `${k} incomplete (${r.reason})`);
+    log(`  flywheel routing: ${parts.join("; ")}`);
   }
 
   /* The daily series is the flywheel alone: the seeded pools. Two-sided venues and

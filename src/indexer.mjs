@@ -655,7 +655,9 @@ if (!flag("no-flywheel")) {
   step("Measuring the LongX flywheel");
   try {
     const vaults = readData("rwa.json")?.perps?.vaults || [];
-    const censusPools = all.length ? all : (readData("pools.json")?.pools || []);
+    /* both lists: pools.json is the full census, `all` is this run's selection and can
+       carry a pool the last census predates; the task de-duplicates by id */
+    const censusPools = [...(readData("pools.json")?.pools || []), ...all];
     const H = readData("holders.json");
     const out = await indexFlywheel(latest, tm, {
       state: store.get("flywheel"),
