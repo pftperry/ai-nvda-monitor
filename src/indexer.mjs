@@ -25,6 +25,7 @@ import { indexVenues, indexVenueSwaps, indexRialto } from "./tasks/venues.mjs";
 import { indexBigTrades } from "./tasks/bigtrades.mjs";
 import { indexTraders } from "./tasks/traders.mjs";
 import { classifyAccounts, CONTRACT } from "./tasks/accounts.mjs";
+import { indexFlywheel } from "./tasks/flywheel.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -642,6 +643,34 @@ if (!flag("no-holders") && (store.get("holders") || fs.existsSync("seed/holders-
     }
   } catch (e) {
     softFail("holders", e, "the previous holders.json stays in place");
+  }
+}
+
+/* The LongX flywheel: AI absorbed by the pools pairing AI with LongX vault tokens.
+   Every run, not only the heavy ones -- it is a swap scan over a handful of pool
+   ids, resumed from a cursor, and the point of it is to watch a sink fill or drain
+   day by day. The vault list comes from the perps block, which only refreshes on
+   heavier runs; vault tokens do not appear often enough for that to matter. */
+if (!flag("no-flywheel")) {
+  step("Measuring the LongX flywheel");
+  try {
+    const vaults = readData("rwa.json")?.perps?.vaults || [];
+    const censusPools = all.length ? all : (readData("pools.json")?.pools || []);
+    const H = readData("holders.json");
+    const out = await indexFlywheel(latest, tm, {
+      state: store.get("flywheel"),
+      pools: censusPools, vaults,
+      aiUsd: readData("prices.json")?.aiUsd ?? null,
+      aiSupply: H?.snapshots?.at(-1)?.supply ?? null,
+      priceAt: usdPriceLookup(flowOut),
+      deadline: Date.now() + opt("flywheel-budget", deep ? 600 : 120) * 1000,
+    });
+    if (out) {
+      store.set("flywheel", out.state);
+      writeData("flywheel.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact });
+    }
+  } catch (e) {
+    softFail("flywheel", e, "the previous flywheel.json stays in place");
   }
 }
 
