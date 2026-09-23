@@ -2728,7 +2728,7 @@ function recentSwing(rows) {
   return { hi, lo, up: b.kind === "high" };
 }
 
-function taLevels(rows, view = "major") {
+function taLevels(rows, view = "recent") {
   const sw = view === "recent" ? recentSwing(rows) : majorSwing(rows);
   if (!sw) return null;
   const { hi, lo, up } = sw;
@@ -2768,7 +2768,8 @@ function renderTaChart() {
   }
   const all = hrs.slice(cut).filter((h) => h.close > 0);
   const s20 = smaByTime(all, 20), s50 = smaByTime(all, 50);
-  const range = TA_RANGES.find(([k]) => k === (S.taRange || "30d")) || TA_RANGES[2];
+  /* opens zoomed in on the last three days, the recent swing's levels to match */
+  const range = TA_RANGES.find(([k]) => k === (S.taRange || "3d")) || TA_RANGES[0];
   const startT = range[1] == null ? -Infinity : (all.at(-1)?.t || 0) - range[1] * 86400;
   const rbtn = ([k]) => `<button aria-pressed="${range[0] === k}" data-tarange="${k}">${k}</button>`;
   const rh = $("#taRange");
@@ -2782,7 +2783,7 @@ function renderTaChart() {
   const rows = [...hourly, ...live.map((p) => ({ t: p.t, close: p.close, live: true, sma20: last20, sma50: last50 }))];
   /* swings are found across the whole on-scale history plus the live tail, so a leg
      that began before the chart's left edge is still anchored at its real start */
-  const view = S.taView || "major";
+  const view = S.taView || "recent";
   const L = taLevels([...all, ...live.map((p) => ({ t: p.t, close: p.close }))], view);
   const px = rows.at(-1).close;
   /* four decimals down to a hundredth of a cent; exponents only below that, where a
