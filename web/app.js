@@ -216,6 +216,13 @@ function _lineChart(host, rows, o) {
      the axis so it is never drawn off the chart. One axis, one unit -- this is for
      "how far is the line from that level", not for a second measure. */
   if (o.ref && isFinite(o.ref.value)) vals.push(o.ref.value);
+  /* o.refs: several levels; o.overlays: extra series on the same axis. Both in the
+     series' own unit -- this draws price lines against price, never a second measure
+     against a second scale. Their values count toward the axis so nothing is drawn
+     off the chart. */
+  const refs = (o.refs || []).filter((r) => r && isFinite(r.value));
+  for (const r of refs) vals.push(r.value);
+  for (const ov of o.overlays || []) for (const r of rows) if (isFinite(r[ov.key])) vals.push(r[ov.key]);
   let min = minOf(vals), max = maxOf(vals);
   const nonNegative = min >= 0;
   if (o.zeroBase) min = Math.min(0, min);
@@ -233,6 +240,27 @@ function _lineChart(host, rows, o) {
     }));
   }
   f.svg.appendChild(mk("path", { d, fill: "none", stroke: o.color || "var(--series-1)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  for (const ov of o.overlays || []) {
+    /* a gap in an overlay (a moving average not yet defined) starts a new segment
+       rather than drawing a line across it */
+    let seg = "", on = false;
+    rows.forEach((r, i) => {
+      const v = r[ov.key];
+      if (!isFinite(v)) { on = false; return; }
+      seg += `${on ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `;
+      on = true;
+    });
+    if (seg) f.svg.appendChild(mk("path", { d: seg, fill: "none", stroke: ov.color, "stroke-width": ov.width || 1.5, "stroke-dasharray": ov.dash || "", opacity: ov.opacity || ".95", "stroke-linejoin": "round" }));
+  }
+  for (const r of refs) {
+    const ry = Y(r.value);
+    f.svg.appendChild(mk("line", { x1: f.padL, x2: f.padL + f.iw, y1: ry, y2: ry, stroke: r.color || "var(--text-secondary)", "stroke-width": r.width || 1, "stroke-dasharray": r.dash ?? "4 4", opacity: r.opacity || ".7" }));
+    if (r.label) {
+      const t = mk("text", { x: f.padL + f.iw - 4, y: ry - 3, fill: r.color || "var(--text-secondary)", "font-size": 10, "text-anchor": "end" });
+      t.textContent = r.label;
+      f.svg.appendChild(t);
+    }
+  }
   if (o.ref && isFinite(o.ref.value)) {
     const ry = Y(o.ref.value);
     f.svg.appendChild(mk("line", { x1: f.padL, x2: f.padL + f.iw, y1: ry, y2: ry, stroke: "var(--text-secondary)", "stroke-width": 1.2, "stroke-dasharray": "5 4", opacity: ".8" }));
@@ -1979,6 +2007,8 @@ async function refreshLiveTail() {
     renderStaleBanner();   // the live head is what reveals how old the index is
     paintHeaderMarket();   // the live print changes the canonical price
     if (!$("#p-investor").hidden) { try { renderInvestor(); } catch { /* never blank the tab */ } }
+    /* the valuation chart is a live chart too: redraw it on every tick while open */
+    if (!$("#p-valuation").hidden) { try { renderTaChart(); } catch { /* never blank the tab */ } }
   } catch { /* the live tail is a bonus; its failure must not disturb the page */ }
 }
 
@@ -2584,6 +2614,215 @@ function marketState() {
   };
 }
 
+/* AI/USDG with the reference lines traders actually watch.
+
+   FIBONACCI RETRACEMENT across the last completed swing, found by a zigzag: a turn
+   only counts once price has reversed ZIGZAG_TURN from the extreme. An up leg gives
+   levels measured DOWN from its high (where a pullback might hold), a down leg gives
+   levels measured UP from its low (where a bounce might stall).
+
+   Not the high and low of a rolling window. The first version used the last thirty
+   days and it clipped the real swing: the window opened on 24 August, so it took
+   $0.0258 on the 25th for the low when the leg actually began at $0.0159 on the
+   23rd. Worse, as the window rolled through that steep late-August run the low would
+   have ratcheted up day by day and moved every level with it, and a support that
+   moves overnight is no support. A zigzag leg stays fixed until a new swing forms.
+
+   Closes, not intraday wicks, because the chain gives trade prices rather than
+   candles, so a level can sit a little inside where a wick would put it.
+
+   MOVING AVERAGES, 20-day and 50-day, the two most quoted as dynamic support. Taken
+   over the full on-scale history rather than the window, so the 50-day is right at
+   the left edge instead of warming up inside the chart, and on hourly closes only:
+   the five-minute live points extend the price line but would bias an average built
+   on hours, so the averages carry their last hourly value across the live tail.
+
+   These are levels people place orders at, which is most of why they sometimes
+   hold. They are not a forecast, and the note under the chart says so. */
+const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+const TA_WINDOW_DAYS = 30;
+
+/* A reversal of this size confirms a turn. AI moves tens of percent in a week, so a
+   small threshold would anchor the levels to noise and re-draw them daily. */
+const ZIGZAG_TURN = 0.2;
+
+function zigzag(rows, turn = ZIGZAG_TURN) {
+  /* The standard formulation. Until a direction is set, track the running high and
+     low; the first `turn` move off either sets it. Then follow the trend's extreme,
+     and confirm it as a pivot only when price reverses `turn` against it. Returns
+     confirmed pivots only, alternating high and low. */
+  const piv = [];
+  if (rows.length < 2) return piv;
+  let dir = 0, hi = rows[0], lo = rows[0], ext = null;
+  for (const r of rows) {
+    if (dir === 0) {
+      if (r.close > hi.close) hi = r;
+      if (r.close < lo.close) lo = r;
+      if (r.close >= lo.close * (1 + turn)) { piv.push({ ...lo, kind: "low" }); dir = 1; ext = r; }
+      else if (r.close <= hi.close * (1 - turn)) { piv.push({ ...hi, kind: "high" }); dir = -1; ext = r; }
+    } else if (dir === 1) {
+      if (r.close > ext.close) ext = r;
+      else if (r.close <= ext.close * (1 - turn)) { piv.push({ ...ext, kind: "high" }); dir = -1; ext = r; }
+    } else {
+      if (r.close < ext.close) ext = r;
+      else if (r.close >= ext.close * (1 + turn)) { piv.push({ ...ext, kind: "low" }); dir = 1; ext = r; }
+    }
+  }
+  return piv;
+}
+
+/* Two swings, because both timeframes are standard and they answer different
+   questions. They were compared on the real series before choosing: a 20% turn
+   picked a two-day leg (21-22 Sep) with every level within a few percent of price; a
+   30% turn picked 14-17 Sep, which price had already fallen through; a 40% turn
+   picked the run from 18 August into the 17 September high, but only because the
+   22 September dip happened to cross -40%, so it would have flipped on one print;
+   and 50% fell back to a leg from August's micro-cap days. So:
+
+   MAJOR is the run into the all-time high, from the lowest close in the thirty days
+   before that high. It is anchored to the high rather than to today, so it only moves
+   when a new high prints -- the retracement of the rally, which is what most people
+   mean by Fibonacci support.
+
+   RECENT is the last completed swing from a 20% zigzag: the short-term levels, which
+   re-anchor whenever price turns by a fifth. */
+const MAJOR_LOOKBACK_DAYS = 30;
+
+function majorSwing(rows) {
+  if (rows.length < 2) return null;
+  let hi = rows[0];
+  for (const r of rows) if (r.close > hi.close) hi = r;
+  let lo = null;
+  for (const r of rows) {
+    if (r.t > hi.t) break;
+    if (r.t >= hi.t - MAJOR_LOOKBACK_DAYS * 86400 && (!lo || r.close < lo.close)) lo = r;
+  }
+  if (!lo || !(hi.close > lo.close)) return null;
+  return { hi, lo, up: true };
+}
+
+function recentSwing(rows) {
+  const piv = zigzag(rows);
+  if (piv.length < 2) return null;
+  const a = piv[piv.length - 2], b = piv[piv.length - 1];
+  const hi = a.kind === "high" ? a : b, lo = a.kind === "low" ? a : b;
+  if (!(hi.close > lo.close)) return null;
+  return { hi, lo, up: b.kind === "high" };
+}
+
+function taLevels(rows, view = "major") {
+  const sw = view === "recent" ? recentSwing(rows) : majorSwing(rows);
+  if (!sw) return null;
+  const { hi, lo, up } = sw;
+  const span = hi.close - lo.close;
+  const fib = FIB_RATIOS.map((r) => ({
+    ratio: r,
+    price: up ? hi.close - r * span : lo.close + r * span,
+  }));
+  return { hi, lo, up, fib };
+}
+
+function smaByTime(rows, days) {
+  /* time-windowed, so a missing hour does not stretch the window */
+  const win = days * 86400, out = new Array(rows.length).fill(null);
+  let j = 0, sum = 0;
+  for (let i = 0; i < rows.length; i++) {
+    sum += rows[i].close;
+    while (rows[i].t - rows[j].t >= win) { sum -= rows[j].close; j++; }
+    /* only once the window is genuinely full, or a young average is a guess */
+    if (rows[i].t - rows[0].t >= win - 3600) out[i] = sum / (i - j + 1);
+  }
+  return out;
+}
+
+function renderTaChart() {
+  const host = $("#cInvPrice");
+  if (!host) return;
+  const pool = usdPool();
+  const U = pool ? usdSeries() : null;
+  const hrs = U?.hrs || [];
+  if (!pool || hrs.length < 2) { host.innerHTML = ""; $("#taLevels") && ($("#taLevels").innerHTML = ""); return; }
+  /* the same scale guard as the price card: cut at the last units discontinuity */
+  let cut = 0;
+  for (let i = 1; i < hrs.length; i++) {
+    const a = hrs[i - 1].close, b = hrs[i].close;
+    if (a > 0 && b > 0 && Math.max(a / b, b / a) > 1000) cut = i;
+  }
+  const all = hrs.slice(cut).filter((h) => h.close > 0);
+  const s20 = smaByTime(all, 20), s50 = smaByTime(all, 50);
+  const startT = (all.at(-1)?.t || 0) - TA_WINDOW_DAYS * 86400;
+  const hourly = all.map((h, i) => ({ t: h.t, close: h.close, sma20: s20[i], sma50: s50[i] })).filter((r) => r.t >= startT);
+  const live = (S.live?.pointsByPool?.[pool.poolId] || []).filter((p) => p.t > (hourly.at(-1)?.t || 0));
+  const last20 = hourly.at(-1)?.sma20 ?? null, last50 = hourly.at(-1)?.sma50 ?? null;
+  const rows = [...hourly, ...live.map((p) => ({ t: p.t, close: p.close, live: true, sma20: last20, sma50: last50 }))];
+  /* swings are found across the whole on-scale history plus the live tail, so a leg
+     that began before the chart's left edge is still anchored at its real start */
+  const view = S.taView || "major";
+  const L = taLevels([...all, ...live.map((p) => ({ t: p.t, close: p.close }))], view);
+  const px = rows.at(-1).close;
+  /* four decimals down to a hundredth of a cent; exponents only below that, where a
+     fixed format would print zeros */
+  const money = (v) => (v < 0.0001 ? `$${v.toExponential(2)}` : `$${v.toFixed(4)}`);
+  const key = new Set([0.382, 0.5, 0.618]);
+
+  lineChart(host, rows, {
+    xKey: "t", yKey: "close", color: "var(--series-1)", area: false,
+    fmt: (v) => (v < 0.01 ? v.toExponential(1) : `$${v.toFixed(3)}`),
+    overlays: [
+      { key: "sma20", color: "var(--series-2)", width: 1.4 },
+      { key: "sma50", color: "var(--series-3)", width: 1.4 },
+    ],
+    refs: L ? L.fib.map((f) => ({
+      value: f.price, label: `${(f.ratio * 100).toFixed(1)}%`,
+      color: "var(--warn, #c9a227)", opacity: key.has(f.ratio) ? ".85" : ".45", width: key.has(f.ratio) ? 1.2 : 1,
+    })) : [],
+    tip: (h) => `<div class="k">${tsFmt(h.t)}${h.live ? " \u00b7 live" : ""}</div><div>${money(h.close)} per AI</div>` +
+      (isFinite(h.sma20) ? `<div class="k">20-day avg ${money(h.sma20)}</div>` : "") +
+      (isFinite(h.sma50) ? `<div class="k">50-day avg ${money(h.sma50)}</div>` : ""),
+  });
+
+  const levels = [];
+  if (L) for (const f of L.fib) levels.push({ name: `Fib ${(f.ratio * 100).toFixed(1)}%`, price: f.price, key: key.has(f.ratio) });
+  if (isFinite(last20)) levels.push({ name: "20-day avg", price: last20, key: true });
+  if (isFinite(last50)) levels.push({ name: "50-day avg", price: last50, key: true });
+  levels.sort((a, b) => b.price - a.price);
+  const below = levels.filter((l) => l.price < px), above = levels.filter((l) => l.price > px);
+  const sup = below[0], res = above.at(-1);
+  const dist = (p) => `${p >= px ? "+" : "\u2212"}${Math.abs((p / px - 1) * 100).toFixed(1)}%`;
+  const el = $("#taLevels");
+  if (!el) return;
+  const rowsHtml = [];
+  let placed = false;
+  for (const l of levels) {
+    if (!placed && l.price < px) {
+      rowsHtml.push(`<tr class="now"><td><b>AI now</b></td><td class="r mono"><b>${money(px)}</b></td><td class="r mono">\u2014</td><td></td></tr>`);
+      placed = true;
+    }
+    rowsHtml.push(`<tr${l.key ? "" : ` class="muted"`}><td>${l.name}</td><td class="r mono">${money(l.price)}</td><td class="r mono">${dist(l.price)}</td>` +
+      `<td class="${l.price < px ? "up" : "down"}">${l.price < px ? "support" : "resistance"}</td></tr>`);
+  }
+  if (!placed) rowsHtml.push(`<tr class="now"><td><b>AI now</b></td><td class="r mono"><b>${money(px)}</b></td><td class="r mono">\u2014</td><td></td></tr>`);
+  const vbtn = (k, label) => `<button aria-pressed="${view === k}" data-taview="${k}">${label}</button>`;
+  queueMicrotask(() => el.querySelectorAll("[data-taview]").forEach((b) => b.addEventListener("click", () => {
+    S.taView = b.dataset.taview; renderTaChart();
+  })));
+  el.innerHTML = `<div class="flowhead"><span class="muted">Fibonacci swing</span>
+      <span class="seg">${vbtn("major", "Major")}${vbtn("recent", "Recent")}</span></div>
+    <div class="legend">
+      <span><i style="background:var(--series-1)"></i>AI / USDG</span>
+      <span><i style="background:var(--series-2)"></i>20-day avg</span>
+      <span><i style="background:var(--series-3)"></i>50-day avg</span>
+      <span><i style="background:var(--warn, #c9a227)"></i>Fibonacci retracement</span>
+    </div>
+    <p class="muted" style="margin:6px 0 10px">${sup ? `Nearest support <b>${sup.name}</b> at ${money(sup.price)} (${dist(sup.price)})` : "No level below the current price"}; ` +
+      `${res ? `nearest resistance <b>${res.name}</b> at ${money(res.price)} (${dist(res.price)})` : "no level above it"}. ` +
+      (L ? (view === "recent"
+        ? `Recent swing: the last completed leg, ${L.up ? "up" : "down"} from ${money(L.up ? L.lo.close : L.hi.close)} (${dayFmt(L.up ? L.lo.t : L.hi.t)}) to ${money(L.up ? L.hi.close : L.lo.close)} (${dayFmt(L.up ? L.hi.t : L.lo.t)}), ${L.up ? "so the levels measure pullbacks from the high" : "so the levels measure bounces from the low"}. A swing is confirmed once price reverses ${Math.round(ZIGZAG_TURN * 100)}% from it, so these re-anchor often. `
+        : `Major swing: the run into the all-time high, from ${money(L.lo.close)} (${dayFmt(L.lo.t)}) to ${money(L.hi.close)} (${dayFmt(L.hi.t)}), the lowest close in the ${MAJOR_LOOKBACK_DAYS} days before the high. The levels measure pullbacks from that high and only move when a new high prints. `) : "") +
+      `These are levels where traders tend to place orders, which is much of why they sometimes hold; they are reference points, not a forecast.</p>
+    <div class="scroll"><table class="rank ta"><thead><tr><th>Level</th><th class="r">Price</th><th class="r">From now</th><th>Role</th></tr></thead><tbody>${rowsHtml.join("")}</tbody></table></div>`;
+}
+
 function renderPrice(feeSeries) {
   const b = S.burns;
   const pool = usdPool();
@@ -2666,14 +2905,9 @@ function renderPrice(feeSeries) {
      itself a monitor reads as broken rather than as "not yet indexed". */
   const onScale = onScaleAll;
   const offScale = cutAt;
-  const livePts = (S.live?.pointsByPool?.[pool.poolId] || []).filter((pt) => pt.t > (onScale.at(-1)?.t || 0));
-  const chartRows = [...onScale.slice(-24 * 30), ...livePts];
-  lineChart($("#cInvPrice"), chartRows, {
-    xKey: "t", yKey: "close", color: (c7 ?? 0) >= 0 ? "var(--buy)" : "var(--sell)", area: true,
-    fmt: (v) => (v < 0.01 ? v.toExponential(1) : `$${v.toFixed(3)}`),
-    tip: (h) => `<div class="k">${tsFmt(h.t)}${h.live ? " · live" : ""}</div><div>${money(h.close)} per AI</div>
-      <div class="k">market cap $${compact(h.close * (M.supply || b.totalSupply))}</div>`,
-  });
+  /* The chart is drawn by renderTaChart, which the live tick also calls, so the
+     price line, the averages and the retracement all move between index runs. */
+  try { renderTaChart(); } catch (e) { console.error("renderTaChart", e); }
 
   // Price against fundamentals: the comparison that says whether a move was earned.
   const fee7 = trailing(feeSeries, 7, (d) => d.fee), fee7p = trailing(feeSeries, 7, (d) => d.fee, 7);
