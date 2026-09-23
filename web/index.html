@@ -38,8 +38,11 @@
     <button class="tab" role="tab" id="tab-flow"      aria-controls="p-flow"      aria-selected="false">Tape</button>
     <button class="tab" role="tab" id="tab-float"     aria-controls="p-float"     aria-selected="false">Supply &amp; Holders</button>
     <button class="tab" role="tab" id="tab-bridges"   aria-controls="p-bridges"   aria-selected="false">Hub</button>
-    <button class="tab" role="tab" id="tab-treasury"  aria-controls="p-treasury"  aria-selected="false">Treasury</button>
-    <button class="tab" role="tab" id="tab-launchpad" aria-controls="p-launchpad" aria-selected="false">Launchpad</button>
+    <!-- Archived: hidden, not deleted. Their data is still indexed (the treasury task
+         also names protocol addresses site-wide, and launchpad data feeds the RWA
+         tab's runners card). Remove data-archived and hidden to bring one back. -->
+    <button class="tab" role="tab" id="tab-treasury"  aria-controls="p-treasury"  aria-selected="false" data-archived hidden>Treasury</button>
+    <button class="tab" role="tab" id="tab-launchpad" aria-controls="p-launchpad" aria-selected="false" data-archived hidden>Launchpad</button>
     <button class="tab" role="tab" id="tab-method"    aria-controls="p-method"    aria-selected="false">Method</button>
   </div>
 </nav>

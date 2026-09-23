@@ -4734,7 +4734,7 @@ function renderRwa() {
       `The hook has folded <b>$${compact(total)}</b> of fees back into its own liquidity since launch, <b>$${compact(d7)}</b> of it in the last week.
        This is the mechanism the founder calls liquidity compounding: it does not bid the price up, it thickens the book under it.
        <span class="muted">Each day's liquidity additions by the hook, converted to tokens at today's price; the operator's eighteen
-       <code>collect()</code> withdrawals of LP fees between 15 and 27 Jul are on the Treasury tab.</span>`);
+       <code>collect()</code> withdrawals of LP fees between 15 and 27 Jul are treasury withdrawals and are not counted here.</span>`);
   } else { $("#rwaCompound").innerHTML = pending; $("#cCompound").innerHTML = ""; $("#readCompound").innerHTML = ""; }
 
   /* ── cost to trade ──────────────────────────────────────────────────── */
@@ -5748,7 +5748,11 @@ function renderAll() {
 }
 
 function setupTabs() {
-  const tabs = [...document.querySelectorAll(".tab")];
+  /* a tab marked data-archived in the markup is left out entirely: no listener, and
+     its panel stays hidden, so it cannot be reached by a click or left showing */
+  const all = [...document.querySelectorAll(".tab")];
+  for (const t of all) if (t.hasAttribute("data-archived")) { t.hidden = true; $("#" + t.getAttribute("aria-controls")).hidden = true; }
+  const tabs = all.filter((t) => !t.hasAttribute("data-archived"));
   tabs.forEach((t) => t.addEventListener("click", () => {
     tabs.forEach((o) => {
       const on = o === t;
