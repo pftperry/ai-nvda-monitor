@@ -36,6 +36,116 @@ import { poolTickLadder, ladderRawAmounts } from "./depth.mjs";
 const Q96 = 2 ** 96;
 const DAY = 86400;
 const STATE_V = 1;
+const ZERO = "0x0000000000000000000000000000000000000000";
+const pad = (a) => "0x" + a.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+const topicAddr = (t) => "0x" + t.slice(26).toLowerCase();
+
+/* Where each flywheel vault token actually trades.
+
+   Holding a large share of a token's supply is not the same as capturing its
+   trading: a pool can sit on 20% of the float while every trade routes somewhere
+   cheaper. The flywheel only turns when vault-token trades go THROUGH an AI pool,
+   because that is what makes someone buy AI. So for each vault token that has an AI
+   pool, this finds every pool holding it -- AI or not, from the pool manager's
+   Initialize log, the token on either side -- and reports what share of its pooled
+   inventory and of its swaps sit in the AI pools.
+
+   Cursor-resumed: the Initialize scan and each pool's swap count extend from where
+   the last run stopped, so after the first run this is a handful of small queries. */
+/* The block a token first moved. No pool can hold a token before it has been
+   minted, so this is the true floor for finding every pool that holds it. Scanned
+   forward in windows and stopped at the first hit, and only ever run once per token:
+   the census cursor carries on from there. */
+async function firstTransferBlock(token, from, latest, deadline) {
+  const T = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+  const STEP = 4_000_000;
+  for (let a = from; a <= latest; a += STEP) {
+    if (deadline && Date.now() > deadline) return null;
+    const b = Math.min(latest, a + STEP - 1);
+    const r = await getLogsRange({ address: token, topics: [T] }, a, b, { chunk: STEP, deadline });
+    if (r.length) return parseInt(r[0].blockNumber, 16);
+  }
+  return null;
+}
+
+async function routingCensus(tokens, latest, tm, aiPoolIds, prev, opts) {
+  const deadline = opts.deadline;
+  const state = {};
+  const out = {};
+  for (const [token] of tokens) {
+    let P = prev?.[token];
+    if (!P) {
+      /* First sight of this token: find where it was born. If the budget runs out
+         before that is known, skip the token for this run rather than start from a
+         guess -- a guessed floor would be saved in the state and never revisited, so
+         an older venue it missed would stay missing for good. */
+      const born = await firstTransferBlock(token, opts.genesis ?? 0, latest, deadline);
+      if (born == null) continue;
+      P = { cursor: born - 1, pools: {}, floor: "first-transfer" };
+    }
+    if (P.cursor < latest) {
+      let reached = latest, cut = false;
+      for (const slot of [2, 3]) {
+        const topics = [TOPICS.INITIALIZE, null, null, null].slice(0, slot + 1);
+        topics[slot] = pad(token);
+        const r = await getLogsRange({ address: POOL_MANAGER, topics }, P.cursor + 1, latest, { chunk: 20_000_000, deadline });
+        for (const l of r) {
+          const c0 = topicAddr(l.topics[2]), c1 = topicAddr(l.topics[3]);
+          P.pools[l.topics[1]] ||= { c0, c1, cursor: parseInt(l.blockNumber, 16) - 1, swaps: 0, daily: {} };
+        }
+        if (r.truncated) { cut = true; reached = Math.min(reached, r.reachedBlock ?? P.cursor); }
+      }
+      P.cursor = cut ? reached : latest;
+    }
+    let pooled = 0, pooledAi = 0, swaps = 0, swapsAi = 0, wk = 0, wkAi = 0;
+    const weekAgo = Math.floor((tm.at(latest) ?? Date.now() / 1000) / DAY) * DAY - 6 * DAY;
+    const rows = [];
+    for (const [id, Q] of Object.entries(P.pools)) {
+      if (Q.cursor < latest) {
+        const r = await getLogsRange({ address: POOL_MANAGER, topics: [TOPICS.SWAP, id] }, Q.cursor + 1, latest, {
+          chunk: 5_000_000, deadline,
+          onLogs: (logs) => {
+            for (const l of logs) {
+              Q.swaps++;
+              const t = tm.at(parseInt(l.blockNumber, 16));
+              if (t != null) { const d = Math.floor(t / DAY) * DAY; Q.daily[d] = (Q.daily[d] || 0) + 1; }
+              Q.lastSqrt = decodeSwap(l).sqrtPriceX96.toString();
+            }
+          },
+        });
+        Q.cursor = r.truncated ? (r.reachedBlock ?? Q.cursor) : latest;
+      }
+      /* inventory from the position history, at the pool's last traded price; a pool
+         that has never traded has no price to value at and counts as holding none */
+      let held = 0;
+      if (Q.lastSqrt) {
+        try {
+          Q.ladder = await poolTickLadder(id, latest, Q.ladder, { deadline });
+          const { a0, a1 } = ladderRawAmounts(Q.ladder.net || {}, Number(BigInt(Q.lastSqrt)) / Q96);
+          held = (Q.c0 === token ? a0 : a1) / 1e18;
+        } catch { held = 0; }
+      }
+      const isAi = aiPoolIds.has(id);
+      const w = Object.entries(Q.daily).filter(([d]) => +d >= weekAgo).reduce((s, [, n]) => s + n, 0);
+      pooled += held; swaps += Q.swaps; wk += w;
+      if (isAi) { pooledAi += held; swapsAi += Q.swaps; wkAi += w; }
+      rows.push({ poolId: id, other: Q.c0 === token ? Q.c1 : Q.c0, ai: isAi, held: +held.toFixed(4), swaps: Q.swaps, swaps7d: w });
+    }
+    state[token] = P;
+    out[token] = {
+      pools: rows.length,
+      /* whether the census could see back to the token's birth, or only to just
+         before its AI pool; the second can miss an older non-AI venue */
+      coverage: P.floor || "first-transfer",
+      pooled: +pooled.toFixed(4), pooledInAi: +pooledAi.toFixed(4),
+      aiShareOfPooled: pooled > 0 ? +(pooledAi / pooled).toFixed(4) : null,
+      swaps, swapsInAi: swapsAi, aiShareOfSwaps: swaps ? +(swapsAi / swaps).toFixed(4) : null,
+      swaps7d: wk, swaps7dInAi: wkAi, aiShareOfSwaps7d: wk ? +(wkAi / wk).toFixed(4) : null,
+      venues: rows.sort((a, b) => b.held - a.held).slice(0, 12),
+    };
+  }
+  return { state, out };
+}
 
 export async function indexFlywheel(latest, tm, opts = {}) {
   const log = opts.log || console.log;
@@ -138,6 +248,27 @@ export async function indexFlywheel(latest, tm, opts = {}) {
     });
   }
 
+  /* Routing: for each vault token paired with AI, where does it trade at all. Started
+     from the earliest AI pool on that token less a margin, since the perps task only
+     knows vault tokens that exist and the pool manager's history before a token was
+     minted cannot contain a pool for it. */
+  let routing = null;
+  try {
+    const byToken = new Map();
+    for (const p of targets) {
+      const t = p.pairToken.toLowerCase();
+      const b = Math.max(0, (p.createdBlock || 0) - 2_000_000);
+      byToken.set(t, Math.min(byToken.get(t) ?? Infinity, b));
+    }
+    const aiIds = new Set(targets.map((p) => p.poolId));
+    const rc = await routingCensus([...byToken], latest, tm, aiIds, prev.routing, { deadline, genesis: opts.genesis });
+    state.routing = rc.state;
+    routing = Object.fromEntries(Object.entries(rc.out).map(([tok, r]) => [vaultBy.get(tok)?.symbol || tok, { token: tok, ...r }]));
+  } catch (e) {
+    log(`  flywheel: routing census skipped (${e.message})`);
+    state.routing = prev.routing;
+  }
+
   /* The daily series is the flywheel alone: the seeded pools. Two-sided venues and
      emptied pools are kept out so the line shows absorption, not trading drift. */
   const seededIds = new Set(out.filter((r) => r.kind === "seeded").map((r) => r.poolId));
@@ -194,7 +325,7 @@ export async function indexFlywheel(latest, tm, opts = {}) {
   return {
     state,
     artifact: {
-      aiUsd, aiSupply, partial, pools: out.sort((a, b) => b.netAi - a.netAi), totals, daily,
+      aiUsd, aiSupply, partial, pools: out.sort((a, b) => b.netAi - a.netAi), totals, daily, routing,
       method: "Every swap in every AI pool whose other token is a LongX vault token, from the pool's creation. The headline and the daily series cover only pools seeded single-sided with vault tokens, identified by holding the same AI that swappers paid in; two-sided trading venues and emptied pools are listed but not counted. Absorbed AI is the AI swappers paid into these pools minus the AI swappers took out; liquidity deposits and withdrawals are excluded because they are parked, not absorbed. The figure falls when vault tokens are sold back into the pools. It is not burned: the AI sits in withdrawable liquidity positions. Reserves are what the pools hold now, valued from their full position history at the live price, and include liquidity from any provider.",
     },
   };
