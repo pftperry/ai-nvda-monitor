@@ -4110,7 +4110,7 @@ function renderLong500() {
   const nav = N.daily || [];
   $("#l5NavTiles").innerHTML = `<div class="tiles four">
       ${tile("NAV now", usd(N.nowUsd), "every asset in the vault at today's prices", "", "hero")}
-      ${tile("AI in the vault", usd(V.aiUsdValue), `${n0(V.aiUnits)} AI`)}
+      ${tile("AI in the vault", usd(V.aiUsdValue), `${n0(V.aiUnits)} AI, the half of every fee not burned`)}
       ${tile("Stock in the vault", usd(V.stockUsd), `${n0(V.stocksHeld)} tokenized stocks`)}
       ${tile("From LONG 500 so far", usd(T.toVaultUsd), `${n0(T.stocksContributing)} stock${T.stocksContributing === 1 ? "" : "s"} across ${n0(T.pools)} pool${T.pools === 1 ? "" : "s"}`)}
     </div>`;
