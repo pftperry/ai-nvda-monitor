@@ -4085,7 +4085,10 @@ function renderLong500() {
   const pct = (v, d = 2) => v == null ? "\u2014" : `${(v * 100).toFixed(d)}%`;
   const since = N.sinceLaunch;
   const g = B?.genesisSupply || 1e9;
-  const removed = (B?.burned || 0) + (B?.lockedInVault || 0);
+  /* Burned only. The fee split sends exactly half to the burn and half to the vault,
+     so the two are equal by design; the vault half is already an asset in the NAV
+     card, and adding it here as well counted the same AI twice on one page. */
+  const burned = B?.burned || 0;
   const lastDay = (B?.daily || []).filter((d) => d.t < Math.floor(Date.now() / 86400000) * 86400).at(-1) || B?.daily?.at(-1);
 
   $("#l5Live").innerHTML = T.lastT ? `last trigger ${ago(T.lastT)}` : "";
@@ -4093,7 +4096,7 @@ function renderLong500() {
   const card = (lbl, val, sub, tone = "") => `<div class="l5card ${tone}"><div class="l5lbl">${lbl}</div><div class="l5val">${val}</div><div class="l5sub">${sub}</div></div>`;
   big.innerHTML = `<div class="l5grid">
       ${card("Vault NAV", usd(N.nowUsd), since?.change != null && since.baseT < (L.updatedAt || 0) - 86400 ? `<b class="${since.change >= 0 ? "up" : "down"}">${since.change >= 0 ? "+" : "\u2212"}${Math.abs(since.change * 100).toFixed(1)}%</b> since LONG 500 went live` : `${usd(V.aiUsdValue)} of AI \u00b7 ${usd(V.stockUsd)} of stock`, "gold")}
-      ${card("AI out of circulation", pct(removed / g), `${n0(removed)} AI burned or locked in the vault`, "fire")}
+      ${card("AI supply burned", pct(burned / g, 3), `${n0(burned)} AI gone for good`, "fire")}
       ${card("Stocks in the reserve", n0(V.stocksHeld), V.universe ? `of ${n0(V.universe)} stock tokens with a LONG market` : "tokenized stocks held by the vault", "blue")}
       ${card("LONG 500 pools live", n0(T.pools), `${n0(T.triggers)} trigger${T.triggers === 1 ? "" : "s"} by ${n0(T.callers)} wallet${T.callers === 1 ? "" : "s"}`, "green")}
     </div>`;
@@ -4121,17 +4124,19 @@ function renderLong500() {
       ? ` Since LONG 500 went live (${dayFmt(since.baseT)}) the change breaks down as: AI price ${usd(P.aiPrice)}, new AI locked ${usd(P.aiAdded)}, NVDA price ${usd(P.nvdaPrice)}, new NVDA ${usd(P.nvdaAdded)}, and ${usd(T.toVaultUsd)} of stock from LONG 500 itself.`
       : ` The breakdown of what moves it (AI price, new AI locked, stock added, stock price) starts from the day LONG 500 went live and fills in from tomorrow.`} History is rebuilt from the fee ledger: AI locked and NVDA received each day, at that day's prices; AI and NVDA are over 99% of the vault.</p>`;
 
-  /* AI removed from circulation, climbing */
-  const bd = (B?.daily || []).map((d) => ({ t: d.t, v: (d.cumBurnAI || 0) + (d.cumLockAI || 0) }));
+  /* AI burned, climbing */
+  const bd = (B?.daily || []).map((d) => ({ t: d.t, v: d.cumBurnAI || 0 }));
+  const done = (B?.daily || []).filter((d) => d.t < Math.floor(Date.now() / 86400000) * 86400);
+  const week = done.slice(-7).reduce((s, d) => s + (d.burnAI || 0), 0);
   $("#l5BurnTiles").innerHTML = `<div class="tiles four">
-      ${tile("Removed from circulation", pct(removed / g), `${n0(removed)} AI of ${n0(g)}`, "", "hero")}
-      ${tile("Burned", n0(B?.burned), pct((B?.burned || 0) / g, 3) + " of supply, gone for good")}
-      ${tile("Locked in the vault", n0(B?.lockedInVault), pct((B?.lockedInVault || 0) / g, 3) + " of supply")}
-      ${tile(lastDay ? `On ${dayFmt(lastDay.t)}` : "Latest day", lastDay ? `${n0((lastDay.burnAI || 0) + (lastDay.lockAI || 0))} AI` : "\u2014", lastDay ? `${n0(lastDay.burnAI)} burned + ${n0(lastDay.lockAI)} locked` : "")}
+      ${tile("Burned", pct(burned / g, 3), `${n0(burned)} AI of ${n0(g)}`, "", "hero")}
+      ${tile(lastDay ? `Burned on ${dayFmt(lastDay.t)}` : "Latest day", lastDay ? `${n0(lastDay.burnAI)} AI` : "\u2014", lastDay?.burnEvents ? `${lastDay.burnEvents} burn transaction${lastDay.burnEvents === 1 ? "" : "s"}` : "")}
+      ${tile("Burned, last 7 days", `${n0(week)} AI`, done.length >= 7 ? `about ${n0(week / 7)} AI a day` : "")}
+      ${tile("Supply now", n0(B?.totalSupply), `from ${n0(g)} at genesis`)}
     </div>`;
   if (bd.length >= 2) lineChart($("#cL5Burn"), bd, {
     xKey: "t", yKey: "v", area: true, color: "var(--sell)", fmt: (v) => `${(v / 1e6).toFixed(1)}M`, xFmt: dayFmt,
-    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${n0(r.v)} AI out of circulation</div><div class="k">${pct(r.v / g)} of supply</div>`,
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${n0(r.v)} AI burned to date</div><div class="k">${pct(r.v / g, 3)} of supply</div>`,
   });
 
   /* the reserve: chips, a composition bar, a table */
