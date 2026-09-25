@@ -500,3 +500,30 @@ table.exhibit td.chg .ar { font-size: 10px; margin-right: 4px; }
 /* technical levels around the current price */
 table.ta tr.now td { background: color-mix(in srgb, var(--series-1) 10%, transparent); }
 table.ta td { white-space: nowrap; }
+
+/* LONG 500: big numbers first */
+.l5head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.l5live { font: 11px var(--mono); color: var(--buy); }
+.l5live:not(:empty)::before { content: "\25CF  "; }
+.l5grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 12px 0 10px; }
+.l5card { border-radius: 12px; padding: 16px 16px 14px; background: var(--surface-1); border: 1px solid var(--border); position: relative; overflow: hidden; }
+.l5card::after { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--accent-c, var(--series-1)); }
+.l5card.gold { --accent-c: var(--warn, #c9a227); } .l5card.fire { --accent-c: var(--sell); } .l5card.blue { --accent-c: var(--series-2); } .l5card.green { --accent-c: var(--buy); }
+.l5lbl { font: 10.5px var(--mono); text-transform: uppercase; letter-spacing: .09em; color: var(--text-muted); }
+.l5val { font: 700 34px/1.05 var(--mono); letter-spacing: -.03em; margin: 8px 0 6px; font-variant-numeric: tabular-nums; }
+.l5sub { font-size: 12px; color: var(--text-secondary); }
+.l5mini { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+.l5m { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+.l5m span { font: 10px var(--mono); color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.l5m b { font: 650 16px var(--mono); font-variant-numeric: tabular-nums; }
+.l5chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+.l5chip { font: 600 12px var(--mono); padding: 5px 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); }
+.l5chip.new { background: color-mix(in srgb, var(--buy) 18%, transparent); border-color: var(--buy); color: var(--buy); }
+.l5chip.sm { font-size: 10.5px; padding: 1px 7px; }
+.l5mix { display: flex; height: 14px; border-radius: 7px; overflow: hidden; margin: 12px 0; background: var(--surface-2); }
+.l5mix i { display: block; height: 100%; }
+.l5feed { display: grid; gap: 4px; }
+.l5f { display: grid; grid-template-columns: 70px 1fr auto; gap: 10px; align-items: center; padding: 7px 10px; background: var(--surface-2); border-radius: 8px; font-size: 12.5px; }
+.l5ft { color: var(--text-muted); font-size: 11px; }
+@media (max-width: 760px) { .l5grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .l5mini { grid-template-columns: repeat(3, minmax(0, 1fr)); } .l5val { font-size: 26px; } }
+@media (max-width: 420px) { .l5mini { grid-template-columns: repeat(2, minmax(0, 1fr)); } .l5f { grid-template-columns: 1fr; gap: 2px; } }

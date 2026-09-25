@@ -26,6 +26,7 @@ import { indexBigTrades } from "./tasks/bigtrades.mjs";
 import { indexTraders } from "./tasks/traders.mjs";
 import { classifyAccounts, CONTRACT } from "./tasks/accounts.mjs";
 import { indexFlywheel } from "./tasks/flywheel.mjs";
+import { indexLong500 } from "./tasks/long500.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -676,6 +677,36 @@ if (!flag("no-flywheel")) {
     }
   } catch (e) {
     softFail("flywheel", e, "the previous flywheel.json stays in place");
+  }
+}
+
+/* LONG 500: stock fees from new stock-paired pools into the AI Community Vault, the
+   buybacks and burns of each pool's paired token, and the vault's NAV. Every run: it
+   is one event scan behind a cursor, and the point is a live counter. */
+if (!flag("no-long500")) {
+  step("Measuring LONG 500");
+  try {
+    const R = readData("rwa.json"), B = readData("burns.json");
+    const toks = R?.tokens || [];
+    const stockPrices = new Map(toks.filter((t) => t.priceUsd > 0).map((t) => [t.token.toLowerCase(), t.priceUsd]));
+    const out = await indexLong500(latest, tm, {
+      state: store.get("long500"),
+      stockPrices,
+      /* the vault's stock holdings, as the stock census last read them; airdropped
+         tokens that are not stock tokens never appear here */
+      vaultStocks: toks.filter((t) => t.inVault > 0).map((t) => ({ token: t.token.toLowerCase(), symbol: t.symbol, units: t.inVault, priceUsd: t.priceUsd ?? null })),
+      universe: toks.filter((t) => (t.poolsLong || 0) > 0).length || null,
+      vaultAi: B?.vault?.aiBalance ?? null,
+      aiUsd: readData("prices.json")?.aiUsd ?? null,
+      burnsDaily: B?.daily || [],
+      priceAt: usdPriceLookup(flowOut),
+      nvdaCloses: R?.stockPx?.stocks?.[C.NVDA.toLowerCase()]?.close || [],
+      deadline: Date.now() + opt("long500-budget", 90) * 1000,
+    });
+    store.set("long500", out.state);
+    writeData("long500.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact });
+  } catch (e) {
+    softFail("LONG 500", e, "the previous long500.json stays in place");
   }
 }
 

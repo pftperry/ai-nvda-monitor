@@ -607,7 +607,7 @@ function table(host, cols, rows) {
 /* ── data ───────────────────────────────────────────────────────────────── */
 const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, names: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json", "long500.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -4066,6 +4066,103 @@ const tile = (lbl, val, note, cls = "", extra = "") => `<div class="ctile ${extr
 /* The two since-inception series: stock in DEX liquidity with LONG's portion, and
    LONG's share of stock volume. Both from rwa.series (complete days, tracked stocks,
    today's prices); the card says so rather than pretending to a full census. */
+/* The LONG 500 tab. Big numbers first, because that is what gets read and shared,
+   but every one of them measured: the headline leads with what is already large
+   (the vault's NAV, the AI taken out of circulation, the stocks in the reserve) and
+   puts the programme's own counters beside them, where they tick up as pools
+   trigger. Nothing here quotes what the programme is expected to do. */
+function renderLong500() {
+  const L = S.long500, B = S.burns;
+  const big = $("#l5Big");
+  if (!big) return;
+  if (!L?.totals) { big.innerHTML = `<p class="muted">LONG 500 figures build on the next index run.</p>`; return; }
+  const T = L.totals, V = L.reserve || {}, N = L.nav || {}, D = T.last24h || {};
+  /* cents at most below a thousand, and dust named as dust rather than printed to
+     four decimals: at launch most triggers move fractions of a cent */
+  const usd = (v) => v == null ? "\u2014" : v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}K` : v >= 0.01 ? `$${v.toFixed(2)}` : v > 0 ? "<$0.01" : "$0";
+  const stockPx = new Map((S.rwa?.tokens || []).filter((t) => t.priceUsd > 0).map((t) => [t.token.toLowerCase(), t.priceUsd]));
+  const n0 = (v) => v == null ? "\u2014" : Math.round(v).toLocaleString();
+  const pct = (v, d = 2) => v == null ? "\u2014" : `${(v * 100).toFixed(d)}%`;
+  const since = N.sinceLaunch;
+  const g = B?.genesisSupply || 1e9;
+  const removed = (B?.burned || 0) + (B?.lockedInVault || 0);
+  const lastDay = (B?.daily || []).filter((d) => d.t < Math.floor(Date.now() / 86400000) * 86400).at(-1) || B?.daily?.at(-1);
+
+  $("#l5Live").innerHTML = T.lastT ? `last trigger ${ago(T.lastT)}` : "";
+
+  const card = (lbl, val, sub, tone = "") => `<div class="l5card ${tone}"><div class="l5lbl">${lbl}</div><div class="l5val">${val}</div><div class="l5sub">${sub}</div></div>`;
+  big.innerHTML = `<div class="l5grid">
+      ${card("Vault NAV", usd(N.nowUsd), since?.change != null && since.baseT < (L.updatedAt || 0) - 86400 ? `<b class="${since.change >= 0 ? "up" : "down"}">${since.change >= 0 ? "+" : "\u2212"}${Math.abs(since.change * 100).toFixed(1)}%</b> since LONG 500 went live` : `${usd(V.aiUsdValue)} of AI \u00b7 ${usd(V.stockUsd)} of stock`, "gold")}
+      ${card("AI out of circulation", pct(removed / g), `${n0(removed)} AI burned or locked in the vault`, "fire")}
+      ${card("Stocks in the reserve", n0(V.stocksHeld), V.universe ? `of ${n0(V.universe)} stock tokens with a LONG market` : "tokenized stocks held by the vault", "blue")}
+      ${card("LONG 500 pools live", n0(T.pools), `${n0(T.triggers)} trigger${T.triggers === 1 ? "" : "s"} by ${n0(T.callers)} wallet${T.callers === 1 ? "" : "s"}`, "green")}
+    </div>`;
+  $("#l5Small").innerHTML = `<div class="l5mini">
+      ${[["24h buybacks", usd(D.buybackUsd)], ["24h burns", usd(D.burnedUsd)], ["24h to the reserve", usd(D.toVaultUsd)],
+         ["Total bought back", usd(T.buybackUsd)], ["Total burned", usd(T.burnedUsd)], ["Stocks contributing", n0(T.stocksContributing)]]
+        .map(([k, v]) => `<div class="l5m"><span>${k}</span><b>${v}</b></div>`).join("")}
+    </div>`;
+
+  /* NAV over time, with where the change since launch came from */
+  const nav = N.daily || [];
+  $("#l5NavTiles").innerHTML = `<div class="tiles four">
+      ${tile("NAV now", usd(N.nowUsd), "every asset in the vault at today's prices", "", "hero")}
+      ${tile("AI in the vault", usd(V.aiUsdValue), `${n0(V.aiUnits)} AI`)}
+      ${tile("Stock in the vault", usd(V.stockUsd), `${n0(V.stocksHeld)} tokenized stocks`)}
+      ${tile("From LONG 500 so far", usd(T.toVaultUsd), `${n0(T.stocksContributing)} stock${T.stocksContributing === 1 ? "" : "s"} across ${n0(T.pools)} pool${T.pools === 1 ? "" : "s"}`)}
+    </div>`;
+  if (nav.length >= 2) lineChart($("#cL5Nav"), nav, {
+    xKey: "t", yKey: "navUsd", area: true, color: "var(--series-1)", fmt: (v) => usd(v), xFmt: dayFmt,
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>NAV ${usd(r.navUsd)}</div><div class="k">${n0(r.aiUnits)} AI at $${r.aiPx.toFixed(4)} \u00b7 ${r.nvdaUnits.toFixed(1)} NVDA</div>`,
+  });
+  else $("#cL5Nav").innerHTML = "";
+  const P = since?.parts;
+  $("#l5NavRead").innerHTML = `<p class="muted" style="margin:8px 0 0">The vault is mostly AI by value, so its dollar NAV moves mostly with AI's own price.${P && since.baseT < (L.updatedAt || 0) - 86400
+      ? ` Since LONG 500 went live (${dayFmt(since.baseT)}) the change breaks down as: AI price ${usd(P.aiPrice)}, new AI locked ${usd(P.aiAdded)}, NVDA price ${usd(P.nvdaPrice)}, new NVDA ${usd(P.nvdaAdded)}, and ${usd(T.toVaultUsd)} of stock from LONG 500 itself.`
+      : ` The breakdown of what moves it (AI price, new AI locked, stock added, stock price) starts from the day LONG 500 went live and fills in from tomorrow.`} History is rebuilt from the fee ledger: AI locked and NVDA received each day, at that day's prices; AI and NVDA are over 99% of the vault.</p>`;
+
+  /* AI removed from circulation, climbing */
+  const bd = (B?.daily || []).map((d) => ({ t: d.t, v: (d.cumBurnAI || 0) + (d.cumLockAI || 0) }));
+  $("#l5BurnTiles").innerHTML = `<div class="tiles four">
+      ${tile("Removed from circulation", pct(removed / g), `${n0(removed)} AI of ${n0(g)}`, "", "hero")}
+      ${tile("Burned", n0(B?.burned), pct((B?.burned || 0) / g, 3) + " of supply, gone for good")}
+      ${tile("Locked in the vault", n0(B?.lockedInVault), pct((B?.lockedInVault || 0) / g, 3) + " of supply")}
+      ${tile(lastDay ? `On ${dayFmt(lastDay.t)}` : "Latest day", lastDay ? `${n0((lastDay.burnAI || 0) + (lastDay.lockAI || 0))} AI` : "\u2014", lastDay ? `${n0(lastDay.burnAI)} burned + ${n0(lastDay.lockAI)} locked` : "")}
+    </div>`;
+  if (bd.length >= 2) lineChart($("#cL5Burn"), bd, {
+    xKey: "t", yKey: "v", area: true, color: "var(--sell)", fmt: (v) => `${(v / 1e6).toFixed(1)}M`, xFmt: dayFmt,
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${n0(r.v)} AI out of circulation</div><div class="k">${pct(r.v / g)} of supply</div>`,
+  });
+
+  /* the reserve: chips, a composition bar, a table */
+  const stocks = (V.stocks || []).filter((s) => s.units > 0);
+  $("#l5Chips").innerHTML = `<div class="l5chips">${stocks.map((s) => `<span class="l5chip${s.long500Units > 0 ? " new" : ""}" title="${s.long500Units > 0 ? "added by LONG 500" : "held before LONG 500"}">${s.symbol}</span>`).join("")}</div>
+    <p class="muted" style="margin:6px 0 0"><span class="l5chip new sm">highlighted</span> stocks were added by LONG 500 pools. Concentration: the largest holding is ${pct(V.top1, 1)} of the stock value (HHI ${n0(V.hhi)}), which is what a diverse reserve would bring down.</p>`;
+  const tot = stocks.reduce((s, x) => s + (x.usd || 0), 0);
+  const palette = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--buy)", "var(--warn, #c9a227)"];
+  $("#l5Mix").innerHTML = tot > 0 ? `<div class="l5mix">${stocks.map((s, i) => {
+      const w = (s.usd || 0) / tot * 100;
+      return w > 0 ? `<i style="width:${w.toFixed(2)}%;background:${palette[i % palette.length]}" title="${s.symbol} ${w.toFixed(1)}%"></i>` : "";
+    }).join("")}</div>` : "";
+  $("#tL5Reserve").innerHTML = `<thead><tr><th>Stock</th><th class="r">Held</th><th class="r">Value</th><th class="r">Share</th><th class="r" title="the part of the holding LONG 500 sent">From LONG 500</th></tr></thead><tbody>` +
+    stocks.map((s) => `<tr><td><b>${s.symbol}</b></td><td class="r mono">${s.units.toPrecision(4)}</td><td class="r mono">${usd(s.usd)}</td>
+      <td class="r mono">${tot > 0 ? pct((s.usd || 0) / tot, 1) : "\u2014"}</td><td class="r mono ${s.long500Units > 0 ? "up" : "muted"}">${s.long500Units > 0 ? usd(s.long500Usd) : "\u2014"}</td></tr>`).join("") + "</tbody>";
+
+  /* pools and the live feed */
+  $("#tL5Pools").innerHTML = `<thead><tr><th>Pool</th><th class="r">Triggers</th><th class="r">To the reserve</th><th class="r">Burned</th><th class="r" title="of the paired token's supply before these burns">Of supply</th><th class="r">Last</th></tr></thead><tbody>` +
+    (L.pools || []).map((p) => `<tr><td><b>${p.pairedSymbol}</b> <span class="muted">/ ${p.stockSymbol}</span></td>
+      <td class="r mono">${p.triggers}</td><td class="r mono up">${usd(p.toVaultUsd)}</td>
+      <td class="r mono">${compact(p.pairedBurned)} <span class="muted">${usd(p.burnedUsd)}</span></td>
+      <td class="r mono">${p.burnedPctOfSupply == null ? "\u2014" : pct(p.burnedPctOfSupply, p.burnedPctOfSupply < 0.001 ? 4 : 2)}</td>
+      <td class="r mono muted">${p.last ? ago(p.last) : "\u2014"}</td></tr>`).join("") + "</tbody>";
+  $("#l5Feed").innerHTML = `<div class="l5feed">${(L.recent || []).slice(0, 12).map((x) => `<div class="l5f">
+      <span class="l5ft mono">${x.t ? ago(x.t) : ""}</span>
+      <span><b>${compact(x.pairedBurned)} ${x.pairedSymbol}</b> burned \u00b7 <b class="up">${stockPx.has(x.stock) ? usd(x.stockToVault * stockPx.get(x.stock)) : x.stockToVault.toPrecision(3)} of ${x.stockSymbol}</b> to the reserve</span>
+      <span class="mono muted" title="${x.tx}">${x.tx.slice(0, 10)}</span>
+    </div>`).join("")}</div>`;
+  $("#l5Read").innerHTML = `<p class="muted" style="margin:8px 0 0">Read from the LONG 500 module's own event, one record per trigger: stock collected, the half sent to the vault, the half spent buying back the pool's token, and the token burned. Stock is valued at today's prices; burns at the price each trigger's own buyback paid. Tokens airdropped to the vault that are not stocks are left out.</p>`;
+}
+
 function renderSince(R, pending) {
   const Z = R?.series, host = $("#rwaSince");
   if (!Z?.days?.length) { host.innerHTML = pending; for (const id of ["#cChainTvl", "#cVolShare", "#cNvdaMint", "#readSince"]) $(id).innerHTML = ""; return; }
@@ -5757,6 +5854,7 @@ function renderAll() {
   renderInvestor(); renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
   try { renderRwa(); } catch (e) { console.error("renderRwa", e); }
   try { renderBacking(); } catch (e) { console.error("renderBacking", e); }
+  try { renderLong500(); } catch (e) { console.error("renderLong500", e); }
   try { renderRevenue(); } catch (e) { console.error("renderRevenue", e); }
   try { renderDistribution(); } catch (e) { console.error("renderDistribution", e); }
   try { renderHolders(); } catch (e) { console.error("renderHolders", e); /* optional; never blank the tab */ }

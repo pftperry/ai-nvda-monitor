@@ -33,6 +33,7 @@
 <nav class="tabs">
   <div class="inner" role="tablist">
     <button class="tab" role="tab" id="tab-investor"  aria-controls="p-investor"  aria-selected="true">RWA</button>
+    <button class="tab" role="tab" id="tab-long500"   aria-controls="p-long500"   aria-selected="false">LONG 500</button>
     <button class="tab" role="tab" id="tab-backing"   aria-controls="p-backing"   aria-selected="false">Backing</button>
     <button class="tab" role="tab" id="tab-valuation" aria-controls="p-valuation" aria-selected="false">Valuation</button>
     <button class="tab" role="tab" id="tab-flow"      aria-controls="p-flow"      aria-selected="false">Tape</button>
@@ -133,6 +134,51 @@
       <div class="chart" id="cRunners"></div>
       <div id="takeRunners"></div>
       <div class="scroll"><table id="tRunners"></table></div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── LONG 500: stock fees into the AI reserve ───────────────────────── -->
+  <section class="panel" id="p-long500" role="tabpanel" aria-labelledby="tab-long500" hidden>
+    <div class="card l5hero">
+      <div class="l5head">
+        <h3>The LONG 500</h3>
+        <span class="l5live" id="l5Live"></span>
+      </div>
+      <p class="sub">Every new stock-paired pool sends a slice of its stock-token fees to the AI Community Vault and spends another slice buying back and burning its own token. Anyone can trigger it, any time.</p>
+      <div id="l5Big"></div>
+      <div id="l5Small"></div>
+    </div>
+
+    <div class="card">
+      <h3>AI Community Vault</h3>
+      <p class="sub">What the vault holds, valued each day: AI locked by the fee split plus the stock it has accumulated.</p>
+      <div id="l5NavTiles"></div>
+      <div class="chart" id="cL5Nav"></div>
+      <div id="l5NavRead"></div>
+    </div>
+
+    <div class="card">
+      <h3>AI taken out of circulation</h3>
+      <p class="sub">Every AI fee is split: half burned, half locked in the vault. Both leave the circulating supply.</p>
+      <div id="l5BurnTiles"></div>
+      <div class="chart" id="cL5Burn"></div>
+    </div>
+
+    <div class="card">
+      <h3>The reserve</h3>
+      <p class="sub">The tokenized stocks the vault holds, and which of them LONG 500 has added.</p>
+      <div id="l5Chips"></div>
+      <div id="l5Mix"></div>
+      <div class="scroll"><table id="tL5Reserve" class="rank"></table></div>
+    </div>
+
+    <div class="card">
+      <h3>Pools feeding the reserve</h3>
+      <p class="sub">Each LONG 500 pool: what it has sent to the vault, and how much of its own token it has bought back and burned.</p>
+      <div class="scroll"><table id="tL5Pools" class="rank"></table></div>
+      <h4 class="subhead">Latest triggers</h4>
+      <div id="l5Feed"></div>
+      <div id="l5Read"></div>
     </div>
   </section>
 
