@@ -150,11 +150,38 @@
     </div>
 
     <div class="card">
+      <h3>Protocol-owned liquidity</h3>
+      <p class="sub">Liquidity the LONG hook itself owns in AI's pools, seeded at launch and grown by compounding fees back in. It is the depth under AI's price, not money in the vault, and it is counted separately from the vault below.</p>
+      <div id="l5PolTiles"></div>
+      <div class="scroll"><table id="tL5Pol" class="rank"></table></div>
+      <div id="l5PolRead"></div>
+    </div>
+
+    <div class="card">
+      <h3>LONG 500 progress</h3>
+      <p class="sub">The programme on its own scale, from its first trigger. Running totals, stepping up each time a pool triggers and flat in between.</p>
+      <div class="l5charts">
+        <div><h4 class="subhead">Stock sent to the AI reserve</h4><div class="chart small" id="cL5Vault"></div></div>
+        <div><h4 class="subhead">Paired tokens bought back and burned</h4><div class="chart small" id="cL5Burned"></div></div>
+        <div><h4 class="subhead">Pools and stocks feeding the reserve</h4>
+          <div class="legend"><span><i style="background:var(--series-1)"></i>Pools</span><span><i style="background:var(--series-2)"></i>Stocks</span></div>
+          <div class="chart small" id="cL5Pools"></div></div>
+        <div><h4 class="subhead">Triggers</h4><div class="chart small" id="cL5Trig"></div></div>
+      </div>
+      <div id="l5ProgRead"></div>
+    </div>
+
+    <div class="card">
       <h3>AI Community Vault</h3>
       <p class="sub">What the vault holds, valued each day: AI locked by the fee split plus the stock it has accumulated.</p>
       <div id="l5NavTiles"></div>
       <div class="chart" id="cL5Nav"></div>
       <div id="l5NavRead"></div>
+      <h4 class="subhead">Where the vault's inflows come from</h4>
+      <div id="l5SrcTiles"></div>
+      <div class="legend"><span><i style="background:var(--mid)"></i>Original fee split (AI and NVDA)</span><span><i style="background:var(--buy)"></i>LONG 500 (stock)</span></div>
+      <div class="chart small" id="cL5Src"></div>
+      <div id="l5SrcRead"></div>
     </div>
 
     <div class="card">

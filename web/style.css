@@ -527,3 +527,23 @@ table.ta td { white-space: nowrap; }
 .l5ft { color: var(--text-muted); font-size: 11px; }
 @media (max-width: 760px) { .l5grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .l5mini { grid-template-columns: repeat(3, minmax(0, 1fr)); } .l5val { font-size: 26px; } }
 @media (max-width: 420px) { .l5mini { grid-template-columns: repeat(2, minmax(0, 1fr)); } .l5f { grid-template-columns: 1fr; gap: 2px; } }
+
+/* LONG 500 progress: four small charts, two across, one across on a phone */
+.l5charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; }
+@media (max-width: 760px) { .l5charts { grid-template-columns: 1fr; } }
+
+/* LONG 500: the total banner */
+.l5total { margin: 12px 0 4px; padding: 18px 18px 14px; border-radius: 14px; border: 1px solid var(--border);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--buy) 10%, var(--surface-1)), var(--surface-1)); }
+.l5tl { font: 11px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--text-muted); }
+.l5tv { font: 750 48px/1.05 var(--mono); letter-spacing: -.035em; margin: 6px 0 12px; font-variant-numeric: tabular-nums; }
+.l5bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--surface-2); }
+.l5bar i { display: block; height: 100%; }
+.l5tk { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 6px; font-size: 12.5px; color: var(--text-secondary); }
+.l5tk i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.l5tk b { color: var(--text-primary); font-family: var(--mono); font-weight: 650; margin-left: 4px; }
+.l5ts { font-size: 11.5px; color: var(--text-muted); }
+@media (max-width: 760px) { .l5tv { font-size: 36px; } }
+
+/* a trigger the page read live, ahead of the next index run */
+.l5f.live { box-shadow: inset 3px 0 0 var(--buy); }

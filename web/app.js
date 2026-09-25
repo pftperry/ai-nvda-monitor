@@ -4071,12 +4071,67 @@ const tile = (lbl, val, note, cls = "", extra = "") => `<div class="ctile ${extr
    (the vault's NAV, the AI taken out of circulation, the stocks in the reserve) and
    puts the programme's own counters beside them, where they tick up as pools
    trigger. Nothing here quotes what the programme is expected to do. */
+/* LIVE: triggers newer than the last index run, read straight from the chain.
+   The index runs about every fifteen minutes; a trigger is one log on one contract,
+   so the page asks for anything after the artifact's cursor every thirty seconds and
+   decodes it exactly as the indexer does, with the token decimals the artifact
+   carries. Only the counters and the feed use these -- charts and tables wait for
+   the next index run, which then absorbs them, so nothing is counted twice. */
+const L5_MODULE = "0x80b4039a3851a6a369a5e63eaa4365b611dbe5d6";
+const L5_TRIGGER = "0x2ae758d637377505a78ed94a6eec59540aa25a87fb2664a5dd8b0acfeb369413";
+async function refreshLong500Live() {
+  const L = S.long500;
+  if (!L?.cursor) return;
+  try {
+    const head = parseInt(await rpcCall("eth_blockNumber", []), 16);
+    const from = Math.max(L.cursor + 1, head - Math.round((12 * 3600) / SEC_PER_BLOCK));
+    if (head < from) { S.l5live = []; return; }
+    const logs = await rpcCall("eth_getLogs", [{ address: L5_MODULE, topics: [L5_TRIGGER], fromBlock: "0x" + from.toString(16), toBlock: "0x" + head.toString(16) }]);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const meta = L.meta || {};
+    const decOf = (a) => meta[a]?.decimals ?? (S.rwa?.tokens || []).find((t) => t.token.toLowerCase() === a)?.decimals ?? 18;
+    const symOf = (a) => meta[a]?.symbol || (S.rwa?.tokens || []).find((t) => t.token.toLowerCase() === a)?.symbol || a.slice(0, 8);
+    const w = (d, i) => BigInt("0x" + d.slice(2 + i * 64, 2 + (i + 1) * 64));
+    const ta = (t) => "0x" + t.slice(26).toLowerCase();
+    S.l5live = (logs || []).map((l) => {
+      const stock = ta("0x" + l.data.slice(2, 66)), paired = ta(l.topics[2]);
+      const sd = 10 ** decOf(stock), pd = 10 ** decOf(paired), block = parseInt(l.blockNumber, 16);
+      return {
+        live: true, block, tx: l.transactionHash, t: nowSec - Math.round((head - block) * SEC_PER_BLOCK),
+        caller: ta(l.topics[1]), paired, pool: l.topics[3], stock, pairedSymbol: symOf(paired), stockSymbol: symOf(stock),
+        pairedFee: Number(w(l.data, 1)) / pd, stockFee: Number(w(l.data, 2)) / sd, stockToVault: Number(w(l.data, 3)) / sd,
+        stockToBuyback: Number(w(l.data, 4)) / sd, pairedBought: Number(w(l.data, 5)) / pd, pairedBurned: Number(w(l.data, 6)) / pd,
+      };
+    });
+    if (!$("#p-long500").hidden) renderLong500();
+  } catch { /* a failed poll keeps the last good figures */ }
+}
+
 function renderLong500() {
   const L = S.long500, B = S.burns;
   const big = $("#l5Big");
   if (!big) return;
   if (!L?.totals) { big.innerHTML = `<p class="muted">LONG 500 figures build on the next index run.</p>`; return; }
-  const T = L.totals, V = L.reserve || {}, N = L.nav || {}, D = T.last24h || {};
+  const T0 = L.totals, V = L.reserve || {}, N = L.nav || {};
+  /* fold in anything the live poll found past the artifact's cursor */
+  const pxL = new Map((S.rwa?.tokens || []).filter((t) => t.priceUsd > 0).map((t) => [t.token.toLowerCase(), t.priceUsd]));
+  const live = (S.l5live || []).filter((x) => x.block > (L.cursor || 0));
+  const add = { triggers: live.length, toVaultUsd: 0, buybackUsd: 0, burnedUsd: 0 };
+  for (const x of live) {
+    const px = pxL.get(x.stock), pp = x.pairedBought > 0 ? x.stockToBuyback / x.pairedBought : null;
+    if (px != null) { add.toVaultUsd += x.stockToVault * px; add.buybackUsd += x.stockToBuyback * px; if (pp != null) add.burnedUsd += x.pairedBurned * pp * px; }
+  }
+  const poolIds = new Set([...(L.pools || []).map((p) => p.pool), ...live.map((x) => x.pool)]);
+  const callerIds = new Set([...live.map((x) => x.caller)]);
+  const T = { ...T0,
+    triggers: T0.triggers + add.triggers, pools: poolIds.size,
+    callers: T0.callers + [...callerIds].filter((c) => !(L.recent || []).some((r) => r.caller === c)).length,
+    toVaultUsd: T0.toVaultUsd + add.toVaultUsd, buybackUsd: T0.buybackUsd + add.buybackUsd, burnedUsd: T0.burnedUsd + add.burnedUsd,
+    lastT: Math.max(T0.lastT || 0, ...live.map((x) => x.t)),
+    last24h: { ...(T0.last24h || {}), triggers: (T0.last24h?.triggers || 0) + add.triggers,
+      toVaultUsd: (T0.last24h?.toVaultUsd || 0) + add.toVaultUsd, buybackUsd: (T0.last24h?.buybackUsd || 0) + add.buybackUsd, burnedUsd: (T0.last24h?.burnedUsd || 0) + add.burnedUsd },
+  };
+  const D = T.last24h || {};
   /* cents at most below a thousand, and dust named as dust rather than printed to
      four decimals: at launch most triggers move fractions of a cent */
   const usd = (v) => v == null ? "\u2014" : v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}K` : v >= 0.01 ? `$${v.toFixed(2)}` : v > 0 ? "<$0.01" : "$0";
@@ -4091,25 +4146,50 @@ function renderLong500() {
   const burned = B?.burned || 0;
   const lastDay = (B?.daily || []).filter((d) => d.t < Math.floor(Date.now() / 86400000) * 86400).at(-1) || B?.daily?.at(-1);
 
-  $("#l5Live").innerHTML = T.lastT ? `last trigger ${ago(T.lastT)}` : "";
+  $("#l5Live").innerHTML = T.lastT ? `last trigger ${ago(T.lastT)}${live.length ? ` \u00b7 ${live.length} new since the last index` : ""}` : "";
 
   const card = (lbl, val, sub, tone = "") => `<div class="l5card ${tone}"><div class="l5lbl">${lbl}</div><div class="l5val">${val}</div><div class="l5sub">${sub}</div></div>`;
-  big.innerHTML = `<div class="l5grid">
-      ${card("Vault NAV", usd(N.nowUsd), since?.change != null && since.baseT < (L.updatedAt || 0) - 86400 ? `<b class="${since.change >= 0 ? "up" : "down"}">${since.change >= 0 ? "+" : "\u2212"}${Math.abs(since.change * 100).toFixed(1)}%</b> since LONG 500 went live` : `${usd(V.aiUsdValue)} of AI \u00b7 ${usd(V.stockUsd)} of stock`, "gold")}
+  /* Three separate numbers, in this order and never added together: the liquidity
+     the protocol owns in AI's pools, what LONG 500 has sent, and the vault's total.
+     Protocol-owned liquidity is not in the vault -- it is the pool depth the hook
+     owns -- so summing it with the vault would count two different things as one. */
+  const Dp = S.depth, pol = Dp?.hookTvlUsd ?? null;
+  const flag = (Dp?.pools || []).find((p) => p.poolId === S.meta?.contracts?.aiNvdaPool);
+  const nvdaHeld = ((S.rwa?.backing?.backfill?.pools || {})["0x2e8c31162b855a2ffa90f6f8634643ad6f111e18"] || {}).unitsNow;
+  const polNvda = nvdaHeld && flag?.hookShare != null ? nvdaHeld * flag.hookShare : null;
+  /* TOTAL $AI LIQUIDITY: what AI itself owns -- the liquidity the protocol holds in
+     AI's pools plus the Community Vault. Outside LPs are left out: that is other
+     people's money sitting in AI's pools, withdrawable whenever they like, and
+     counting it overstated the total by about $5M. The two parts that are counted do
+     not overlap: the vault was checked on chain and owns no position in AI's pools. */
+  const poolTvl = Dp?.tvlUsd ?? null;
+  const outside = poolTvl != null && pol != null ? Math.max(0, poolTvl - pol) : null;
+  const vaultTot = N.nowUsd ?? null;
+  const grand = pol != null && vaultTot != null ? pol + vaultTot : null;
+  const parts = [["Protocol-owned liquidity", pol, "var(--warn, #c9a227)"], ["Community Vault", vaultTot, "var(--buy)"]];
+  const banner = grand == null ? "" : `<div class="l5total">
+      <div class="l5tl">Total $AI liquidity</div>
+      <div class="l5tv">${usd(grand)}</div>
+      <div class="l5bar">${parts.map(([k, v, c]) => v > 0 ? `<i style="width:${(v / grand * 100).toFixed(2)}%;background:${c}" title="${k} ${usd(v)}"></i>` : "").join("")}</div>
+      <div class="l5tk">${parts.map(([k, v, c]) => `<span><i style="background:${c}"></i>${k} <b>${usd(v)}</b></span>`).join("")}</div>
+      <div class="l5ts">What AI owns: the protocol's liquidity across ${n0(Dp.pools?.length)} indexed AI pools plus everything in the Community Vault, including the NVDA it has accumulated. Not included: ${usd(outside)} that outside LPs have in AI's pools, which is theirs, not AI's.</div>
+    </div>`;
+  big.innerHTML = banner + `<div class="l5grid">
+      ${card("Protocol-owned liquidity", usd(pol), pol != null ? `held by the LONG hook across AI's pools${polNvda ? ` \u00b7 about ${n0(polNvda)} NVDA` : ""}` : "measured on the next depth run", "gold")}
+      ${card("LONG 500 value", usd(T.toVaultUsd), `stock sent to the AI reserve by ${n0(T.pools)} pool${T.pools === 1 ? "" : "s"} \u00b7 ${n0(T.triggers)} trigger${T.triggers === 1 ? "" : "s"}`, "green")}
+      ${card("Community Vault total", usd(N.nowUsd), since?.change != null && since.baseT < (L.updatedAt || 0) - 86400 ? `<b class="${since.change >= 0 ? "up" : "down"}">${since.change >= 0 ? "+" : "\u2212"}${Math.abs(since.change * 100).toFixed(1)}%</b> since LONG 500 went live` : `${usd(V.aiUsdValue)} of AI \u00b7 ${usd(V.stockUsd)} of stock`, "blue")}
       ${card("AI supply burned", pct(burned / g, 3), `${n0(burned)} AI gone for good`, "fire")}
-      ${card("Stocks in the reserve", n0(V.stocksHeld), V.universe ? `of ${n0(V.universe)} stock tokens with a LONG market` : "tokenized stocks held by the vault", "blue")}
-      ${card("LONG 500 pools live", n0(T.pools), `${n0(T.triggers)} trigger${T.triggers === 1 ? "" : "s"} by ${n0(T.callers)} wallet${T.callers === 1 ? "" : "s"}`, "green")}
     </div>`;
   $("#l5Small").innerHTML = `<div class="l5mini">
-      ${[["24h buybacks", usd(D.buybackUsd)], ["24h burns", usd(D.burnedUsd)], ["24h to the reserve", usd(D.toVaultUsd)],
-         ["Total bought back", usd(T.buybackUsd)], ["Total burned", usd(T.burnedUsd)], ["Stocks contributing", n0(T.stocksContributing)]]
+      ${[["LONG 500 pools", n0(T.pools)], ["Stocks in the reserve", n0(V.stocksHeld)], ["24h buybacks", usd(D.buybackUsd)],
+         ["24h burns", usd(D.burnedUsd)], ["Total bought back", usd(T.buybackUsd)], ["Total burned", usd(T.burnedUsd)]]
         .map(([k, v]) => `<div class="l5m"><span>${k}</span><b>${v}</b></div>`).join("")}
     </div>`;
 
   /* NAV over time, with where the change since launch came from */
   const nav = N.daily || [];
   $("#l5NavTiles").innerHTML = `<div class="tiles four">
-      ${tile("NAV now", usd(N.nowUsd), "every asset in the vault at today's prices", "", "hero")}
+      ${tile("Vault total", usd(N.nowUsd), "every asset in the vault at today's prices", "", "hero")}
       ${tile("AI in the vault", usd(V.aiUsdValue), `${n0(V.aiUnits)} AI, the half of every fee not burned`)}
       ${tile("Stock in the vault", usd(V.stockUsd), `${n0(V.stocksHeld)} tokenized stocks`)}
       ${tile("From LONG 500 so far", usd(T.toVaultUsd), `${n0(T.stocksContributing)} stock${T.stocksContributing === 1 ? "" : "s"} across ${n0(T.pools)} pool${T.pools === 1 ? "" : "s"}`)}
@@ -4123,6 +4203,65 @@ function renderLong500() {
   $("#l5NavRead").innerHTML = `<p class="muted" style="margin:8px 0 0">The vault is mostly AI by value, so its dollar NAV moves mostly with AI's own price.${P && since.baseT < (L.updatedAt || 0) - 86400
       ? ` Since LONG 500 went live (${dayFmt(since.baseT)}) the change breaks down as: AI price ${usd(P.aiPrice)}, new AI locked ${usd(P.aiAdded)}, NVDA price ${usd(P.nvdaPrice)}, new NVDA ${usd(P.nvdaAdded)}, and ${usd(T.toVaultUsd)} of stock from LONG 500 itself.`
       : ` The breakdown of what moves it (AI price, new AI locked, stock added, stock price) starts from the day LONG 500 went live and fills in from tomorrow.`} History is rebuilt from the fee ledger: AI locked and NVDA received each day, at that day's prices; AI and NVDA are over 99% of the vault.</p>`;
+
+  /* PROTOCOL-OWNED LIQUIDITY: the same figure the Valuation tab uses, so the two can
+     never disagree. Per pool from the depth run; the NVDA count is the AI/NVDA pool's
+     NVDA times the hook's share of that pool by value, so it is approximate. */
+  const polPools = [...(Dp?.pools || [])].filter((p) => (p.hookTvlUsd || 0) > 0).sort((a, b) => b.hookTvlUsd - a.hookTvlUsd);
+  $("#l5PolTiles").innerHTML = pol == null ? `<p class="muted">Measured on the next depth run.</p>` : `<div class="tiles four">
+      ${tile("Protocol-owned", usd(pol), `${Dp.tvlUsd ? pct(pol / Dp.tvlUsd, 0) : "\u2014"} of AI's ${usd(Dp.tvlUsd)} of liquidity`, "", "hero")}
+      ${tile("In AI/NVDA", usd(flag?.hookTvlUsd), flag?.hookShare != null ? `${pct(flag.hookShare, 0)} of that pool` : "")}
+      ${tile("NVDA in it", polNvda ? `~${n0(polNvda)}` : "\u2014", polNvda && S.rwa?.tokens ? `about ${usd(polNvda * ((S.rwa.tokens.find((t) => t.symbol === "NVDA") || {}).priceUsd || 0))} of NVDA` : "")}
+      ${tile("Pools with protocol liquidity", n0(polPools.length), `of ${n0(Dp.pools?.length)} indexed AI pools`)}
+    </div>`;
+  $("#tL5Pol").innerHTML = polPools.length ? `<thead><tr><th>Pool</th><th class="r">Protocol-owned</th><th class="r">Pool total</th><th class="r">Owned</th></tr></thead><tbody>` +
+    polPools.slice(0, 8).map((p) => `<tr><td><b>AI / ${p.pair}</b></td><td class="r mono">${usd(p.hookTvlUsd)}</td><td class="r mono">${usd(p.tvlUsd)}</td><td class="r mono">${p.hookShare != null ? pct(p.hookShare, 0) : "\u2014"}</td></tr>`).join("") + "</tbody>" : "";
+  $("#l5PolRead").innerHTML = `<p class="muted" style="margin:8px 0 0">Valued from every position the hook holds, at each pool's price. It is liquidity, so it trades: it deepens as fees compound in and shifts between AI and the quote token as the price moves. It is not part of the Community Vault total.</p>`;
+
+  /* PROGRESS: the programme on its own scale. Drawn as steps, because triggers are
+     sparse and a straight line between two of them would suggest growth that never
+     happened in between; extended to now, so a quiet spell shows as flat rather than
+     as a line that simply stops. */
+  const prog = L.progress || [];
+  const nowT = Math.floor(Date.now() / 1000);
+  const steps = (key) => {
+    const out = [];
+    prog.forEach((r, i) => {
+      if (i > 0) out.push({ t: r.t - 1, v: prog[i - 1][key], step: true });
+      out.push({ t: r.t, v: r[key] });
+    });
+    if (out.length) out.push({ t: nowT, v: out.at(-1).v, now: true });
+    if (out.length === 1) out.unshift({ t: out[0].t - 3600, v: 0 });
+    return out;
+  };
+  const stepTip = (fmt, what) => (r) => `<div class="k">${r.now ? "now" : tsFmt(r.t)}</div><div>${fmt(r.v)} ${what}</div>`;
+  const chartOr = (host, rows, o) => rows.length >= 2 ? lineChart($(host), rows, o) : ($(host).innerHTML = `<p class="muted" style="padding:14px 0">Fills in with the first trigger.</p>`);
+  chartOr("#cL5Vault", steps("toVaultUsd"), { xKey: "t", yKey: "v", area: true, zeroBase: true, color: "var(--buy)", fmt: (v) => usd(v), xFmt: tsFmt, tip: stepTip(usd, "of stock sent to the reserve") });
+  chartOr("#cL5Burned", steps("burnedUsd"), { xKey: "t", yKey: "v", area: true, zeroBase: true, color: "var(--sell)", fmt: (v) => usd(v), xFmt: tsFmt, tip: stepTip(usd, "of paired tokens burned") });
+  const pools = steps("pools"), stocksS = steps("stocks");
+  chartOr("#cL5Pools", pools.map((r, i) => ({ ...r, stocks: stocksS[i]?.v })), { xKey: "t", yKey: "v", zeroBase: true, color: "var(--series-1)", fmt: (v) => n0(v), xFmt: tsFmt,
+    overlays: [{ key: "stocks", color: "var(--series-2)", width: 1.6 }],
+    tip: (r) => `<div class="k">${r.now ? "now" : tsFmt(r.t)}</div><div>${n0(r.v)} pools \u00b7 ${n0(r.stocks)} stocks</div>` });
+  chartOr("#cL5Trig", steps("triggers"), { xKey: "t", yKey: "v", area: true, zeroBase: true, color: "var(--series-3)", fmt: (v) => n0(v), xFmt: tsFmt, tip: stepTip(n0, "triggers in all") });
+  $("#l5ProgRead").innerHTML = `<p class="muted" style="margin:8px 0 0">Updated with every index run, about every fifteen minutes; the page refreshes its data every three. ${prog.length ? `First trigger ${tsFmt(T.firstT)}, latest ${ago(T.lastT)}.` : ""}</p>`;
+
+  /* SOURCES. LONG 500 pays into the same Community Vault contract as the original
+     fee split, so they are told apart by where each inflow came from, not by where it
+     went. Shown side by side so the programme's share is plain. */
+  const src = L.bySource || [];
+  const last7 = src.slice(-7);
+  const o7 = last7.reduce((s, r) => s + r.originalUsd, 0), l7 = last7.reduce((s, r) => s + r.long500Usd, 0);
+  $("#l5SrcTiles").innerHTML = `<div class="tiles four">
+      ${tile("Original fee split, 7 days", usd(o7), "AI and NVDA from the AI/NVDA pool's fees")}
+      ${tile("LONG 500, 7 days", usd(l7), "stock from new stock-paired pools", l7 > 0 ? "up" : "")}
+      ${tile("LONG 500 share", o7 + l7 > 0 ? pct(l7 / (o7 + l7), l7 / (o7 + l7) < 0.01 ? 3 : 1) : "\u2014", "of everything the vault took in over 7 days")}
+      ${tile("Same vault", `<span class="mono" style="font-size:15px">${(L.vaultAddress || "").slice(0, 10)}\u2026</span>`, "both sources pay into this one contract")}
+    </div>`;
+  if (src.length >= 2) stackedBars($("#cL5Src"), src.slice(-30).map((r) => ({ t: r.t, total: r.originalUsd + r.long500Usd, part: r.long500Usd })), {
+    xKey: "t", totalKey: "total", partKey: "part", totalColor: "var(--mid)", partColor: "var(--buy)", fmt: (v) => usd(v), xFmt: dayFmt,
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${usd(r.total - r.part)} from the original split</div><div class="k">${usd(r.part)} from LONG 500</div>`,
+  });
+  $("#l5SrcRead").innerHTML = `<p class="muted" style="margin:8px 0 0">One vault, two sources. The original split sends half of every AI fee from the AI/NVDA pool as AI, plus NVDA; LONG 500 sends stock from each new stock-paired pool. The LONG 500 bar sits on top of each day's total and is small beside it for now, which is why the programme also has the charts above on its own scale.</p>`;
 
   /* AI burned, climbing */
   const bd = (B?.daily || []).map((d) => ({ t: d.t, v: d.cumBurnAI || 0 }));
@@ -4160,7 +4299,7 @@ function renderLong500() {
       <td class="r mono">${compact(p.pairedBurned)} <span class="muted">${usd(p.burnedUsd)}</span></td>
       <td class="r mono">${p.burnedPctOfSupply == null ? "\u2014" : pct(p.burnedPctOfSupply, p.burnedPctOfSupply < 0.001 ? 4 : 2)}</td>
       <td class="r mono muted">${p.last ? ago(p.last) : "\u2014"}</td></tr>`).join("") + "</tbody>";
-  $("#l5Feed").innerHTML = `<div class="l5feed">${(L.recent || []).slice(0, 12).map((x) => `<div class="l5f">
+  $("#l5Feed").innerHTML = `<div class="l5feed">${[...live.slice().reverse(), ...(L.recent || [])].slice(0, 12).map((x) => `<div class="l5f${x.live ? " live" : ""}">
       <span class="l5ft mono">${x.t ? ago(x.t) : ""}</span>
       <span><b>${compact(x.pairedBurned)} ${x.pairedSymbol}</b> burned \u00b7 <b class="up">${stockPx.has(x.stock) ? usd(x.stockToVault * stockPx.get(x.stock)) : x.stockToVault.toPrecision(3)} of ${x.stockSymbol}</b> to the reserve</span>
       <span class="mono muted" title="${x.tx}">${x.tx.slice(0, 10)}</span>
@@ -5951,6 +6090,10 @@ async function boot() {
   // how often the indexer runs.
   refreshLiveTail();
   setInterval(refreshLiveTail, 30000);
+  /* a few seconds after the page's other live calls, so the first poll does not land
+     in the cooldown a busy endpoint triggers */
+  setTimeout(refreshLong500Live, 5000);
+  setInterval(refreshLong500Live, 30000);
   // Pick up a newly published index without needing a page reload.
   setInterval(refreshData, 180000);
   // Charts resize themselves via ResizeObserver; only the phone/desktop layout

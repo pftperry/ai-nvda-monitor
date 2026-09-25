@@ -224,6 +224,47 @@ export async function indexLong500(latest, tm, opts = {}) {
   }
   const navNowUsd = (aiUnits != null && aiUsd ? aiUnits * aiUsd : 0) + stockTotal;
 
+  /* PROGRESS, hourly and cumulative. The programme is days old, so a daily series
+     would be a single dot; an hourly one shows it filling from the first trigger.
+     Each row carries running totals -- stock to the vault, spent on buybacks, paired
+     tokens burned, and distinct pools, stocks and callers -- so the chart is the
+     programme's whole history at every point. Hours with no trigger are omitted; the
+     running totals simply carry across them. */
+  const HOUR = 3600;
+  const hourMap = new Map();
+  const seenPools = new Set(), seenStocks = new Set(), seenCallers = new Set();
+  for (const x of [...T].sort((a, b) => (a.t ?? 0) - (b.t ?? 0))) {
+    if (x.t == null) continue;
+    const h = Math.floor(x.t / HOUR) * HOUR;
+    const px = pxOf(x.stock), pp = x.pairedBought > 0 ? x.stockToBuyback / x.pairedBought : null;
+    const H = hourMap.get(h) || { t: h, triggers: 0, toVaultUsd: 0, buybackUsd: 0, burnedUsd: 0 };
+    H.triggers++;
+    if (px != null) { H.toVaultUsd += x.stockToVault * px; H.buybackUsd += x.stockToBuyback * px; if (pp != null) H.burnedUsd += x.pairedBurned * pp * px; }
+    seenPools.add(x.pool); seenStocks.add(x.stock); seenCallers.add(x.caller);
+    H.pools = seenPools.size; H.stocks = seenStocks.size; H.callers = seenCallers.size;
+    hourMap.set(h, H);
+  }
+  let cT = 0, cV = 0, cB = 0, cBu = 0;
+  const progress = [...hourMap.values()].sort((a, b) => a.t - b.t).map((H) => {
+    cT += H.triggers; cV += H.toVaultUsd; cB += H.burnedUsd; cBu += H.buybackUsd;
+    return { t: H.t, triggers: cT, toVaultUsd: +cV.toFixed(4), burnedUsd: +cB.toFixed(4), buybackUsd: +cBu.toFixed(4),
+      pools: H.pools, stocks: H.stocks, callers: H.callers };
+  });
+
+  /* VAULT INFLOWS BY SOURCE. LONG 500 pays into the same Community Vault as the
+     original fee split -- one contract, 0xd14d...8630 -- so separating the two is a
+     matter of source, not address. The original split's daily AI and NVDA come from
+     the fee ledger, priced at that day's close; LONG 500's from its own events. */
+  const bySource = [];
+  const l5Day = new Map([...byDay.values()].map((d) => [d.t, d.toVaultUsd]));
+  for (const r of (opts.burnsDaily || []).slice(-60)) {
+    const aiPx = priceAt(r.t + DAY - 1), nPx = closeOn(r.t);
+    const orig = (aiPx == null ? 0 : (r.lockAI || 0) * aiPx) + (nPx == null ? 0 : (r.nvdaIn || 0) * nPx);
+    bySource.push({ t: r.t, originalUsd: Math.round(orig * 100) / 100, long500Usd: Math.round((l5Day.get(r.t) || 0) * 100) / 100 });
+  }
+  for (const [t, v] of l5Day) if (!bySource.some((r) => r.t === t)) bySource.push({ t, originalUsd: 0, long500Usd: Math.round(v * 100) / 100 });
+  bySource.sort((a, b) => a.t - b.t);
+
   const universe = opts.universe ?? null;
   const pools = [...byPool.values()].map((P) => ({
     ...P, pairedSymbol: sym(P.paired), stockSymbol: sym(P.stock),
@@ -248,10 +289,16 @@ export async function indexLong500(latest, tm, opts = {}) {
   return {
     state: S,
     artifact: {
-      module: LONG500_MODULE, partial, totals,
+      /* the block this artifact is complete to, and each token's symbol and decimals,
+         so the page can read newer triggers straight from the chain and decode them
+         the same way between index runs */
+      module: LONG500_MODULE, cursor: S.cursor, meta: S.meta, partial, totals,
       reserve: { stocks: reserve, stockUsd: Math.round(stockTotal), hhi, top1: shares.length ? +Math.max(...shares).toFixed(4) : null,
         stocksHeld: reserve.filter((r) => r.units > 0).length, universe, aiUnits, aiUsdValue: aiUnits != null && aiUsd ? Math.round(aiUnits * aiUsd) : null },
       nav: { nowUsd: Math.round(navNowUsd), sinceLaunch, daily: navDaily.slice(-120) },
+      vaultAddress: "0xd14d2eeb9648f53fa153a218eeed908789c28630",
+      progress: progress.slice(-24 * 120),
+      bySource,
       pools,
       byStock: [...byStock.values()].map((k) => ({ stock: k.stock, symbol: sym(k.stock), units: +k.units.toPrecision(8), usd: Math.round(k.usd * 100) / 100, pools: k.pools.size, triggers: k.triggers })).sort((a, b) => b.usd - a.usd),
       daily: [...byDay.values()].sort((a, b) => a.t - b.t).map((d) => ({ ...d, toVaultUsd: Math.round(d.toVaultUsd * 100) / 100, burnedUsd: Math.round(d.burnedUsd * 100) / 100, buybackUsd: Math.round(d.buybackUsd * 100) / 100 })),
