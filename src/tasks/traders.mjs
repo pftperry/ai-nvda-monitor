@@ -76,6 +76,20 @@ export async function indexTraders(latest, tm, opts = {}) {
 
   const rank = new Map(topHolders.map((h, i) => [h.address.toLowerCase(), { rank: i + 1, balance: h.ai }]));
 
+  /* Candidates for the largest-trades panel: every transaction in the last day where
+     one wallet netted a large amount of AI, from this same netting, whatever venue it
+     used. The panel confirms each from its receipt. Kept off the published artifact:
+     it is an input to the next step, not something to show. */
+  const bigMinAi = opts.bigMinUsd && aiUsd > 0 ? opts.bigMinUsd / aiUsd : Infinity;
+  const candidates = [];
+  for (const [tx, T] of perTx) {
+    if (T.t < nowT - DAY) continue;
+    let best = 0;
+    for (const [addr, v] of T.net) { if (machinery.has(addr)) continue; if (Math.abs(v) > best) best = Math.abs(v); }
+    if (best >= bigMinAi) candidates.push({ tx, t: T.t, ai: best });
+  }
+  candidates.sort((a, b) => b.ai - a.ai);
+
   /* Per transaction, the deepest negative wallet sold and the deepest positive
      bought; everything in between is plumbing. Run once per window over the same
      scanned transactions, keeping only those inside the cutoff. */
@@ -143,6 +157,7 @@ export async function indexTraders(latest, tm, opts = {}) {
     windows,
     method: "every AI transfer over the window grouped by transaction; inside a transaction each address's AI is netted, so routers and pools cancel to nothing and the wallet left most negative is the seller, most positive the buyer. Only transactions touching a pool or protocol contract count as trades. Ranks and balances are joined from the holders task. One scan covers the widest window and the shorter ones are cut from the same transactions.",
   };
+  Object.defineProperty(out, "bigCandidates", { value: candidates.slice(0, 250), enumerable: false });
   log(`  traders: ${Object.entries(windows).map(([k, w]) => `${k} ${w.concentration.sellers} selling / ${w.concentration.buyers} buying`).join(", ")}; over ${minAi.toLocaleString()} AI; ${winLabel(windowSecs)} top seller ${out.concentration.sellTop1 != null ? (100 * out.concentration.sellTop1).toFixed(0) + "%" : "—"} of sold volume${main.holderSellers.length ? `; ${main.holderSellers.length} ranked holder(s) sold` : ""}`);
   return out;
 }

@@ -22,7 +22,7 @@ import { indexBackingBackfill, cohortPairs } from "./tasks/backfill.mjs";
 import { indexStockPrices } from "./tasks/stockpx.mjs";
 import { indexRegistry, indexFeeds, indexHourlyPrices, indexDerivedPrices, combinedPriceReader } from "./tasks/registry.mjs";
 import { indexVenues, indexVenueSwaps, indexRialto } from "./tasks/venues.mjs";
-import { indexBigTrades } from "./tasks/bigtrades.mjs";
+import { indexBigTrades, resizeBigTrades } from "./tasks/bigtrades.mjs";
 import { indexTraders } from "./tasks/traders.mjs";
 import { classifyAccounts, CONTRACT } from "./tasks/accounts.mjs";
 import { indexFlywheel } from "./tasks/flywheel.mjs";
@@ -389,8 +389,14 @@ try {
            contract; anything new is caught on the run after it first appears. */
         const knownContracts = Object.entries(store.get("accountKinds") || {})
           .filter(([, v]) => v.kind === CONTRACT).map(([a]) => a);
-        traders = await indexTraders(latest, tm, { aiUsd, topHolders: hs, extraMachinery: knownContracts, windowSecs: 86_400,
+        traders = await indexTraders(latest, tm, { aiUsd, topHolders: hs, extraMachinery: knownContracts, windowSecs: 86_400, bigMinUsd: opt("big-trade-floor", 25_000),
           minAi: opt("trader-floor", 5_000), deadline: Date.now() + opt("traders-budget", fast ? 90 : 240) * 1000 });
+        /* the largest-trades list, re-sized by the AI that left or entered each
+           trader's wallet across every venue, not by the v4 legs alone */
+        try {
+          bigTrades = await resizeBigTrades(bigTrades, traders?.bigCandidates || [], { store, aiUsd,
+            minUsd: opt("big-trade-floor", 25_000), deadline: Date.now() + opt("bigtrades-resize-budget", 60) * 1000 });
+        } catch (e) { softFail("big trades resize", e, "the list keeps its v4-only sizes"); }
         writeTape();
       } catch (e) { softFail("trader concentration", e, "the tape keeps its previous attribution"); }
   }

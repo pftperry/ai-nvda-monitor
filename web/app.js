@@ -868,12 +868,21 @@ function renderBigTrades() {
     ${tile("Sells vs buys", `$${compact(sum(sells))} / $${compact(sum(buys))}`, `${sells.length} sells and ${buys.length} buys over $${compact(B.minUsd)} in the last ${bpick}`)}
     ${tile("Heaviest selling hour", worst ? tsFmt(worst[0]).replace(/:\d\d/, ":00") : "—", worst ? `$${compact(worst[1])} of large sells landed in that hour` : "")}
   </div>`;
-  const shortTx = (tx) => tx ? `<span class="mono muted" title="${tx}">${tx.slice(0, 10)}…</span>` : "";
-  const venue = (r) => r.pools.length === 1 ? `AI / ${r.pools[0].sym}`
-    : `<span title="${r.pools.map((x) => x.sym + " " + compact(x.ai) + " AI").join(", ")}">${r.legs} pools <span class="muted">${r.pools.slice(0, 3).map((x) => x.sym).join(", ")}${r.pools.length > 3 ? "…" : ""}</span></span>`;
-  host.innerHTML = `<thead><tr><th class="r">#</th><th>Time</th><th>Routed through</th><th>Side</th><th class="r">AI</th><th class="r">Size $</th><th class="r" title="the move this trade caused in the pools it touched, weighted by where it traded">Impact</th><th>Tx</th></tr></thead><tbody>` +
+  /* Robinhood's own Blockscout, the explorer its documentation lists, so a row can be
+     opened and shared as the transaction itself */
+  const shortTx = (tx) => tx ? `<a class="mono muted" href="https://robinhoodchain.blockscout.com/tx/${tx}" target="_blank" rel="noopener" title="${tx}">${tx.slice(0, 10)}…</a>` : "";
+  /* every venue the trade used: the v4 pools by name, plus how many Uniswap V3 and V2
+     legs it also routed through, which the v4 scan cannot see */
+  const venue = (r) => {
+    const v4 = r.pools.length === 1 ? `AI / ${r.pools[0].sym}`
+      : r.pools.length ? `<span title="${r.pools.map((x) => x.sym + " " + compact(x.ai) + " AI").join(", ")}">${r.pools.length} v4 pools <span class="muted">${r.pools.slice(0, 3).map((x) => x.sym).join(", ")}${r.pools.length > 3 ? "…" : ""}</span></span>` : "";
+    const other = r.venues ? [r.venues.v3 ? `V3 ×${r.venues.v3}` : "", r.venues.v2 ? `V2 ×${r.venues.v2}` : ""].filter(Boolean).join(" · ") : "";
+    return [v4, other ? `<span class="muted">${other}</span>` : ""].filter(Boolean).join(" + ") || "\u2014";
+  };
+  host.innerHTML = `<thead><tr><th class="r">#</th><th>Time</th><th>Trader</th><th>Routed through</th><th>Side</th><th class="r">AI</th><th class="r">Size $</th><th class="r" title="the move this trade caused in the pools it touched, weighted by where it traded">Impact</th><th>Tx</th></tr></thead><tbody>` +
     rows.slice(0, 40).map((r, i) => `<tr>
       <td class="r muted mono">${i + 1}</td><td class="mono">${tsFmt(r.t)}</td>
+      <td>${r.wallet ? addrCell(r.wallet) : `<span class="muted">\u2014</span>`}</td>
       <td>${venue(r)}</td>
       <td><span class="${r.buy ? "up" : "down"}">${r.buy ? "BUY" : "SELL"}</span></td>
       <td class="r mono">${compact(r.ai)}</td>
@@ -884,7 +893,9 @@ function renderBigTrades() {
   $("#bigKpis").querySelectorAll("[data-bigwin]").forEach((b) => b.addEventListener("click", () => {
     S.bigWin = b.dataset.bigwin; renderBigTrades();
   }));
-  $("#bigNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Showing the last ${bpick} of a tape indexed over 24 hours from ${tsFmt(B.since)}, every one of the ${B.poolsScanned} AI pools in the census, ${B.legsSeen.toLocaleString()} swap legs grouped into trades by transaction. ${routed} of these were routed across more than one pool; read leg by leg they look like ordinary flow, which is how a $1.7M sell hid here before. AI legs are valued at the current AI price; impact is each touched pool's own price before the transaction against after it.</p>`;
+  $("#bigNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Showing the last ${bpick} of a tape indexed over 24 hours from ${tsFmt(B.since)}. ${B.sizedBy === "wallet"
+      ? "Each trade is sized by the AI that actually left or entered the trader's wallet, across every Uniswap V2, V3 and v4 pool it routed through; a transaction counts only if it contains a swap. Sized by the v4 pools alone, as this panel used to be, a wallet that sold 5.4M AI in five sales on 29 Sep showed less than half of it."
+      : `Every one of the ${B.poolsScanned} AI pools in the census, ${B.legsSeen.toLocaleString()} swap legs grouped into trades by transaction.`} ${routed} of these were routed across more than one pool. AI is valued at the current AI price; impact is each touched v4 pool's own price before the transaction against after it, so it is blank for a trade that touched no v4 pool. Transaction hashes open on Robinhood's Blockscout explorer.</p>`;
 }
 
 
