@@ -1287,6 +1287,13 @@ function renderDistribution() {
     arrived: s.newHolders, left: s.exits,
     net: net24(s),
     heldAi: s.heldAi, price: s.price, t: s.t,
+    /* average dollar holding: holder-owned AI at the snapshot's price over the wallet
+       count, machinery excluded from both. The top ten pull it up, so it is also shown
+       without them; the median wallet is dust and says little about the base. No arrow:
+       it falls when small wallets arrive, which is good, and when price falls, which is
+       not, so its direction alone is neither. */
+    avgUsd: s.price && s.holders ? s.heldAi * s.price / s.holders : null,
+    avgEx10Usd: s.price && s.holders > 10 && s.top?.[0] != null ? s.heldAi * (1 - s.top[0]) * s.price / (s.holders - 10) : null,
   });
   const cols = [["Launch", daily[0]], ["3 wks", ago(21)], ["2 wks", ago(14)], ["1 wk", ago(7)], ["Now", last]]
     .filter(([, s]) => s).map(([label, s]) => ({ label, ...colOf(s) }));
@@ -1298,6 +1305,7 @@ function renderDistribution() {
   const fPct = (v) => v == null ? "n/a" : pctLevel(v, 1);
   const fM = (v) => v == null ? "n/a" : compact(v);
   const fUsd = (v) => v == null ? "n/a" : "$" + v.toFixed(4);
+  const fUsd0 = (v) => v == null ? "n/a" : "$" + Math.round(v).toLocaleString();
   const dPP = (a, b) => `${100 * (b - a) >= 0 ? "+" : MIN}${Math.abs(100 * (b - a)).toFixed(1)} pp`;
   const dPc = (a, b) => !a ? "n/a" : `${b >= a ? "+" : MIN}${(Math.abs(b / a - 1) * 100).toFixed(1)}%`;
   const dX = (a, b) => !a ? "n/a" : `${(b / a).toFixed(b / a >= 10 ? 0 : 1)}\u00d7`;
@@ -1310,6 +1318,8 @@ function renderDistribution() {
     ["r", "Holding over 10,000 AI", "w10k", fNum, "up", dPc, dX],
     ["r", "Holding over 100,000 AI", "w100k", fNum, "up", dPc, dX],
     ["r", "Holding over 1,000,000 AI", "w1m", fNum, "up", dPc, dX],
+    ["r", "Average holding", "avgUsd", fUsd0, null, dPc, dX],
+    ["r", "Average holding, outside the top 10", "avgEx10Usd", fUsd0, null, dPc, dX],
     ["h", "Concentration, share of holder-owned supply"],
     ["r", "Top 10 wallets", "top10", fPct, "down", dPP, dPP],
     ["r", "Top 50 wallets", "top50", fPct, "down", dPP, dPP],
