@@ -133,9 +133,12 @@ export async function indexVaultLp(latest, tm, opts = {}) {
       fr.f0 += BigInt(c[0]) - BigInt(b[0]); fr.f1 += BigInt(c[1]) - BigInt(b[1]);
     }
     for (const fr of Object.values(feeRaw)) feeAll += (pxOf(fr.c0) ?? 0) * Number(fr.f0) / 10 ** decOf(fr.c0) + (pxOf(fr.c1) ?? 0) * Number(fr.f1) / 10 ** decOf(fr.c1);
-    M.hist.push([nowT, feeAll]);
+    /* fee history, at most one reading an hour, kept eight days: baselines a day and
+       a week back */
+    if (!M.hist.length || nowT - M.hist.at(-1)[0] >= 3600) M.hist.push([nowT, feeAll]); else M.hist[M.hist.length - 1] = [nowT, feeAll];
+    M.hist = M.hist.filter((x) => x[0] > nowT - 8 * DAY);
     const old = M.hist.filter((x) => x[0] <= nowT - DAY);
-    M.hist = [...(old.length ? [old.at(-1)] : []), ...M.hist.filter((x) => x[0] > nowT - DAY)].slice(-200);
+    const old7 = M.hist.filter((x) => x[0] <= nowT - 7 * DAY);
     const young = (tm.at(M.firstBlock) ?? nowT) > nowT - DAY;
     /* time in range, sampled once a run: a position listed above spot earns nothing
        until price reaches it, so its APR means little without this beside it */
@@ -146,6 +149,8 @@ export async function indexVaultLp(latest, tm, opts = {}) {
     rows.push({ vault: M.vault, module: m, stock: M.stock, stockSymbol: symOf(M.stock), deployedUnits: +M.deployed.toPrecision(8),
       pair, range, inRange, holdings: Object.entries(holds).map(([t, u]) => ({ token: t, symbol: symOf(t), units: +u.toPrecision(8) })),
       positionUsd: Math.round(usd), feesAllUsd: Math.round(feeAll * 100) / 100, fees24hUsd: Math.round((feeAll - base) * 100) / 100,
+      /* a position younger than a week has earned everything inside the week */
+      fees7dUsd: Math.round((feeAll - (old7.length ? old7.at(-1)[1] : ageDays < 7 ? 0 : M.hist[0][1])) * 100) / 100,
       since: tm.at(M.firstBlock) ?? null, ageDays: +ageDays.toFixed(2),
       /* fees so far over the position's value, annualised over its age; withheld until
          it is a day old, when a few hours of fees would annualise into noise */

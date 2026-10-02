@@ -30,6 +30,7 @@ import { indexLong500 } from "./tasks/long500.mjs";
 import { indexVaultWatch, lpUnitsByToken } from "./tasks/vaultwatch.mjs";
 import { indexStockFees } from "./tasks/stockfees.mjs";
 import { indexVaultLp } from "./tasks/vaultlp.mjs";
+import { indexCommunityVaults } from "./tasks/communityvaults.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -847,7 +848,15 @@ if (!flag("no-stockfees")) {
       const s = byStock.get(r.stock);
       if (s) { s.lpAllUsd = (s.lpAllUsd || 0) + r.feesAllUsd; s.lpD1Usd = (s.lpD1Usd || 0) + r.fees24hUsd; s.lpVaults = (s.lpVaults || 0) + 1; s.lpApr = r.apr; s.lpInRange = r.inRangeShare; s.lpAgeDays = r.ageDays; }
     }
-    writeData("stockfees.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact, vaultLp: lp.rows });
+    /* community vaults: each pair vault's share of its pool's fees, where they go by
+       the vault's mode, and the vault's own revenue and APR */
+    let cv = { rows: [] };
+    try {
+      cv = await indexCommunityVaults(latest, tm, { state: store.get("communityVaults"), pools: census.pools, stocks,
+        aiUsd: readData("prices.json")?.aiUsd ?? null, collects: out.state.collects, lp: lp.rows, days7: A.days7, deadline: budget + 90_000 });
+      store.set("communityVaults", cv.state);
+    } catch (e) { softFail("community vaults", e, "fees publish without them"); }
+    writeData("stockfees.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact, vaultLp: lp.rows, communityVaults: cv.rows });
   } catch (e) {
     softFail("stock fees", e, "the previous stockfees.json stays in place");
   }

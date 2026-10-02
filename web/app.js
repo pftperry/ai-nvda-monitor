@@ -5016,6 +5016,29 @@ function renderRwa() {
       { h: "Fee APR, 7d", f: (t) => { const s = FEES.get(t.token); return s?.apr != null ? `<span title="${usd0(s.d7Usd)} of fees over ${S.stockfees.days7 < 6.9 ? S.stockfees.days7.toFixed(1) + " days" : "7 days"}, annualised, over ${usd0(s.liquidityUsd)} of ${t.symbol} held in LONG pools">${pctLevel(s.apr, s.apr < 0.1 ? 1 : 0)}</span>` : `<span class="muted">—</span>`; } },
       { h: "Vault LP fees", f: (t) => { const s = FEES.get(t.token); return s?.lpVaults ? `$${compactUsd(s.lpAllUsd)} <span class="muted">${s.lpD1Usd ? "$" + compactUsd(s.lpD1Usd) + " 24h" : ""}${s.lpApr != null ? ` · ${pctLevel(s.lpApr, 0)} APR` : s.lpAgeDays != null && s.lpAgeDays < 1 ? " · APR after a day" : ""}${s.lpInRange != null ? ` · in range ${pctLevel(s.lpInRange, 0)} of the time` : ""}</span>` : `<span class="muted">—</span>`; } },
     ], R.tokens);
+    /* COMMUNITY VAULTS. Each pair vault's share of its pool's fees over seven days,
+       split the way its mode splits them, and the vault's own APR: what it keeps plus
+       its LP fees, annualised, over what it holds. */
+    const CV = (S.stockfees?.communityVaults || []).filter((r) => (r.d7?.grossUsd || 0) >= 1 || r.holdings?.lpUsd > 0);
+    const cvHost = $("#tCommunityVaults");
+    if (cvHost) {
+      const pctS = (x) => `${Math.round(x * 100)}`;
+      cvHost.innerHTML = CV.length ? `<thead><tr><th>Vault</th><th class="r" title="the vault's split of what it receives: to the original fee receiver / burned / kept, for the launched token, then the stock">Split</th><th class="r">Fees to vault, 7d</th><th class="r">To original receiver</th><th class="r">Burned</th><th class="r">Kept by vault</th><th class="r">Vault holds</th><th class="r" title="what the vault keeps plus its LP position's fees, seven days annualised, over what it holds">Vault APR</th></tr></thead><tbody>` +
+        CV.slice(0, 15).map((r) => {
+          const sp = r.splits;
+          const kept = (r.d7?.vault.usd || 0) + (r.lpFees7dUsd || 0);
+          return `<tr><td><b>${r.assetSymbol}</b> <span class="muted">/ ${r.numeraireSymbol}</span>${r.holdings.lpUsd > 0 ? ` <span class="muted" title="LP upgrade position">· LP $${compactUsd(r.holdings.lpUsd)}</span>` : ""}</td>
+            <td class="r mono muted">${sp ? `${pctS(sp[0])}/${pctS(sp[1])}/${pctS(sp[2])} · ${pctS(sp[3])}/${pctS(sp[5])}/${pctS(sp[4])}` : "—"}</td>
+            <td class="r mono">${usd0(r.d7?.grossUsd)}</td>
+            <td class="r mono" title="${r.receiver}">${usd0(r.d7?.receiver.usd)}</td>
+            <td class="r mono">${usd0(r.d7?.burned.usd)}</td>
+            <td class="r mono up">${usd0(kept)}${r.lpFees7dUsd ? ` <span class="muted">incl. LP ${usd0(r.lpFees7dUsd)}</span>` : ""}</td>
+            <td class="r mono">${usd0(r.holdings.usd)}</td>
+            <td class="r mono">${r.apr != null ? pctLevel(r.apr, 0) : "—"}</td></tr>`;
+        }).join("") + "</tbody>" : "";
+      const cvn = $("#cvNote");
+      if (cvn) cvn.innerHTML = CV.length ? `<p class="muted" style="margin:8px 0 0">A pair in community mode has a vault from LONG's LongFeeVaultFactory as its fee beneficiary. LONG's hook releases 95% of every fee collect to it, and the vault splits that by the mode its deployer chose, read from the factory: the launched token's fees to the pair's original fee receiver, burned, or locked in the vault; the stock's to the receiver or kept. Seven days of collects, each spread over the time since the pool's previous one. The vault's holdings are its locked tokens and stock at today's prices plus any LP position. ${S.stockfees.communityVaults.length} vaults deployed; those with fees this week shown.</p>` : "";
+    }
     const SF = S.stockfees, fn = $("#stockFeeNote");
     if (fn) fn.innerHTML = SF ? `<p class="muted" style="margin:8px 0 0">LONG fees are what LONG's own liquidity has collected in every LONG pool on that stock, from the hook's own accounting: its running total per pool for all time ($${compact(SF.totals.allUsd)}), and its Collect events for the last 24 hours ($${compact(SF.totals.d1Usd)}), across ${SF.stocks.length} stocks. Each collect is spread over the time since that pool's previous one, so a pool that catches up on weeks of fees does not land them all in one day. Fee APR is seven days of those fees, annualised, over the value of the stock held in LONG pools on that stock. The stock side is counted in the stock; the other side (the launched token, AI or USDG) is valued at the pool's current price, so all-time figures are at today's prices. Fees earned by outside LPs are not included.${SF.complete ? "" : ` Still reading: ${SF.poolsUnread.toLocaleString()} of ${SF.poolsTotal.toLocaleString()} pools.`} Vault LP fees are what a pair's community vault has earned from its LP position since the vault LP upgrade, collected plus unclaimed${(SF.vaultLp || []).length ? `; ${SF.vaultLp.map((v) => `${v.stockSymbol} vault ${v.pair || ""} $${compactUsd(v.feesAllUsd)}`).join(", ")}` : ""}.</p>` : "";
     const nvAddr = Object.keys(R.daily || {})[0];
