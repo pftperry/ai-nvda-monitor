@@ -145,6 +145,7 @@
         <span class="l5live" id="l5Live"></span>
       </div>
       <p class="sub">Every new stock-paired pool sends a slice of its stock-token fees to the AI Community Vault and spends another slice buying back and burning its own token. Anyone can trigger it, any time.</p>
+      <div id="l5Alert"></div>
       <div id="l5Big"></div>
       <div id="l5Small"></div>
     </div>
@@ -182,6 +183,16 @@
       <div class="legend"><span><i style="background:var(--mid)"></i>Original fee split (AI and NVDA)</span><span><i style="background:var(--buy)"></i>LONG 500 (stock)</span></div>
       <div class="chart small" id="cL5Src"></div>
       <div id="l5SrcRead"></div>
+    </div>
+
+    <div class="card" id="l5CtrlCard">
+      <h3>Who can move the vault</h3>
+      <p class="sub">The Community Vault is a timelock contract. Nothing leaves it unless the move is first posted on chain, waits out the delay below, and is then carried out, so any move is public before it can happen. This card reads that queue, and values any liquidity positions the vault owns.</p>
+      <div id="l5CtrlTiles"></div>
+      <div class="scroll"><table id="tL5Ops" class="rank"></table></div>
+      <h4 class="subhead">Liquidity positions the vault owns</h4>
+      <div class="scroll"><table id="tL5Lp" class="rank"></table></div>
+      <div id="l5CtrlRead"></div>
     </div>
 
     <div class="card">
@@ -576,7 +587,7 @@
       </div>
       <div class="card">
         <h3>Burned and vault-locked, cumulative</h3>
-        <p class="sub">Both legs are irreversible.</p>
+        <p class="sub">Burning is irreversible. Vault-locked AI can only leave through the vault's public 48-hour timelock.</p>
         <div class="legend">
           <span><i style="background:var(--series-1)"></i>Burned</span>
           <span><i style="background:var(--series-2)"></i>Vault-locked</span>

@@ -607,7 +607,7 @@ function table(host, cols, rows) {
 /* ── data ───────────────────────────────────────────────────────────────── */
 const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, names: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json", "long500.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json", "long500.json", "vault.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -1668,8 +1668,10 @@ function renderFloat() {
        Both are right; leaving either unlabelled is what made one screen show a
        float of 96.7% beside a chart segment reading 95.8%. So each note names its
        base. */
-    { lbl: "Permanently removed", val: compact(removed),
-      note: `${pctLevel(removed / b.genesisSupply, 2)} of the ${compact(b.genesisSupply)} genesis mint: ${compact(b.burned)} burned + ${compact(b.vault.aiBalance)} vault-locked, equal by construction` },
+    /* "burned or vault-locked", not "permanently removed": burning is final, but the
+       vault is a 48-hour timelock, so its AI can leave if a move is scheduled */
+    { lbl: "Burned or vault-locked", val: compact(removed),
+      note: `${pctLevel(removed / b.genesisSupply, 2)} of the ${compact(b.genesisSupply)} genesis mint: ${compact(b.burned)} burned for good + ${compact(b.vault.aiBalance)} in the vault, which can only leave through a public 48-hour timelock` },
     { lbl: "Pool inventory", val: compact(b.poolManagerAI),
       note: `${pctLevel(b.poolManagerAI / b.totalSupply, 2)} of current supply, sitting in v4 pools` },
     { lbl: "Hook reserves", val: compact(hook),
@@ -2355,8 +2357,7 @@ function renderInvestor() {
   $("#takeVault").innerHTML = takeEl(nvTrend >= 0 ? "pos" : "warn",
     `The vault holds <b>${nf(b.vault.nvdaBalance, 1)} NVDA</b>, growing about
      <b>${nf(nv7 / 7, 2)} per day</b>${nvTrend == null ? "" : ` (${pct(nvTrend, 0)} versus the prior week)`}.
-     That is <b>${nf(nvdaPerM, 2)} NVDA per million AI</b> outstanding, and it only ratchets upward —
-     no outflow has ever been observed. This is the part of the story that does not depend on the meme holding — but note it is <b>backing, not a claim</b>: the protocol states holders cannot redeem assets from the vault, so it supports the story rather than setting a floor you can exercise.`);
+     That is <b>${nf(nvdaPerM, 2)} NVDA per million AI</b> outstanding. ${vaultMoveLine()}${b.vault.nvdaInLp ? ` ${nf(b.vault.nvdaInLp, 1)} of that NVDA sits in the vault's own liquidity positions.` : ""} This is the part of the story that does not depend on the meme holding — but note it is <b>backing, not a claim</b>: the protocol states holders cannot redeem assets from the vault, so it supports the story rather than setting a floor you can exercise.`);
 
   /* ── 4. hub conversion ────────────────────────────────────────────── */
   const kd = completeDays((r && r.daily) || []);
@@ -3240,9 +3241,9 @@ function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak, kappaHi
     ["Fee capture keeps sliding while κ rises",
      `Capture is ${pctLevel(capNow, 1)}. This combination means the hub is winning volume the vault does not get paid on — growth that does not accrue to holders.`,
      "warn"],
-    ["Any outflow from the community vault",
-     `Nothing has ever left it. The first withdrawal would break the "permanently locked" premise that the float maths depends on, and should be treated as material.`,
-     "pos"],
+    ["Any move scheduled out of the community vault",
+     `${vaultMoveLine()} The vault is a 48-hour timelock, so a withdrawal is posted on chain two days before it can happen. A move of the vault's AI would undo the locked half of the float maths and should be treated as material; a move of its stock into its own liquidity positions keeps the value in the vault.`,
+     (S.vault?.pending || 0) > 0 ? "neg" : (S.vault?.executedEver || 0) > 0 ? "warn" : "pos"],
   ];
   $("#triggers").innerHTML = rows.map(([h, d, tone]) => `
     <div style="display:flex;gap:11px;align-items:flex-start;padding:11px 0;border-bottom:1px solid var(--border)">
@@ -4098,6 +4099,70 @@ const tile = (lbl, val, note, cls = "", extra = "") => `<div class="ctile ${extr
    decodes it exactly as the indexer does, with the token decimals the artifact
    carries. Only the counters and the feed use these -- charts and tables wait for
    the next index run, which then absorbs them, so nothing is counted twice. */
+/* One line on the vault's record, from its timelock queue rather than assumed. */
+function vaultMoveLine() {
+  const V = S.vault;
+  if (!V?.timelock) return "Nothing has ever been seen leaving it.";
+  const live = (S.vaultLive || []).filter((x) => x.kind === "scheduled" && !(V.ops || []).some((o) => o.id === x.id)).length;
+  const pend = (V.pending || 0) + live, ex = V.executedEver || 0;
+  if (pend) return `<b>${pend} move${pend === 1 ? " is" : "s are"} scheduled out of the vault</b>; see the LONG 500 tab.`;
+  if (ex) return `${ex} move${ex === 1 ? " has" : "s have"} been carried out through its timelock; none is pending.`;
+  return "No move out of it has ever been scheduled.";
+}
+
+/* WHO CAN MOVE THE VAULT. The vault is a timelock: its queue is public, so the page
+   can show a move before it happens. Plus any LP positions it owns, which count as
+   vault assets (only those the vault itself owns; a module's are listed apart). */
+function renderVaultControls(usd) {
+  const V = S.vault, host = $("#l5CtrlTiles");
+  if (!host) return;
+  const alertHost = $("#l5Alert");
+  if (!V?.timelock) { host.innerHTML = `<p class="muted">The vault's timelock is read on the next index run.</p>`; if (alertHost) alertHost.innerHTML = ""; return; }
+  const T = V.timelock, hrs = T.minDelay == null ? "?" : (T.minDelay / 3600).toFixed(0);
+  const EXP = "https://robinhoodchain.blockscout.com";
+  const short = (a) => a ? `<a class="mono" href="${EXP}/address/${a}" target="_blank" rel="noopener">${a.slice(0, 6)}\u2026${a.slice(-4)}</a>` : "\u2014";
+  const txl = (h) => h ? `<a class="mono" href="${EXP}/tx/${h}" target="_blank" rel="noopener">${h.slice(0, 10)}\u2026</a>` : "";
+  const nowS = Math.floor(Date.now() / 1000);
+  /* date and clock both in Central: a UTC date beside a CT clock reads a day off in the evening */
+  const when = (t) => new Date(t * 1000).toLocaleString("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " CT";
+  const until = (t) => { const s = t - nowS; return s <= 0 ? "now" : s < 3600 ? `in ${Math.ceil(s / 60)}m` : `in ${(s / 3600).toFixed(1)}h`; };
+  /* moves posted since the last index run, straight from the chain */
+  const known = new Set((V.ops || []).map((o) => o.id));
+  const fresh = (S.vaultLive || []).filter((x) => x.kind === "scheduled" && !known.has(x.id));
+  const open = (V.ops || []).filter((o) => o.status === "pending" || o.status === "ready");
+  const lp = V.lp || {}, pos = lp.positions || [];
+  const ownPos = pos.filter((p) => !p.viaModule);
+  const nOps = (V.opsEver || 0) + fresh.length, nOpen = open.length + fresh.length;
+
+  if (alertHost) alertHost.innerHTML = nOpen ? `<div class="takeaway neg" style="margin:10px 0"><b>Vault move scheduled.</b>
+      ${open.map((o) => `${o.calls.map((c) => c.text).join("; ")}. ${o.status === "ready" ? "<b>Can be executed now.</b>" : `Can execute ${until(o.readyT)} (${when(o.readyT)}).`} ${txl(o.scheduledTx)}`).join("<br>")}
+      ${fresh.map((x) => `A new operation on ${short(x.target)} was posted ${ago(x.t)}; it can execute ${until(x.t + (T.minDelay || 0))}. ${txl(x.tx)}`).join("<br>")}
+    </div>` : "";
+
+  host.innerHTML = `<div class="tiles four">
+      ${tile("Delay before any move", `${hrs}h`, "every withdrawal is posted on chain this long before it can happen", "", "hero")}
+      ${tile("Moves ever scheduled", nOps.toLocaleString(), nOps === 0 ? "nothing has ever been queued to leave the vault" : `${(V.executedEver || 0).toLocaleString()} carried out \u00b7 ${nOpen.toLocaleString()} pending`, nOpen ? "down" : "")}
+      ${tile("Who can schedule", T.proposers.length.toLocaleString(), `${T.proposers.map(short).join(", ")}${T.openExecution ? " \u00b7 once ready, anyone can execute" : ""}`)}
+      ${tile("Vault LP positions", ownPos.length ? usd((lp.usd || 0) + (lp.feesUsd || 0)) : "none", ownPos.length ? `${ownPos.length} position${ownPos.length === 1 ? "" : "s"}, ${usd(lp.feesUsd)} of it unclaimed fees` : "the vault's stock is all held as plain balances")}
+    </div>`;
+
+  const ops = V.ops || [];
+  $("#tL5Ops").innerHTML = ops.length ? `<thead><tr><th>Scheduled</th><th>What it does</th><th>Status</th><th>Tx</th></tr></thead><tbody>` +
+    ops.slice(0, 12).map((o) => `<tr><td class="mono">${o.scheduledT ? when(o.scheduledT) : "\u2014"}</td>
+      <td style="white-space:normal;min-width:220px;text-align:left">${o.calls.map((c) => c.text).join("<br>")}</td>
+      <td class="${o.status === "executed" ? "" : o.status === "cancelled" ? "muted" : "down"}">${o.status === "pending" ? `pending, executes ${until(o.readyT)}` : o.status}</td>
+      <td>${txl(o.executedTx || o.scheduledTx)}</td></tr>`).join("") + "</tbody>" : "";
+
+  $("#tL5Lp").innerHTML = pos.length ? `<thead><tr><th>Position</th><th>Range, USDG per share</th><th class="r">Holds</th><th class="r">Value</th><th class="r">Unclaimed fees</th></tr></thead><tbody>` +
+    pos.map((p) => `<tr><td><b>${p.pair}</b> <span class="muted">${p.kind}${p.fee != null && p.kind === "v3" ? " " + (p.fee / 1e4).toFixed(2) + "%" : ""}${p.viaModule ? " \u00b7 held by " + short(p.owner) + ", not counted" : ""}</span></td>
+      <td class="mono">${p.priceRange ? `$${p.priceRange[0].toFixed(2)} \u2013 $${p.priceRange[1].toFixed(2)}` : "\u2014"} <span class="${p.inRange ? "up" : "muted"}">${p.inRange ? "in range" : "out of range"}</span></td>
+      <td class="r mono">${p.holdings.map((h) => `${h.units.toPrecision(4)} ${h.symbol}`).join("<br>")}</td>
+      <td class="r mono">${usd(p.usd)}</td><td class="r mono">${usd(p.feesUsd)}</td></tr>`).join("") + "</tbody>"
+    : `<tbody><tr><td class="muted">None yet. If the vault moves its stock into a USDG/stock pool, each position appears here, valued at the pool's current price, and counts toward the vault total.</td></tr></tbody>`;
+
+  $("#l5CtrlRead").innerHTML = `<p class="muted" style="margin:8px 0 0">Read from the vault contract itself, an OpenZeppelin TimelockController: its minimum delay, the addresses holding each role, and every operation ever scheduled, executed or cancelled, with each call decoded. ${T.selfAdministered ? "The deployer gave up its admin role, so changing the delay or the roles must itself go through the timelock. " : ""}Positions are valued from the pool's own state at the current price; unclaimed fees are shown separately and fees already collected are counted as vault balances.</p>`;
+}
+
 const L5_MODULE = "0x80b4039a3851a6a369a5e63eaa4365b611dbe5d6";
 const L5_TRIGGER = "0x2ae758d637377505a78ed94a6eec59540aa25a87fb2664a5dd8b0acfeb369413";
 async function refreshLong500Live() {
@@ -4124,6 +4189,20 @@ async function refreshLong500Live() {
         stockToBuyback: Number(w(l.data, 4)) / sd, pairedBought: Number(w(l.data, 5)) / pd, pairedBurned: Number(w(l.data, 6)) / pd,
       };
     });
+    /* the vault's timelock queue, from the vault artifact's cursor: a move scheduled
+       between index runs shows here within thirty seconds */
+    const Vt = S.vault;
+    if (Vt?.cursor && Vt.topics) {
+      const vf = Math.max(Vt.cursor + 1, head - Math.round((48 * 3600) / SEC_PER_BLOCK));
+      const vl = head < vf ? [] : await rpcCall("eth_getLogs", [{ address: Vt.address, topics: [[Vt.topics.scheduled, Vt.topics.executed, Vt.topics.cancelled]],
+        fromBlock: "0x" + vf.toString(16), toBlock: "0x" + head.toString(16) }]);
+      S.vaultLive = (vl || []).map((l) => ({
+        kind: l.topics[0] === Vt.topics.scheduled ? "scheduled" : l.topics[0] === Vt.topics.executed ? "executed" : "cancelled",
+        id: l.topics[1], tx: l.transactionHash, block: parseInt(l.blockNumber, 16),
+        t: nowSec - Math.round((head - parseInt(l.blockNumber, 16)) * SEC_PER_BLOCK),
+        target: l.topics[0] === Vt.topics.cancelled ? null : "0x" + l.data.slice(26, 66),
+      }));
+    }
     if (!$("#p-long500").hidden) renderLong500();
   } catch { /* a failed poll keeps the last good figures */ }
 }
@@ -4310,7 +4389,7 @@ function renderLong500() {
       return w > 0 ? `<i style="width:${w.toFixed(2)}%;background:${palette[i % palette.length]}" title="${s.symbol} ${w.toFixed(1)}%"></i>` : "";
     }).join("")}</div>` : "";
   $("#tL5Reserve").innerHTML = `<thead><tr><th>Stock</th><th class="r">Held</th><th class="r">Value</th><th class="r">Share</th><th class="r" title="the part of the holding LONG 500 sent">From LONG 500</th></tr></thead><tbody>` +
-    stocks.map((s) => `<tr><td><b>${s.symbol}</b></td><td class="r mono">${s.units.toPrecision(4)}</td><td class="r mono">${usd(s.usd)}</td>
+    stocks.map((s) => `<tr><td><b>${s.symbol}</b>${s.lpUnits > 0 ? ` <span class="muted" title="held in the vault's liquidity positions">${s.lpUnits >= s.units * 0.999 ? "all in LP" : s.lpUnits.toPrecision(4) + " in LP"}</span>` : ""}</td><td class="r mono">${s.units.toPrecision(4)}</td><td class="r mono">${usd(s.usd)}</td>
       <td class="r mono">${tot > 0 ? pct((s.usd || 0) / tot, 1) : "\u2014"}</td><td class="r mono ${s.long500Units > 0 ? "up" : "muted"}">${s.long500Units > 0 ? usd(s.long500Usd) : "\u2014"}</td></tr>`).join("") + "</tbody>";
 
   /* pools and the live feed */
@@ -4325,6 +4404,7 @@ function renderLong500() {
       <span><b>${compact(x.pairedBurned)} ${x.pairedSymbol}</b> burned \u00b7 <b class="up">${stockPx.has(x.stock) ? usd(x.stockToVault * stockPx.get(x.stock)) : x.stockToVault.toPrecision(3)} of ${x.stockSymbol}</b> to the reserve</span>
       <span class="mono muted" title="${x.tx}">${x.tx.slice(0, 10)}</span>
     </div>`).join("")}</div>`;
+  renderVaultControls(usd);
   $("#l5Read").innerHTML = `<p class="muted" style="margin:8px 0 0">Read from the LONG 500 module's own event, one record per trigger: stock collected, the half sent to the vault, the half spent buying back the pool's token, and the token burned. Stock is valued at today's prices; burns at the price each trigger's own buyback paid. Tokens airdropped to the vault that are not stocks are left out.</p>`;
 }
 
@@ -5713,7 +5793,7 @@ function renderVerdict(read, net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow
         hub conversion measures <b>${pctLevel(kappa, 1)}</b>${kMed == null ? "" :
           `, ${kappa >= kMed ? "above" : "below"} its own ${pctLevel(kMed, 1)} median`}; and
         <b>${pctLevel(removed / b.genesisSupply, 2)}</b> of genesis supply is now destroyed or locked, backed by
-        <b>${nf(b.vault.nvdaBalance, 1)} NVDA</b> that has never been withdrawn.
+        <b>${nf(b.vault.nvdaBalance, 1)} NVDA</b>${S.vault && (S.vault.executedEver || 0) === 0 ? " that has never been withdrawn" : " held by the vault"}.
         ${leak ? `The dominant fact right now is that <b>${pctLevel(leak.leakNow, 1)}</b> of the volume on the ${S.flow.pools.length} venues indexed in depth <b>crosses pools that pay the vault nothing</b>, so revenue is falling even though total volume is not — this is venue competition, not weakening demand.` : ""}
         The honest summary: the <i>asset</i> side is compounding quietly and verifiably, while the
         <i>monetary</i> case rests on hub conversion continuing AND on the protocol keeping a toll that

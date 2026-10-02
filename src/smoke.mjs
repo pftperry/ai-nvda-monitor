@@ -318,5 +318,20 @@ console.log("\nScan deadline");
   });
 }
 
+/* Keccak-256 reads every v4 storage slot the vault watch values positions from; a
+   wrong hash reads the wrong slot and returns zero, which looks like "no position". */
+console.log("\nKeccak");
+{
+  const { keccak256, selector } = await import("./keccak.mjs");
+  ok("empty input matches Ethereum's keccak256", () =>
+    assert(keccak256("") === "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470", keccak256("")));
+  ok("event topics and selectors match the chain", () => {
+    assert(keccak256("Transfer(address,address,uint256)") === "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "Transfer topic");
+    assert(keccak256("PROPOSER_ROLE") === "0xb09aa5aeb3702cfd50b6b62bc4532604938f21248a27a1d5ca736082b6819cc1", "the vault's proposer role");
+    assert(selector("balanceOf(address)") === "0x70a08231", "balanceOf selector");
+  });
+  ok("input longer than one block absorbs correctly", () => assert(keccak256("x".repeat(300)).length === 66, "length"));
+}
+
 console.log(`\n${failures ? failures + " FAILED" : "all smoke tests passed"}`);
 process.exit(failures ? 1 : 0);

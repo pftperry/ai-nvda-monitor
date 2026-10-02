@@ -27,6 +27,7 @@ import { indexTraders } from "./tasks/traders.mjs";
 import { classifyAccounts, CONTRACT } from "./tasks/accounts.mjs";
 import { indexFlywheel } from "./tasks/flywheel.mjs";
 import { indexLong500 } from "./tasks/long500.mjs";
+import { indexVaultWatch, lpUnitsByToken } from "./tasks/vaultwatch.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -686,6 +687,65 @@ if (!flag("no-flywheel")) {
   }
 }
 
+/* THE VAULT'S CONTROLS AND ANY LIQUIDITY IT OWNS. The Community Vault is a 48-hour
+   timelock: every move of its assets is scheduled on chain two days ahead. This reads
+   that queue, and values any LP position the vault comes to own (LONG announced on
+   1 Oct that vaults will move their stock into USDG/STOCK pools), so stock that goes
+   into a position is not misread as stock that left. Runs before LONG 500, which
+   folds the positions into the vault's reserve and NAV. */
+let vaultLp = null;
+if (!flag("no-vaultwatch")) {
+  step("Watching the Community Vault");
+  try {
+    const R = readData("rwa.json");
+    const tokens = new Map((R?.tokens || []).map((t) => [t.token.toLowerCase(), { symbol: t.symbol, decimals: t.decimals, priceUsd: t.priceUsd ?? null }]));
+    const out = await indexVaultWatch(latest, tm, { state: store.get("vaultwatch"), tokens,
+      deadline: Date.now() + opt("vaultwatch-budget", 240) * 1000 });
+    store.set("vaultwatch", out.state);
+    writeData("vault.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact });
+    vaultLp = out.artifact.lp;
+    /* The Backing tab reads the vault's stock from rwa.json, written earlier in the
+       run from token balances. Stock in a position is still the vault's, so it is
+       added there too. Idempotent: the previous run's addition is taken off first,
+       so a run that skips the stock census does not add it twice. */
+    if (R?.tokens) {
+      const lpUnits = lpUnitsByToken(vaultLp);
+      let changed = false;
+      for (const t of R.tokens) {
+        const add = lpUnits.get(t.token.toLowerCase()) || 0, was = t.inVaultLp || 0;
+        if (!add && !was) continue;
+        t.inVault = (t.inVault || 0) - was + add; t.inVaultLp = add;
+        if (t.supply > 0) { t.vaultShare = t.inVault / t.supply; t.share = ((t.inDex || 0) + t.inVault) / t.supply; }
+        if (t.priceUsd) t.vaultUsd = t.inVault * t.priceUsd;
+        for (const r of R.backing?.rows || []) {
+          if (r.asset?.toLowerCase() !== C.AI.toLowerCase() || r.anchor?.toLowerCase() !== t.token.toLowerCase()) continue;
+          const wasR = r.stockUnitsLp || 0;
+          r.stockUnits = (r.stockUnits || 0) - wasR + add; r.stockUnitsLp = add;
+          if (t.priceUsd) r.stockUsd = r.stockUnits * t.priceUsd;
+          if (r.stockSupply > 0) r.stockShare = r.stockUnits / r.stockSupply;
+          if (r.mcapUsd > 0 && r.stockUsd != null) r.backing = r.stockUsd / r.mcapUsd;
+        }
+        changed = true;
+      }
+      if (changed) writeData("rwa.json", R);
+    }
+    /* Same for the NVDA figure most of the site reads, burns.json's vault balance: the
+       wallet balance plus NVDA in vault positions, with the wallet figure kept beside
+       it. Idempotent on the wallet figure. */
+    const B = readData("burns.json");
+    if (B?.vault) {
+      const lpNvda = lpUnitsByToken(vaultLp).get(C.NVDA.toLowerCase()) || 0;
+      if (lpNvda || B.vault.nvdaInLp) {
+        const wallet = B.vault.nvdaWallet ?? B.vault.nvdaBalance;
+        B.vault.nvdaWallet = wallet; B.vault.nvdaInLp = lpNvda; B.vault.nvdaBalance = wallet + lpNvda;
+        writeData("burns.json", B);
+      }
+    }
+  } catch (e) {
+    softFail("vault watch", e, "the previous vault.json stays in place");
+  }
+}
+
 /* LONG 500: stock fees from new stock-paired pools into the AI Community Vault, the
    buybacks and burns of each pool's paired token, and the vault's NAV. Every run: it
    is one event scan behind a cursor, and the point is a live counter. */
@@ -700,9 +760,15 @@ if (!flag("no-long500")) {
       stockPrices,
       /* the vault's stock holdings, as the stock census last read them; airdropped
          tokens that are not stock tokens never appear here */
-      vaultStocks: toks.filter((t) => t.inVault > 0).map((t) => ({ token: t.token.toLowerCase(), symbol: t.symbol, units: t.inVault, priceUsd: t.priceUsd ?? null })),
+      vaultStocks: [
+        ...toks.filter((t) => t.inVault > 0).map((t) => ({ token: t.token.toLowerCase(), symbol: t.symbol, units: t.inVault, lpUnits: t.inVaultLp || 0, priceUsd: t.priceUsd ?? null })),
+        /* the dollar side of any vault LP position: USDG is not a stock token, so it is
+           not in the census, but it is the vault's */
+        ...(vaultLp?.byToken || []).filter((e) => e.token === C.USDG.toLowerCase() && e.units > 0)
+          .map((e) => ({ token: e.token, symbol: "USDG", units: e.units, lpUnits: e.units, priceUsd: 1 })),
+      ],
       universe: toks.filter((t) => (t.poolsLong || 0) > 0).length || null,
-      vaultAi: B?.vault?.aiBalance ?? null,
+      vaultAi: B?.vault?.aiBalance == null ? null : B.vault.aiBalance + ((vaultLp?.byToken || []).find((e) => e.token === C.AI.toLowerCase())?.units || 0),
       aiUsd: readData("prices.json")?.aiUsd ?? null,
       burnsDaily: B?.daily || [],
       priceAt: usdPriceLookup(flowOut),

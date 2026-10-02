@@ -161,6 +161,7 @@ export async function indexLong500(latest, tm, opts = {}) {
     const l5 = Math.min(long500Units.get(h.token) || 0, Math.max(h.units, long500Units.get(h.token) || 0));
     const px = h.priceUsd ?? pxOf(h.token);
     return { token: h.token, symbol: h.symbol || sym(h.token), units: +h.units.toPrecision(8), usd: px == null ? null : Math.round(h.units * px * 100) / 100,
+      lpUnits: h.lpUnits ? +h.lpUnits.toPrecision(8) : 0,
       long500Units: +l5.toPrecision(8), long500Usd: px == null ? null : Math.round(l5 * px * 100) / 100 };
   }).sort((a, b) => (b.usd || 0) - (a.usd || 0));
   const stockTotal = reserve.reduce((s, r) => s + (r.usd || 0), 0);
