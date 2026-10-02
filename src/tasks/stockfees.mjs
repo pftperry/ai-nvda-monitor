@@ -10,7 +10,8 @@ import { LONG_HOOK, POOL_MANAGER, USDG, AI, BLOCKS_PER_DAY } from "../config.mjs
    earned in a pool it emits Collect(poolId, fees0, fees1) and adds them to a running
    total, getCumulatedFees0/1(poolId). So:
      - all time = that running total, read per pool;
-     - 24h      = the sum of Collect events in the last 24 hours.
+     - 24h / 7d = Collect events, each spread over the time since that pool's
+                  previous collect, counting the share that falls in the window.
    Both are the protocol's own accounting, not a reconstruction. Both count fees
    when the hook collects them, which on an active pool is several times a day
    (AI/NVDA and MOO/MU each collected ten times in the 24h to 1 Oct 2026); fees
@@ -70,12 +71,60 @@ export async function indexStockFees(latest, tm, opts = {}) {
     for (const l of logs) {
       const id = l.topics[1];
       moved.add(id);
-      S.collects.push([tm.at(parseInt(l.blockNumber, 16)) ?? nowT, id, BigInt("0x" + l.data.slice(2, 66)).toString(), BigInt("0x" + l.data.slice(66, 130)).toString()]);
+      const t = tm.at(parseInt(l.blockNumber, 16)) ?? nowT;
+      /* each collect carries the time of the pool's previous one: what it collected
+         was earned over that interval, not at the moment it was collected */
+      S.collects.push([t, id, BigInt("0x" + l.data.slice(2, 66)).toString(), BigInt("0x" + l.data.slice(66, 130)).toString(), S.lastColT?.[id] ?? null]);
+      (S.lastColT ||= {})[id] = t;
     }
     S.colCursor = logs.reachedBlock;
   }
   S.collects = S.collects.filter((c) => c[0] > nowT - WEEK);
   const days7 = Math.min(7, (nowT - S.colFrom) / DAY);
+
+  /* A pool's earliest collect in the record has no predecessor on file. Within the
+     record the chain is filled in from the sorted collects; for the earliest one
+     per pool the previous collect is looked up in the sixty days before. Without
+     this a pool that had not collected for weeks puts weeks of fees into one week:
+     AI/SI's single collect in the week to 2 Oct 2026 read as an 802% APR. */
+  S.collects.sort((a, b) => a[0] - b[0]);
+  const lastSeen = new Map(), orphans = new Map();
+  for (const c of S.collects) {
+    if (c[4] == null) {
+      if (lastSeen.has(c[1])) c[4] = lastSeen.get(c[1]);
+      else if (!orphans.has(c[1])) orphans.set(c[1], c);
+    }
+    lastSeen.set(c[1], c[0]);
+  }
+  /* One scan, once: every hook Collect in the sixty days before the record began,
+     address-filtered only (the node caps topic-list queries at 100k blocks). It gives
+     each pool's last collect before the record, and seeds lastColT so a pool's next
+     collect knows its predecessor. */
+  if (!S.historyLoaded && Date.now() < deadline) {
+    const startBlock = Math.max(0, latest - Math.ceil(7.05 * BLOCKS_PER_DAY));
+    const prior = await getLogsRange({ address: LONG_HOOK, topics: [COLLECT] }, Math.max(0, startBlock - 60 * BLOCKS_PER_DAY), startBlock, { chunk: 9_000_000, deadline });
+    if (!prior.truncated) {
+      S.before = {};
+      for (const l of prior) { const t = tm.at(parseInt(l.blockNumber, 16)); if (t != null) S.before[l.topics[1]] = Math.max(S.before[l.topics[1]] || 0, t); }
+      S.lastColT ||= {};
+      for (const [id, t] of Object.entries(S.before)) if (!(id in S.lastColT) || S.lastColT[id] < t) { if (!S.collects.some((c) => c[1] === id)) S.lastColT[id] = t; }
+      S.historyLoaded = true;
+    }
+  }
+  /* a pool with no earlier collect at all: its first collect covers its life so far,
+     from its creation block where the census has one, else sixty days (errs low) */
+  const born = new Map([...(opts.pools || []), ...(opts.aprPools || [])].filter((p) => p.block).map((p) => [p.id, tm.at(p.block)]));
+  for (const [id, c] of orphans) {
+    const pt = S.before?.[id] ?? born.get(id) ?? null;
+    if (S.historyLoaded || pt != null) c[4] = pt != null && pt < c[0] ? pt : c[0] - 60 * DAY;
+  }
+  /* the share of a collect earned inside a window */
+  const share = (c, from) => {
+    const t = c[0], pt = c[4] ?? t;
+    if (t <= from) return 0;
+    if (pt >= t) return 1;
+    return (t - Math.max(pt, from)) / (t - pt);
+  };
 
   /* 2. which totals to read: pools that collected, never-read pools (those that
      collected first), and once a day every pool with fees */
@@ -108,12 +157,15 @@ export async function indexStockFees(latest, tm, opts = {}) {
   if (fullDue && !partialRun) S.lastFull = nowT;
 
   /* 3. value and attribute */
+  /* fees earned in each window, raw units as plain numbers: each collect weighted by
+     the share of its interval that falls inside the window */
   const d1Raw = new Map(), d7Raw = new Map();
-  for (const [t, id, a, b] of S.collects) {
-    for (const [m, keep] of [[d7Raw, true], [d1Raw, t > nowT - DAY]]) {
-      if (!keep) continue;
-      const v = m.get(id) || [0n, 0n];
-      v[0] += BigInt(a); v[1] += BigInt(b); m.set(id, v);
+  for (const c of S.collects) {
+    const [, id, a, b] = c;
+    for (const [m, from] of [[d7Raw, nowT - WEEK], [d1Raw, nowT - DAY]]) {
+      const w = share(c, from); if (!(w > 0)) continue;
+      const v = m.get(id) || [0, 0];
+      v[0] += Number(BigInt(a)) * w; v[1] += Number(BigInt(b)) * w; m.set(id, v);
     }
   }
   const byStock = new Map();
@@ -125,7 +177,7 @@ export async function indexStockFees(latest, tm, opts = {}) {
     for (const t of [p.c0, p.c1]) if (stocks.has(t)) row(t).pools++;
     if (!e) { unread++; continue; }
     if (e.f0 === "0" && e.f1 === "0") continue;
-    const d1 = d1Raw.get(p.id) || [0n, 0n], d7 = d7Raw.get(p.id) || [0n, 0n];
+    const d1 = d1Raw.get(p.id) || [0, 0], d7 = d7Raw.get(p.id) || [0, 0];
     /* the price of token0 in token1, from the pool's current sqrt price */
     const sq = e.sq ? Number(BigInt(e.sq)) / 2 ** 96 : null;
     const p01 = sq ? sq * sq * 10 ** (decOf(p.c0) - decOf(p.c1)) : null;
@@ -155,7 +207,7 @@ export async function indexStockFees(latest, tm, opts = {}) {
     for (const t of stockSides) {
       const R = row(t);
       R.poolsWithFees++;
-      if (d1[0] > 0n || d1[1] > 0n) R.poolsCollected24h++;
+      if (d1[0] > 0 || d1[1] > 0) R.poolsCollected24h++;
       R.top.push({ pool: p.id, other: t === p.c0 ? p.c1 : p.c0, usd: Math.round(poolUsd), d1Usd: Math.round(poolUsd1) });
     }
   }
@@ -192,7 +244,7 @@ export async function indexStockFees(latest, tm, opts = {}) {
       stocks: out, totals: { allUsd: tot.all, d1Usd: tot.d1 }, poolsTotal: pools.length, poolsUnread: unread,
       collects24h: S.collects.filter((c) => c[0] > nowT - DAY).length, collects7d: S.collects.length, days7: +days7.toFixed(2),
       poolFees7d, complete: unread === 0, asOf: nowT,
-      method: "From the LONG hook's own fee accounting (DopplerHookInitializer): all time is its running total of fees collected from its liquidity in each pool (getCumulatedFees0/1); 24h is the sum of its Collect events in the last 24 hours. Fees count when collected, several times a day on an active pool; outside LPs' fees are excluded, so both are floors. Each pool's stock-side fees are credited to that stock; the other side's are valued at the pool's current price and credited to the same stock. Values at today's prices.",
+      method: "From the LONG hook's own fee accounting (DopplerHookInitializer): all time is its running total of fees collected from its liquidity in each pool (getCumulatedFees0/1); 24h and 7d come from its Collect events, each spread over the time since that pool's previous collect so a catch-up collect does not land in one window. Fees count when collected, several times a day on an active pool; outside LPs' fees are excluded, so both are floors. Each pool's stock-side fees are credited to that stock; the other side's are valued at the pool's current price and credited to the same stock. Values at today's prices.",
     },
   };
 }

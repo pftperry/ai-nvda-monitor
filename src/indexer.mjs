@@ -810,14 +810,17 @@ if (!flag("no-stockfees")) {
       aiUsd: readData("prices.json")?.aiUsd ?? null, deadline: budget });
     /* FEE APR. Seven days of collected fees, annualised over the days the record
        actually covers, over the liquidity that earned them:
-         - by stock: both sides of every LONG pool on the stock, valued from its
-           position ladders at the pool's price (the stock census, rwa.longTvl);
+         - by stock: the stock held in every LONG pool on the stock, valued from
+           its position ladders (the stock census, rwa.longTvl.perToken). The stock
+           side only: the other side of a launch pool is mostly the launched token's
+           unsold supply, minted rather than deposited, and counting it at pool price
+           put $416M behind NVDA and drove every stock's APR under 3%;
          - AI's protocol-owned liquidity: the indexed AI pools' fees over LONG's own
            liquidity in them (the depth step).
        Fees are the hook's own and the denominator includes any outside LPs, so the
        APR errs low. */
     const A = out.artifact, yr = A.days7 > 0 ? 365 / A.days7 : null;
-    const liq = R?.longTvl?.perTokenAll || {};
+    const liq = R?.longTvl?.perToken || {};
     for (const s of A.stocks) {
       s.liquidityUsd = liq[s.symbol] ?? null;
       s.apr = yr && s.liquidityUsd > 0 ? +(s.d7Usd * yr / s.liquidityUsd).toFixed(4) : null;

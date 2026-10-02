@@ -594,7 +594,8 @@ export async function indexRwa(latest, tm, opts = {}) {
       backfilledTo: LS.cursor, complete: !LS.partial && LS.cursor >= latest, backfillShare: Math.min(1, (LS.cursor - LONG_GENESIS_BLOCK + 1) / span),
       events: LS.events,
       perToken: Object.fromEntries(Object.entries(perToken).map(([k, v]) => [k, Math.round(v)]).sort((a, b) => b[1] - a[1])),
-      /* both sides of every LONG pool on each stock, at the pool's price: what the fee APR divides by */
+      /* both sides at pool price. Not the fee APR's denominator: a launch pool's other side is mostly
+         unsold launched supply, which this values at the pool price (NVDA's read $416M) */
       perTokenAll: Object.fromEntries(Object.entries(perTokenAll).map(([k, v]) => [k, Math.round(v)]).sort((a, b) => b[1] - a[1])),
       method: "LONG's Dune definition: launches from the factories' LaunchCreated, v4 pools valued from their position ladders, graduated pools (Airlock.Migrate) by balance",
     };
