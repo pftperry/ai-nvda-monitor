@@ -28,6 +28,8 @@ import { classifyAccounts, CONTRACT } from "./tasks/accounts.mjs";
 import { indexFlywheel } from "./tasks/flywheel.mjs";
 import { indexLong500 } from "./tasks/long500.mjs";
 import { indexVaultWatch, lpUnitsByToken } from "./tasks/vaultwatch.mjs";
+import { indexStockFees } from "./tasks/stockfees.mjs";
+import { indexVaultLp } from "./tasks/vaultlp.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -614,6 +616,9 @@ if (!fast && !flag("no-launchpad")) {
         derivedTokens: derivedPx ? Object.keys(derivedPx.at || {}).length : 0, derivedPartial: !!derivedPx?.partial,
         method: "Robinhood's stock factory announces every listing (name, symbol); names containing 'Dollar' are dropped and the rest classed treasury/commodity/etf/stock by name, as LONG's Dune queries do. Prices are every Chainlink aggregator on the chain, found by its update event and identified by its own description(), folded to the last answer of each UTC hour and forward-filled." } : null;
       writeData("rwa.json", rwa);
+      /* kept for the per-stock fee step, which runs on fast passes too and needs a
+         price for the feedless stocks the census prices from their USDG pools */
+      store.set("anchorUsd", Object.fromEntries([...anchors].map(([k, v]) => [k.toLowerCase(), v])));
     } catch (e) {
       softFail("stock capture", e, "the previous rwa.json stays in place");
     }
@@ -779,6 +784,40 @@ if (!flag("no-long500")) {
     writeData("long500.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact });
   } catch (e) {
     softFail("LONG 500", e, "the previous long500.json stays in place");
+  }
+}
+
+/* TRADING FEES BY STOCK TOKEN, all time and 24h, from the LONG hook's own per-pool
+   fee counter, plus the fees community vaults earn from the LP upgrade. Every pass:
+   the counters are cheap to read through Multicall3, and a pass re-reads only the
+   pools whose counter moved in the last day (every pool with fees once a day). */
+if (!flag("no-stockfees")) {
+  step("Counting trading fees by stock");
+  try {
+    const R = readData("rwa.json");
+    const census = store.get("longCensus");
+    const anchorUsd = store.get("anchorUsd") || {};
+    const stocks = new Map((R?.tokens || []).map((t) => [t.token.toLowerCase(),
+      { symbol: t.symbol, decimals: t.decimals, priceUsd: t.priceUsd ?? anchorUsd[t.token.toLowerCase()] ?? null }]));
+    if (!census?.pools?.length || !stocks.size) throw new Error("needs the pool census and the stock census first");
+    const budget = Date.now() + opt("stockfees-budget", 240) * 1000;
+    const out = await indexStockFees(latest, tm, { state: store.get("stockFees"), pools: census.pools, stocks,
+      aiUsd: readData("prices.json")?.aiUsd ?? null, deadline: budget });
+    store.set("stockFees", out.state);
+    let lp = { rows: [] };
+    try {
+      lp = await indexVaultLp(latest, tm, { state: store.get("vaultLp"), stocks, deadline: budget + 60_000 });
+      store.set("vaultLp", lp.state);
+    } catch (e) { softFail("vault LP fees", e, "trading fees publish without them"); }
+    /* vault LP fees credited to the stock the vault deployed */
+    const byStock = new Map(out.artifact.stocks.map((s) => [s.token, s]));
+    for (const r of lp.rows) {
+      const s = byStock.get(r.stock);
+      if (s) { s.lpAllUsd = (s.lpAllUsd || 0) + r.feesAllUsd; s.lpD1Usd = (s.lpD1Usd || 0) + r.fees24hUsd; s.lpVaults = (s.lpVaults || 0) + 1; }
+    }
+    writeData("stockfees.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact, vaultLp: lp.rows });
+  } catch (e) {
+    softFail("stock fees", e, "the previous stockfees.json stays in place");
   }
 }
 

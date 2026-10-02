@@ -607,7 +607,7 @@ function table(host, cols, rows) {
 /* ── data ───────────────────────────────────────────────────────────────── */
 const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, names: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json", "long500.json", "vault.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json", "long500.json", "vault.json", "stockfees.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -4980,6 +4980,17 @@ function renderRwa() {
        <span class="muted">Supply is the token's on-chain <code>totalSupply</code>; the pool-manager balance is DEX inventory on every venue,
        LONG-hooked or not, so the share is an upper bound on LONG's own. Prices from each stock's busiest USDG pool.</span>`);
     const sw = R.swapShare?.perToken || [];
+    const FEES = new Map((S.stockfees?.stocks || []).map((s) => [s.token, s]));
+    const compactUsd = (v) => (v != null && v < 1000 ? v.toFixed(v < 10 ? 2 : 0) : compact(v));
+    const feeCell = (t, k) => {
+      const s = FEES.get(t.token);
+      if (!s) return `<span class="muted">${S.stockfees ? "—" : "counting"}</span>`;
+      const usd = k === "all" ? s.allUsd : s.d1Usd, part = s[k];
+      /* a priced stock shows dollars even when the window is quiet; only a stock with
+         no price at all falls back to its stock-side fees in shares */
+      if (s.allUsd > 0) return usd > 0 ? `$${compactUsd(usd)}` : `<span class="muted">$0</span>`;
+      return part.stockUnits > 0 ? `${nf(part.stockUnits, part.stockUnits < 10 ? 2 : 0)} ${t.symbol} <span class="muted">unpriced</span>` : `<span class="muted">$0</span>`;
+    };
     table($("#tStocks"), [
       { h: "Stock", f: (t) => `<b>${t.symbol}</b>${t.listed ? "" : ` <span class="muted" title="active on the chain, no LONG pool">unlisted</span>`}` },
       { h: "On chain", f: (t) => nf(t.supply, 0) },
@@ -4989,7 +5000,14 @@ function renderRwa() {
       { h: "In any pool", f: (t) => `${pctLevel(t.share, 1)} <span class="muted">${t.dexUsd == null ? "unpriced" : `$${compact(t.dexUsd)}`}</span>` },
       { h: "LONG pools / all", f: (t) => (t.poolsAll || !t.poolsPartial ? `${t.poolsLong.toLocaleString()} / ${t.poolsAll.toLocaleString()}${t.poolsPartial ? "*" : ""}` : `<span class="muted">cataloguing</span>`) },
       { h: `Swaps ${win} via LONG`, f: (t) => { const s = sw.find((x) => x.token === t.token); return s ? `${s.long.toLocaleString()} / ${s.all.toLocaleString()} <span class="muted">${pctLevel(s.share, 0)}</span>` : "—"; } },
+      /* fees from the LONG hook's own per-pool counter, every LONG pool on this stock
+         summed; a stock with no price shows its stock-side fees in shares */
+      { h: "LONG fees, all time", f: (t) => feeCell(t, "all") },
+      { h: "LONG fees, 24h", f: (t) => feeCell(t, "d1") },
+      { h: "Vault LP fees", f: (t) => { const s = FEES.get(t.token); return s?.lpVaults ? `$${compactUsd(s.lpAllUsd)} <span class="muted">${s.lpD1Usd ? "$" + compactUsd(s.lpD1Usd) + " 24h" : ""}</span>` : `<span class="muted">—</span>`; } },
     ], R.tokens);
+    const SF = S.stockfees, fn = $("#stockFeeNote");
+    if (fn) fn.innerHTML = SF ? `<p class="muted" style="margin:8px 0 0">LONG fees are what LONG's own liquidity has collected in every LONG pool on that stock, from the hook's own accounting: its running total per pool for all time ($${compact(SF.totals.allUsd)}), and its Collect events for the last 24 hours ($${compact(SF.totals.d1Usd)}, ${SF.collects24h.toLocaleString()} collects), across ${SF.stocks.length} stocks. Fees count when the hook collects them, several times a day on an active pool. The stock side is counted in the stock; the other side (the launched token, AI or USDG) is valued at the pool's current price, so all-time figures are at today's prices. Fees earned by outside LPs are not included.${SF.complete ? "" : ` Still reading: ${SF.poolsUnread.toLocaleString()} of ${SF.poolsTotal.toLocaleString()} pools.`} Vault LP fees are what a pair's community vault has earned from its LP position since the vault LP upgrade, collected plus unclaimed${(SF.vaultLp || []).length ? `; ${SF.vaultLp.map((v) => `${v.stockSymbol} vault ${v.pair || ""} $${compactUsd(v.feesAllUsd)}`).join(", ")}` : ""}.</p>` : "";
     const nvAddr = Object.keys(R.daily || {})[0];
     const daily = nvAddr ? (R.daily[nvAddr] || []) : [];
     if (daily.length > 1) {
