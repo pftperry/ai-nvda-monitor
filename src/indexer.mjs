@@ -801,8 +801,37 @@ if (!flag("no-stockfees")) {
       { symbol: t.symbol, decimals: t.decimals, priceUsd: t.priceUsd ?? anchorUsd[t.token.toLowerCase()] ?? null }]));
     if (!census?.pools?.length || !stocks.size) throw new Error("needs the pool census and the stock census first");
     const budget = Date.now() + opt("stockfees-budget", 240) * 1000;
-    const out = await indexStockFees(latest, tm, { state: store.get("stockFees"), pools: census.pools, stocks,
+    /* AI's pools as the depth step indexes them, with LONG's own liquidity in each:
+       the fee APR on protocol-owned liquidity divides their fees by that */
+    const D = readData("depth.json");
+    const censusById = new Map(census.pools.map((p) => [p.id, p]));
+    const aprPools = (D?.pools || []).map((p) => censusById.get(p.poolId)).filter(Boolean);
+    const out = await indexStockFees(latest, tm, { state: store.get("stockFees"), pools: census.pools, stocks, aprPools,
       aiUsd: readData("prices.json")?.aiUsd ?? null, deadline: budget });
+    /* FEE APR. Seven days of collected fees, annualised over the days the record
+       actually covers, over the liquidity that earned them:
+         - by stock: both sides of every LONG pool on the stock, valued from its
+           position ladders at the pool's price (the stock census, rwa.longTvl);
+         - AI's protocol-owned liquidity: the indexed AI pools' fees over LONG's own
+           liquidity in them (the depth step).
+       Fees are the hook's own and the denominator includes any outside LPs, so the
+       APR errs low. */
+    const A = out.artifact, yr = A.days7 > 0 ? 365 / A.days7 : null;
+    const liq = R?.longTvl?.perTokenAll || {};
+    for (const s of A.stocks) {
+      s.liquidityUsd = liq[s.symbol] ?? null;
+      s.apr = yr && s.liquidityUsd > 0 ? +(s.d7Usd * yr / s.liquidityUsd).toFixed(4) : null;
+    }
+    if (D?.pools?.length && yr) {
+      /* only pools whose fees were actually read: one missing from the census would
+         otherwise add its liquidity at zero fees and drag the APR down */
+      const rows = D.pools.filter((p) => p.hookTvlUsd > 0 && p.poolId in A.poolFees7d).map((p) => ({ poolId: p.poolId, pair: p.pair, polUsd: p.hookTvlUsd,
+        fees7dUsd: A.poolFees7d[p.poolId] ?? 0, apr: +((A.poolFees7d[p.poolId] ?? 0) * yr / p.hookTvlUsd).toFixed(4) }));
+      const pol = rows.reduce((s, r) => s + r.polUsd, 0), f7 = rows.reduce((s, r) => s + r.fees7dUsd, 0);
+      A.aiPol = { polUsd: pol, fees7dUsd: f7, days: A.days7, apr: pol > 0 ? +(f7 * yr / pol).toFixed(4) : null,
+        pools: rows.sort((a, b) => b.polUsd - a.polUsd).slice(0, 12) };
+    }
+    delete A.poolFees7d;
     store.set("stockFees", out.state);
     let lp = { rows: [] };
     try {
@@ -813,7 +842,7 @@ if (!flag("no-stockfees")) {
     const byStock = new Map(out.artifact.stocks.map((s) => [s.token, s]));
     for (const r of lp.rows) {
       const s = byStock.get(r.stock);
-      if (s) { s.lpAllUsd = (s.lpAllUsd || 0) + r.feesAllUsd; s.lpD1Usd = (s.lpD1Usd || 0) + r.fees24hUsd; s.lpVaults = (s.lpVaults || 0) + 1; }
+      if (s) { s.lpAllUsd = (s.lpAllUsd || 0) + r.feesAllUsd; s.lpD1Usd = (s.lpD1Usd || 0) + r.fees24hUsd; s.lpVaults = (s.lpVaults || 0) + 1; s.lpApr = r.apr; s.lpInRange = r.inRangeShare; s.lpAgeDays = r.ageDays; }
     }
     writeData("stockfees.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact, vaultLp: lp.rows });
   } catch (e) {

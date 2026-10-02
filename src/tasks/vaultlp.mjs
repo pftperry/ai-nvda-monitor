@@ -137,11 +137,20 @@ export async function indexVaultLp(latest, tm, opts = {}) {
     const old = M.hist.filter((x) => x[0] <= nowT - DAY);
     M.hist = [...(old.length ? [old.at(-1)] : []), ...M.hist.filter((x) => x[0] > nowT - DAY)].slice(-200);
     const young = (tm.at(M.firstBlock) ?? nowT) > nowT - DAY;
+    /* time in range, sampled once a run: a position listed above spot earns nothing
+       until price reaches it, so its APR means little without this beside it */
+    M.obs = M.obs || { n: 0, inRange: 0 };
+    if (inRange != null) { M.obs.n++; if (inRange) M.obs.inRange++; }
+    const ageDays = ((nowT - (tm.at(M.firstBlock) ?? nowT)) / DAY);
     const base = old.length ? old.at(-1)[1] : young ? 0 : M.hist[0][1];
     rows.push({ vault: M.vault, module: m, stock: M.stock, stockSymbol: symOf(M.stock), deployedUnits: +M.deployed.toPrecision(8),
       pair, range, inRange, holdings: Object.entries(holds).map(([t, u]) => ({ token: t, symbol: symOf(t), units: +u.toPrecision(8) })),
       positionUsd: Math.round(usd), feesAllUsd: Math.round(feeAll * 100) / 100, fees24hUsd: Math.round((feeAll - base) * 100) / 100,
-      since: tm.at(M.firstBlock) ?? null });
+      since: tm.at(M.firstBlock) ?? null, ageDays: +ageDays.toFixed(2),
+      /* fees so far over the position's value, annualised over its age; withheld until
+         it is a day old, when a few hours of fees would annualise into noise */
+      apr: usd > 0 && ageDays >= 1 ? +(feeAll / usd * 365 / ageDays).toFixed(4) : null,
+      inRangeShare: M.obs.n >= 3 ? +(M.obs.inRange / M.obs.n).toFixed(3) : null, inRangeObs: M.obs.n });
   }
   log(`  vault LP: ${rows.length} vault(s) in the LP upgrade; $${rows.reduce((s, r) => s + r.positionUsd, 0).toLocaleString()} in positions, $${rows.reduce((s, r) => s + r.feesAllUsd, 0).toFixed(2)} fees all time`);
   return { state: S, rows };

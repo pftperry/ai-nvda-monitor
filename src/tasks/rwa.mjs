@@ -548,7 +548,7 @@ export async function indexRwa(latest, tm, opts = {}) {
     }
     if (store) store.set("rwaLadderStream", LS);
 
-    const perToken = {};
+    const perToken = {}, perTokenAll = {};
     let usd = 0, valued = 0, unpriced = 0, withLiquidity = 0;
     for (const [id, lad] of Object.entries(LS.ladders)) {
       const e = allStockPools.get(id); if (!e) continue;
@@ -559,7 +559,16 @@ export async function indexRwa(latest, tm, opts = {}) {
       let counted = false;
       for (const { token, side } of e.stocks) {
         const amt = (side === 0 ? a0 : a1) / 10 ** (decimals.get(token) ?? 18);
-        const px = anchorUsd.get(token); if (!px || !(amt > 0)) continue;
+        const px = anchorUsd.get(token); if (!px) continue;
+        /* Both sides, for the fee APR's denominator: the other side converted into the
+           stock at the pool's price (raw over raw, so decimals cancel). A pool of two
+           stocks keeps each side with its own stock. */
+        if (e.stocks.length === 1) {
+          const otherRaw = side === 0 ? a1 / (sqrtP * sqrtP) : a0 * sqrtP * sqrtP;
+          const both = amt + otherRaw / 10 ** (decimals.get(token) ?? 18);
+          if (both > 0 && isFinite(both)) perTokenAll[sym(token)] = (perTokenAll[sym(token)] || 0) + both * px;
+        } else if (amt > 0) perTokenAll[sym(token)] = (perTokenAll[sym(token)] || 0) + amt * px;
+        if (!(amt > 0)) continue;
         usd += amt * px; perToken[sym(token)] = (perToken[sym(token)] || 0) + amt * px; counted = true;
         poolStock.push({ id, token, side, units: amt, usd: amt * px, sqrtP });
       }
@@ -585,6 +594,8 @@ export async function indexRwa(latest, tm, opts = {}) {
       backfilledTo: LS.cursor, complete: !LS.partial && LS.cursor >= latest, backfillShare: Math.min(1, (LS.cursor - LONG_GENESIS_BLOCK + 1) / span),
       events: LS.events,
       perToken: Object.fromEntries(Object.entries(perToken).map(([k, v]) => [k, Math.round(v)]).sort((a, b) => b[1] - a[1])),
+      /* both sides of every LONG pool on each stock, at the pool's price: what the fee APR divides by */
+      perTokenAll: Object.fromEntries(Object.entries(perTokenAll).map(([k, v]) => [k, Math.round(v)]).sort((a, b) => b[1] - a[1])),
       method: "LONG's Dune definition: launches from the factories' LaunchCreated, v4 pools valued from their position ladders, graduated pools (Airlock.Migrate) by balance",
     };
     log(`  stock inventory in LONG pools: $${Math.round(usd).toLocaleString()} in v4 across ${valued} pools with stock (${withLiquidity} with liquidity of ${longIds.size}) + $${Math.round(graduatedUsd).toLocaleString()} in ${graduatedPools} graduated pools (${launched.size} launches, ${Object.keys(reg.migrations).length} migrations); ladder stream at block ${LS.cursor.toLocaleString()} (${(100 * longTvl.backfillShare).toFixed(1)}% of history${LS.partial ? ", resumes" : ""}), ${seen.toLocaleString()} events this run, ${secs(t4)}`);

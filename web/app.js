@@ -4312,10 +4312,18 @@ function renderLong500() {
       ${tile("Protocol-owned", usd(pol), `${Dp.tvlUsd ? pct(pol / Dp.tvlUsd, 0) : "\u2014"} of AI's ${usd(Dp.tvlUsd)} of liquidity`, "", "hero")}
       ${tile("In AI/NVDA", usd(flag?.hookTvlUsd), flag?.hookShare != null ? `${pct(flag.hookShare, 0)} of that pool` : "")}
       ${tile("NVDA in it", polNvda ? `~${n0(polNvda)}` : "\u2014", polNvda && S.rwa?.tokens ? `about ${usd(polNvda * ((S.rwa.tokens.find((t) => t.symbol === "NVDA") || {}).priceUsd || 0))} of NVDA` : "")}
-      ${tile("Pools with protocol liquidity", n0(polPools.length), `of ${n0(Dp.pools?.length)} indexed AI pools`)}
+      ${(() => {
+        /* fee APR: the hook's collected fees in these pools over seven days (or what the
+           record covers so far), annualised, over the liquidity it owns in them */
+        const AP = S.stockfees?.aiPol;
+        return AP?.apr != null
+          ? tile(`Fee APR${AP.days < 6.9 ? `, ${AP.days.toFixed(1)}d` : ", 7d"}`, pct(AP.apr, 0), `${usd(AP.fees7dUsd)} of fees collected on it in ${AP.days < 6.9 ? AP.days.toFixed(1) + " days" : "the last 7 days"}, annualised`)
+          : tile("Pools with protocol liquidity", n0(polPools.length), `of ${n0(Dp.pools?.length)} indexed AI pools`);
+      })()}
     </div>`;
-  $("#tL5Pol").innerHTML = polPools.length ? `<thead><tr><th>Pool</th><th class="r">Protocol-owned</th><th class="r">Pool total</th><th class="r">Owned</th></tr></thead><tbody>` +
-    polPools.slice(0, 8).map((p) => `<tr><td><b>AI / ${p.pair}</b></td><td class="r mono">${usd(p.hookTvlUsd)}</td><td class="r mono">${usd(p.tvlUsd)}</td><td class="r mono">${p.hookShare != null ? pct(p.hookShare, 0) : "\u2014"}</td></tr>`).join("") + "</tbody>" : "";
+  const aprOf = new Map((S.stockfees?.aiPol?.pools || []).map((p) => [p.poolId, p.apr]));
+  $("#tL5Pol").innerHTML = polPools.length ? `<thead><tr><th>Pool</th><th class="r">Protocol-owned</th><th class="r">Pool total</th><th class="r">Owned</th><th class="r" title="seven days of the hook's collected fees in this pool, annualised, over its liquidity here">Fee APR</th></tr></thead><tbody>` +
+    polPools.slice(0, 8).map((p) => `<tr><td><b>AI / ${p.pair}</b></td><td class="r mono">${usd(p.hookTvlUsd)}</td><td class="r mono">${usd(p.tvlUsd)}</td><td class="r mono">${p.hookShare != null ? pct(p.hookShare, 0) : "\u2014"}</td><td class="r mono">${aprOf.get(p.poolId) != null ? pct(aprOf.get(p.poolId), 0) : "\u2014"}</td></tr>`).join("") + "</tbody>" : "";
   $("#l5PolRead").innerHTML = `<p class="muted" style="margin:8px 0 0">Valued from every position the hook holds, at each pool's price. It is liquidity, so it trades: it deepens as fees compound in and shifts between AI and the quote token as the price moves. It is not part of the Community Vault total.</p>`;
 
   /* PROGRESS: the programme on its own scale. Drawn as steps, because triggers are
@@ -4982,6 +4990,7 @@ function renderRwa() {
     const sw = R.swapShare?.perToken || [];
     const FEES = new Map((S.stockfees?.stocks || []).map((s) => [s.token, s]));
     const compactUsd = (v) => (v != null && v < 1000 ? v.toFixed(v < 10 ? 2 : 0) : compact(v));
+    const usd0 = (v) => (v == null ? "—" : "$" + compactUsd(v));
     const feeCell = (t, k) => {
       const s = FEES.get(t.token);
       if (!s) return `<span class="muted">${S.stockfees ? "—" : "counting"}</span>`;
@@ -5004,7 +5013,8 @@ function renderRwa() {
          summed; a stock with no price shows its stock-side fees in shares */
       { h: "LONG fees, all time", f: (t) => feeCell(t, "all") },
       { h: "LONG fees, 24h", f: (t) => feeCell(t, "d1") },
-      { h: "Vault LP fees", f: (t) => { const s = FEES.get(t.token); return s?.lpVaults ? `$${compactUsd(s.lpAllUsd)} <span class="muted">${s.lpD1Usd ? "$" + compactUsd(s.lpD1Usd) + " 24h" : ""}</span>` : `<span class="muted">—</span>`; } },
+      { h: "Fee APR, 7d", f: (t) => { const s = FEES.get(t.token); return s?.apr != null ? `<span title="${usd0(s.d7Usd)} of fees over ${S.stockfees.days7 < 6.9 ? S.stockfees.days7.toFixed(1) + " days" : "7 days"}, annualised, over ${usd0(s.liquidityUsd)} of LONG liquidity on ${t.symbol} (both sides)">${pctLevel(s.apr, s.apr < 0.1 ? 1 : 0)}</span>` : `<span class="muted">—</span>`; } },
+      { h: "Vault LP fees", f: (t) => { const s = FEES.get(t.token); return s?.lpVaults ? `$${compactUsd(s.lpAllUsd)} <span class="muted">${s.lpD1Usd ? "$" + compactUsd(s.lpD1Usd) + " 24h" : ""}${s.lpApr != null ? ` · ${pctLevel(s.lpApr, 0)} APR` : s.lpAgeDays != null && s.lpAgeDays < 1 ? " · APR after a day" : ""}${s.lpInRange != null ? ` · in range ${pctLevel(s.lpInRange, 0)} of the time` : ""}</span>` : `<span class="muted">—</span>`; } },
     ], R.tokens);
     const SF = S.stockfees, fn = $("#stockFeeNote");
     if (fn) fn.innerHTML = SF ? `<p class="muted" style="margin:8px 0 0">LONG fees are what LONG's own liquidity has collected in every LONG pool on that stock, from the hook's own accounting: its running total per pool for all time ($${compact(SF.totals.allUsd)}), and its Collect events for the last 24 hours ($${compact(SF.totals.d1Usd)}, ${SF.collects24h.toLocaleString()} collects), across ${SF.stocks.length} stocks. Fees count when the hook collects them, several times a day on an active pool. The stock side is counted in the stock; the other side (the launched token, AI or USDG) is valued at the pool's current price, so all-time figures are at today's prices. Fees earned by outside LPs are not included.${SF.complete ? "" : ` Still reading: ${SF.poolsUnread.toLocaleString()} of ${SF.poolsTotal.toLocaleString()} pools.`} Vault LP fees are what a pair's community vault has earned from its LP position since the vault LP upgrade, collected plus unclaimed${(SF.vaultLp || []).length ? `; ${SF.vaultLp.map((v) => `${v.stockSymbol} vault ${v.pair || ""} $${compactUsd(v.feesAllUsd)}`).join(", ")}` : ""}.</p>` : "";
