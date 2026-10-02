@@ -4154,7 +4154,7 @@ function renderVaultControls(usd) {
       <td>${txl(o.executedTx || o.scheduledTx)}</td></tr>`).join("") + "</tbody>" : "";
 
   $("#tL5Lp").innerHTML = pos.length ? `<thead><tr><th>Position</th><th>Range, USDG per share</th><th class="r">Holds</th><th class="r">Value</th><th class="r">Unclaimed fees</th></tr></thead><tbody>` +
-    pos.map((p) => `<tr><td><b>${p.pair}</b> <span class="muted">${p.kind}${p.fee != null && p.kind === "v3" ? " " + (p.fee / 1e4).toFixed(2) + "%" : ""}${p.viaModule ? " \u00b7 held by " + short(p.owner) + ", not counted" : ""}</span></td>
+    pos.map((p) => `<tr><td><b>${p.pair}</b> <span class="muted">${p.kind}${p.fee != null && p.kind === "v3" ? " " + (p.fee / 1e4).toFixed(2) + "%" : ""}${p.viaModule ? (p.counted ? " \u00b7 via the vault's LP module " + short(p.owner) : " \u00b7 held by " + short(p.owner) + ", not counted") : ""}</span></td>
       <td class="mono">${p.priceRange ? `$${p.priceRange[0].toFixed(2)} \u2013 $${p.priceRange[1].toFixed(2)}` : "\u2014"} <span class="${p.inRange ? "up" : "muted"}">${p.inRange ? "in range" : "out of range"}</span></td>
       <td class="r mono">${p.holdings.map((h) => `${h.units.toPrecision(4)} ${h.symbol}`).join("<br>")}</td>
       <td class="r mono">${usd(p.usd)}</td><td class="r mono">${usd(p.feesUsd)}</td></tr>`).join("") + "</tbody>"

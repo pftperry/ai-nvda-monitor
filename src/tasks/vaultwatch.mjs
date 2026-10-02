@@ -25,6 +25,7 @@ const VAULT = COMMUNITY_VAULT.toLowerCase();
 const VAULT_DEPLOY_BLOCK = 21_001_035;
 export const V4_POSITION_MANAGER = "0x58daec3116aae6d93017baaea7749052e8a04fa7";   // "Uniswap v4 Positions NFT"
 const STATE_V = 1;
+const V3_MINT = keccak256("Mint(address,address,int24,int24,uint128,uint256,uint256)");
 
 const EV = {
   scheduled: keccak256("CallScheduled(bytes32,uint256,address,uint256,bytes,bytes32,uint256)"),
@@ -86,6 +87,10 @@ const SEL = {
   v3factory: selector("factory()"),
   getPool: selector("getPool(address,address,uint24)"),
   slot0: selector("slot0()"),
+  positionsKey: selector("positions(bytes32)"),
+  token0: selector("token0()"), token1: selector("token1()"), fee: selector("fee()"),
+  fgg0: selector("feeGrowthGlobal0X128()"), fgg1: selector("feeGrowthGlobal1X128()"),
+  ticks: selector("ticks(int24)"),
   collect: selector("collect((uint256,address,uint128,uint128))"),
   minDelay: selector("getMinDelay()"),
   hasRole: selector("hasRole(bytes32,address)"),
@@ -137,10 +142,15 @@ export async function indexVaultWatch(latest, tm, opts = {}) {
   const symOf = (a) => (a === "0x0000000000000000000000000000000000000000" ? "ETH" : a === USDG.toLowerCase() ? "USDG" : a === AI.toLowerCase() ? "AI" : tokens.get(a)?.symbol || a.slice(0, 8) + "…");
   const decOf = (a) => (a === USDG.toLowerCase() ? 6 : tokens.get(a)?.decimals ?? 18);
   const at = (b) => tm.at(b) ?? null;
+  /* opts.vault exists to test the position logic against another vault (MOO's); the
+     indexer never passes it */
+  const VAULT = (opts.vault || COMMUNITY_VAULT).toLowerCase();
 
   const prev = opts.state?.v === STATE_V ? opts.state : null;
   const S = prev ? structuredClone(prev) : { v: STATE_V, cursor: VAULT_DEPLOY_BLOCK - 1, ops: {}, roles: {}, minDelay: null,
     nftCursor: latest - 3 * BLOCKS_PER_DAY, nfts: {}, v4Cursor: VAULT_DEPLOY_BLOCK - 1, direct: {}, modules: [] };
+  /* added after the first release; a state written before then starts these here */
+  S.v3Cursor ??= latest - 3 * BLOCKS_PER_DAY; S.v3direct ??= {}; S.inflow ??= {};
 
   /* 1. The timelock's own events, every one since deployment, behind a cursor. */
   if (S.cursor < latest) {
@@ -204,6 +214,10 @@ export async function indexVaultWatch(latest, tm, opts = {}) {
     } else if (sig === "updateDelay(uint256)") {
       text = `change the delay to ${(Number(wUint(args, 0)) / 3600).toFixed(1)} hours`;
     }
+    /* a call into a contract that is not a token is how a vault hands assets to an LP
+       module (MOO's vault, the first to adopt LONG's upgrade, did exactly that), so the
+       target is watched too */
+    if (!tok && c.target !== VAULT && c.target !== V4_POSITION_MANAGER && c.target !== POOL_MANAGER.toLowerCase()) modules.add(c.target);
     return { ...c, fn: sig, text, flows };
   };
   const nowT = at(latest) ?? Math.floor(Date.now() / 1000);
@@ -228,9 +242,15 @@ export async function indexVaultWatch(latest, tm, opts = {}) {
     let reached = latest;
     for (const o of owners) {
       const logs = await getLogsRange({ topics: [TOPICS.TRANSFER, null, padAddr(o)] }, S.nftCursor + 1, latest, { chunk: 25_000, deadline });
-      for (const l of logs) if (l.topics.length === 4) {
-        const id = BigInt(l.topics[3]).toString();
-        S.nfts[`${l.address.toLowerCase()}:${id}`] = { contract: l.address.toLowerCase(), id, firstBlock: parseInt(l.blockNumber, 16) };
+      for (const l of logs) {
+        if (l.topics.length === 4) {
+          const id = BigInt(l.topics[3]).toString();
+          S.nfts[`${l.address.toLowerCase()}:${id}`] = { contract: l.address.toLowerCase(), id, firstBlock: parseInt(l.blockNumber, 16) };
+        } else if (o !== VAULT && l.topics.length === 3) {
+          /* who funds a module: if only this vault (and the pools it collects from) ever
+             sends it tokens, its positions are this vault's */
+          (S.inflow[o] = S.inflow[o] || {})[topicAddr(l.topics[1])] = true;
+        }
       }
       reached = Math.min(reached, logs.reachedBlock);
       if (logs.truncated) break;
@@ -252,6 +272,22 @@ export async function indexVaultWatch(latest, tm, opts = {}) {
       if (logs.truncated) break;
     }
     S.v4Cursor = reached;
+  }
+  /* 4b. Positions a watched owner holds directly in a Uniswap v3 pool, with no NFT:
+     the v3 pool's Mint names the owner. This is the shape MOO's LP module used on
+     1 Oct 2026 (module 0x1339...a5f5, USDG/MU 0.3%, MU only, listed above spot). */
+  if (S.v3Cursor < latest && Date.now() < deadline) {
+    let reached = latest;
+    for (const o of owners) {
+      const logs = await getLogsRange({ topics: [V3_MINT, padAddr(o)] }, S.v3Cursor + 1, latest, { chunk: 25_000, deadline });
+      for (const l of logs) {
+        const lo = Number(BigInt.asIntN(24, BigInt(l.topics[2]))), hi = Number(BigInt.asIntN(24, BigInt(l.topics[3])));
+        S.v3direct[`${l.address.toLowerCase()}:${o}:${lo}:${hi}`] = { pool: l.address.toLowerCase(), owner: o, tickLower: lo, tickUpper: hi };
+      }
+      reached = Math.min(reached, logs.reachedBlock);
+      if (logs.truncated) break;
+    }
+    S.v3Cursor = reached;
   }
 
   /* 5. Value every position at the current pool price. */
@@ -302,6 +338,28 @@ export async function indexVaultWatch(latest, tm, opts = {}) {
     const key = opts.poolKeys?.get?.(d.poolId) || null;
     positions.push(build("v4", { ref: `v4 direct`, owner: d.owner, poolId: d.poolId, c0: key?.c0 || null, c1: key?.c1 || null, tickLower: d.tickLower, tickUpper: d.tickUpper, ...st }));
   }
+  /* v3 positions held in the pool itself. Unclaimed fees as the pool computes them:
+     what is already owed plus fee growth inside the range since the last update. */
+  for (const d of Object.values(S.v3direct)) {
+    const i24 = (t) => w32(BigInt(t));
+    const key = keccak256("0x" + d.owner.slice(2) + i24hex(d.tickLower) + i24hex(d.tickUpper));
+    const r = await rpcBatch([
+      call(d.pool, SEL.positionsKey + key.slice(2)), call(d.pool, SEL.slot0), call(d.pool, SEL.token0), call(d.pool, SEL.token1), call(d.pool, SEL.fee),
+      call(d.pool, SEL.fgg0), call(d.pool, SEL.fgg1), call(d.pool, SEL.ticks + i24(d.tickLower)), call(d.pool, SEL.ticks + i24(d.tickUpper)),
+    ]);
+    if (r.some((x) => x == null)) continue;
+    const [pos, s0, t0, t1, fee, g0, g1, tl, tu] = r;
+    const L = wUint(pos, 0) & M128;
+    if (L === 0n) continue;
+    const curTick = Number(wInt(s0, 1, 24));
+    const in0 = feeInside(curTick, d.tickLower, d.tickUpper, BigInt(g0), wUint(tl, 2), wUint(tu, 2));
+    const in1 = feeInside(curTick, d.tickLower, d.tickUpper, BigInt(g1), wUint(tl, 3), wUint(tu, 3));
+    positions.push(build("v3", { ref: "v3 direct", owner: d.owner, pool: d.pool, fee: Number(BigInt(fee)),
+      c0: "0x" + t0.slice(26), c1: "0x" + t1.slice(26), tickLower: d.tickLower, tickUpper: d.tickUpper, L,
+      sqrtPX96: wUint(s0, 0), curTick,
+      fees0: (wUint(pos, 3) & M128) + ((((in0 - wUint(pos, 1)) & M256) * L) >> 128n),
+      fees1: (wUint(pos, 4) & M128) + ((((in1 - wUint(pos, 2)) & M256) * L) >> 128n) }));
+  }
   function build(kind, p) {
     const sqrtP = Number(p.sqrtPX96) / 2 ** 96;
     const { a0, a1 } = amountsFor(Number(p.L), tickToSqrt(p.tickLower), tickToSqrt(p.tickUpper), sqrtP);
@@ -324,12 +382,20 @@ export async function indexVaultWatch(latest, tm, opts = {}) {
   const v4NftsHeld = bal ? Number(BigInt(bal)) : null;
   const v4NftsFound = positions.filter((p) => p.kind === "v4" && p.nft && p.owner === VAULT).length;
 
-  /* Only positions the vault itself owns go into its totals. A module an operation
-     hands tokens to may serve other pairs' vaults too, so everything it holds is not
-     necessarily AI's; its positions are listed, flagged, and left out of the total
-     rather than risk overstating the vault. */
-  for (const p of positions) p.viaModule = p.owner !== VAULT;
-  const own = positions.filter((p) => !p.viaModule);
+  /* What counts toward the vault. Its own positions, always. A module's, only when the
+     module is the vault's alone: every token it has ever received came from this vault
+     or from the pools its own positions sit in (fee collections, withdrawals). A module
+     funded by anyone else may hold other vaults' assets, so its positions are listed
+     and left out rather than risk overstating this one. MOO's module passes this test:
+     its only inflows were two MU transfers from MOO's vault. */
+  const ownPools = new Set(Object.values(S.v3direct).map((d) => d.pool));
+  const machinery = new Set([POOL_MANAGER.toLowerCase(), V4_POSITION_MANAGER, "0x0000000000000000000000000000000000000000"]);
+  const exclusive = (o) => {
+    const from = Object.keys(S.inflow[o] || {});
+    return from.includes(VAULT) && from.every((a) => a === VAULT || ownPools.has(a) || machinery.has(a));
+  };
+  for (const p of positions) { p.viaModule = p.owner !== VAULT; p.counted = !p.viaModule || exclusive(p.owner); }
+  const own = positions.filter((p) => p.counted);
   const byToken = new Map();
   for (const p of own) for (const h of [...p.holdings, ...p.fees]) {
     const e = byToken.get(h.token) || { token: h.token, symbol: h.symbol, units: 0, usd: 0, priced: true };
@@ -337,7 +403,7 @@ export async function indexVaultWatch(latest, tm, opts = {}) {
     byToken.set(h.token, e);
   }
   const lpUsd = own.reduce((s, p) => s + (p.usd || 0), 0), feesUsd = own.reduce((s, p) => s + (p.feesUsd || 0), 0);
-  const moduleUsd = positions.filter((p) => p.viaModule).reduce((s, p) => s + (p.usd || 0) + (p.feesUsd || 0), 0);
+  const moduleUsd = positions.filter((p) => !p.counted).reduce((s, p) => s + (p.usd || 0) + (p.feesUsd || 0), 0);
   const role = (r) => Object.keys(S.roles[r] || {});
   const pending = ops.filter((o) => o.status === "pending" || o.status === "ready");
   log(`  vault: timelock delay ${S.minDelay == null ? "?" : (S.minDelay / 3600).toFixed(0) + "h"}, ${ops.length} operation(s) ever scheduled, ${pending.length} pending; ${positions.length} LP position(s) worth $${Math.round(lpUsd).toLocaleString()} + $${Math.round(feesUsd).toLocaleString()} unclaimed fees; v4 NFTs held ${v4NftsHeld ?? "?"}, found ${v4NftsFound}`);
@@ -356,7 +422,7 @@ export async function indexVaultWatch(latest, tm, opts = {}) {
       lp: { positions, usd: Math.round(lpUsd * 100) / 100, feesUsd: Math.round(feesUsd * 100) / 100, moduleUsd: Math.round(moduleUsd * 100) / 100,
         byToken: [...byToken.values()].map((e) => ({ ...e, units: +e.units.toPrecision(10), usd: e.priced ? Math.round(e.usd * 100) / 100 : null })),
         v4NftsHeld, v4NftsFound, watchedOwners: owners },
-      method: "The Community Vault is an OpenZeppelin TimelockController: every move of its assets is first scheduled on chain, waits out the minimum delay, then executes. Every CallScheduled, CallExecuted and Cancelled event since deployment is read and each call decoded. Liquidity positions held by the vault, or by a contract an operation sends its tokens to, are valued at the current pool price from the pool's own state (Uniswap v4 via PoolManager.extsload, v3 from the pool and the position manager); unclaimed fees are computed from the pool's fee growth (v4) or by simulating a collect (v3) and shown separately. Collected fees arrive as ordinary vault balances and are counted there.",
+      method: "The Community Vault is an OpenZeppelin TimelockController: every move of its assets is first scheduled on chain, waits out the minimum delay, then executes. Every CallScheduled, CallExecuted and Cancelled event since deployment is read and each call decoded. Liquidity positions held by the vault, or by an LP module funded only by the vault (positions held directly in a v3 pool included), are valued at the current pool price from the pool's own state (Uniswap v4 via PoolManager.extsload, v3 from the pool and the position manager); unclaimed fees are computed from the pool's fee growth (v4) or by simulating a collect (v3) and shown separately. Collected fees arrive as ordinary vault balances and are counted there.",
     },
   };
 }
