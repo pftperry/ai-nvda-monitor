@@ -31,6 +31,7 @@ import { indexVaultWatch, lpUnitsByToken } from "./tasks/vaultwatch.mjs";
 import { indexStockFees } from "./tasks/stockfees.mjs";
 import { indexVaultLp } from "./tasks/vaultlp.mjs";
 import { indexCommunityVaults } from "./tasks/communityvaults.mjs";
+import { indexLiquidity } from "./tasks/liquidity.mjs";
 import { runScoreTest } from "./tasks/scoretest.mjs";
 import { indexRevenue } from "./tasks/revenue.mjs";
 import { indexHolders, usdPriceLookup, pickHolderState } from "./tasks/holders.mjs";
@@ -857,6 +858,45 @@ if (!flag("no-stockfees")) {
       store.set("communityVaults", cv.state);
     } catch (e) { softFail("community vaults", e, "fees publish without them"); }
     writeData("stockfees.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact, vaultLp: lp.rows, communityVaults: cv.rows });
+
+    /* LIQUIDITY: AI/NVDA's fee engine day by day, every community vault pair's daily
+       fees (for before and after an LP deployment), and where NVDA's DEX liquidity
+       sits. Joins the hook's collects to the burns ledger and the swap tape. */
+    try {
+      const nvTok = (R?.tokens || []).find((t) => t.token.toLowerCase() === C.NVDA.toLowerCase());
+      const aiPoolC = censusById.get(C.AI_NVDA_POOL);
+      const lpSince = new Map(lp.rows.map((r) => [r.vault, r.since]));
+      const watch = [];
+      if (aiPoolC) watch.push({ id: aiPoolC.id, c0: aiPoolC.c0, c1: aiPoolC.c1, block: aiPoolC.block, asset: C.AI, label: "AI/NVDA" });
+      for (const r of cv.rows) {
+        const pc = censusById.get(r.poolId); if (!pc) continue;
+        const a0 = pc.c0.toLowerCase() === r.asset;
+        const dec = (t) => (t.toLowerCase() === C.USDG.toLowerCase() ? 6 : 18);
+        watch.push({ id: r.poolId, c0: pc.c0, c1: pc.c1, block: pc.block, asset: r.asset, label: `${r.assetSymbol}/${r.numeraireSymbol}`, vault: r.vault,
+          lpSince: lpSince.get(r.vault) || null, px0: a0 ? r.assetPx : r.numPx, px1: a0 ? r.numPx : r.assetPx, dec0: dec(pc.c0), dec1: dec(pc.c1) });
+      }
+      /* AI/NVDA traded per day, from the swap tape's hourly rows: the AI leg at the
+         hour's price, and the pool's fee */
+      const aiFlow = flowOut.find((p) => p.poolId === C.AI_NVDA_POOL);
+      const nvCloses = new Map((R?.stockPx?.stocks?.[C.NVDA.toLowerCase()]?.close || []).map(([t, v]) => [Math.floor(t / 86400) * 86400, v]));
+      const nvAt = (d) => { for (let k = 0; k < 6; k++) { const v = nvCloses.get(d - k * 86400); if (v) return v; } return nvTok?.priceUsd ?? null; };
+      const volByDay = new Map();
+      for (const h of readData("flow.json")?.pools?.find((p) => p.poolId === C.AI_NVDA_POOL)?.hourly || []) {
+        const d = Math.floor(h.t / 86400) * 86400, px = h.close && nvAt(d) ? h.close * nvAt(d) : null;
+        const v = volByDay.get(d) || { usd: 0, feePips: h.feePips ?? null };
+        if (px != null) v.usd += ((h.aiBuy || 0) + (h.aiSell || 0)) * px;
+        v.feePips = h.feePips ?? v.feePips; volByDay.set(d, v);
+      }
+      const nvPairs = (R?.backing?.rows || []).filter((r) => r.anchorSymbol === "NVDA").sort((a, b) => b.stockUnits - a.stockUnits).slice(0, 4)
+        .map((r) => ({ symbol: r.symbol, poolId: r.poolId, stockUnits: r.stockUnits }));
+      const lq = await indexLiquidity(latest, tm, { state: store.get("liquidity"), watch,
+        burnsDaily: readData("burns.json")?.daily || [], aiNvdaVolByDay: volByDay,
+        aiUsdAt: usdPriceLookup(flowOut), nvdaUsdAt: nvAt, nvdaUsd: nvTok?.priceUsd ?? null,
+        longNvdaPairs: nvPairs, longNvdaUnits: nvTok?.priceUsd && R?.longTvl?.perToken?.NVDA ? Math.round(R.longTvl.perToken.NVDA / nvTok.priceUsd) : null,
+        pmNvdaUnits: nvTok?.inDex != null ? Math.round(nvTok.inDex) : null, deadline: budget + 150_000 });
+      store.set("liquidity", lq.state);
+      writeData("liquidity.json", { updatedAt: Math.floor(Date.now() / 1000), ...lq.artifact });
+    } catch (e) { softFail("liquidity", e, "the previous liquidity.json stays in place"); }
   } catch (e) {
     softFail("stock fees", e, "the previous stockfees.json stays in place");
   }

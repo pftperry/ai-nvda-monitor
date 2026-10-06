@@ -34,6 +34,7 @@
   <div class="inner" role="tablist">
     <button class="tab" role="tab" id="tab-investor"  aria-controls="p-investor"  aria-selected="true">RWA</button>
     <button class="tab" role="tab" id="tab-long500"   aria-controls="p-long500"   aria-selected="false">LONG 500</button>
+    <button class="tab" role="tab" id="tab-liquidity" aria-controls="p-liquidity" aria-selected="false">Liquidity</button>
     <button class="tab" role="tab" id="tab-backing"   aria-controls="p-backing"   aria-selected="false">Backing</button>
     <button class="tab" role="tab" id="tab-valuation" aria-controls="p-valuation" aria-selected="false">Valuation</button>
     <button class="tab" role="tab" id="tab-flow"      aria-controls="p-flow"      aria-selected="false">Tape</button>
@@ -221,6 +222,38 @@
       <h4 class="subhead">Latest triggers</h4>
       <div id="l5Feed"></div>
       <div id="l5Read"></div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── Liquidity: fee engine, NVDA pools, LP modules ───────────────────────── -->
+  <section class="panel" id="p-liquidity" role="tabpanel" aria-labelledby="tab-liquidity" hidden>
+    <div class="card">
+      <h3>AI/NVDA: the largest NVDA pool</h3>
+      <p class="sub">Every Uniswap pool holding NVDA on Robinhood Chain, by the NVDA it holds. Uniswap v3 pools by balance; LONG pairs from their position ladders.</p>
+      <div id="lqTiles"></div>
+      <div class="scroll"><table id="tNvdaPools" class="rank"></table></div>
+      <div id="lqPoolsNote"></div>
+    </div>
+
+    <div class="card">
+      <h3>How AI/NVDA's fees are made and where they go</h3>
+      <p class="sub">Traders pay the pool's fee. LONG's own liquidity collects nearly all of it; LONG keeps 5% and the other 95% goes to AI's fee splitter, which burns AI, locks AI and NVDA in the Community Vault, and pays AI's original fee receiver. Every figure is a measured transfer or event.</p>
+      <div id="lqEngineTiles"></div>
+      <div id="lqMix"></div>
+      <div class="legend"><span><i style="background:var(--mid)"></i>Fees collected</span><span><i style="background:var(--buy)"></i>Of which to AI holders (burned + vault)</span></div>
+      <div class="chart" id="cLqEngine"></div>
+      <div class="scroll"><table id="tLqEngine" class="rank"></table></div>
+      <div id="lqEngineNote"></div>
+    </div>
+
+    <div class="card">
+      <h3>LP modules: community vaults putting stock to work</h3>
+      <p class="sub">Vaults that have moved their stock into a USDG/stock liquidity position. Found automatically as each one deploys; AI's own vault is a 48-hour timelock, so any move of its NVDA shows here two days ahead.</p>
+      <div id="lqLpTiles"></div>
+      <div class="scroll"><table id="tLqLp" class="rank"></table></div>
+      <h4 class="subhead">Pair fees before and after an LP deployment</h4>
+      <div class="scroll"><table id="tLqPairs" class="rank"></table></div>
+      <div id="lqLpNote"></div>
     </div>
   </section>
 
