@@ -1,0 +1,58 @@
+name: Deploy watchdog
+
+# Unsticks the refresh chain.
+#
+# On 6 Oct 2026 an index run finished indexing and then sat for eight hours with its
+# deploy job "waiting" on the github-pages environment: no reviewers, no wait timer,
+# nothing that would ever release it. A waiting job does not count against
+# timeout-minutes, it holds the index-and-deploy concurrency lock the whole time, and
+# the next relay is only dispatched after a deploy, so every later run queued behind
+# it or was dropped and the site went stale while every finished run read "success".
+#
+# Every twenty minutes (GitHub throttles cron, so in practice less often): cancel any
+# index run that has been waiting for over thirty minutes, then, if nothing is queued
+# or running and no relay is sleeping, start the chain again. Cancelling loses only
+# that run's deploy; the next run indexes and deploys afresh.
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: deploy-watchdog
+  cancel-in-progress: true
+
+jobs:
+  unstick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel runs stuck waiting, restart the chain if it has stopped
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOW=$(date -u +%s)
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow index-and-deploy.yml --status waiting --limit 20 \
+            --json databaseId,updatedAt -q '.[] | [.databaseId, .updatedAt] | @tsv' |
+          while IFS=$'\t' read -r id upd; do
+            [ -z "$id" ] && continue
+            AGE=$(( NOW - $(date -u -d "$upd" +%s) ))
+            if [ "$AGE" -gt 1800 ]; then
+              echo "cancelling run $id: waiting ${AGE}s"
+              gh run cancel "$id" --repo "$GITHUB_REPOSITORY" || true
+            fi
+          done
+          sleep 20
+          ACTIVE=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow index-and-deploy.yml --limit 10 --json status \
+            -q '[.[] | select(.status=="queued" or .status=="in_progress" or .status=="pending" or .status=="waiting")] | length')
+          RELAY=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow refresh-relay.yml --limit 5 --json status \
+            -q '[.[] | select(.status=="queued" or .status=="in_progress" or .status=="pending")] | length')
+          echo "index runs active: $ACTIVE, relays active: $RELAY"
+          if [ "$ACTIVE" = "0" ] && [ "$RELAY" = "0" ] && [ "${{ vars.REFRESH_CHAIN }}" != "off" ]; then
+            echo "chain idle; restarting it"
+            gh workflow run index-and-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main -f mode=auto
+          fi
