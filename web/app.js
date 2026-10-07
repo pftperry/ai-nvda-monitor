@@ -1756,7 +1756,7 @@ function renderFloat() {
   const fr = measuredFeeRate();
   $("#splitNote").textContent =
     `Measured ratio burn : lock : original receiver = 1 : ${s.lock} : ${s.platform}. ` +
-    `AI that has reached the fee splitter: ${nf(b.totalAIFee, 0)} AI, implying ${compact(b.totalAIFee / (fr || 0.007))} AI of sell-side notional through tolled pools ` +
+    `AI that has reached the fee splitter: ${nf(b.totalAIFee, 0)} AI, implying ${compact(b.totalAIFee / (fr || 0.007))} AI of sell-side notional through AI/NVDA ` +
     (fr ? `at the measured ${pctLevel(fr, 2)} effective rate (the pool's LP fee is 0.70%; the splitter receives 95% of what LONG's liquidity collects of it). ` : "at the nominal 0.70% rate. ") +
     "This is the LP-fee side only: every swap also pays LONG 1% of its output, which never reaches the splitter.";
 }
