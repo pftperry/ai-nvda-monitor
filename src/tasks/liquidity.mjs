@@ -6,7 +6,14 @@ import { LONG_HOOK, NVDA, USDG, AI, BLOCKS_PER_DAY } from "../config.mjs";
 /* LIQUIDITY: HOW LONG PAIRS' FEES ARE MADE AND WHERE THEY GO, AND WHERE NVDA'S
    DEX LIQUIDITY SITS.
 
-   The fee path, read from the hook's own records (2-6 Oct 2026):
+   The fee path, read from the hook's own records (2-7 Oct 2026):
+     0. Every swap also pays LONG 1% of what it takes out: the hook sends that leg to
+        LONG's buyback contract, which forwards 95% to LONG's revenue wallet (AI legs
+        are sold into the pool for NVDA first). Measured on single-pool swaps, traders
+        received exactly 1.00% less than the pool paid out; the revenue wallet's NVDA
+        intake ran 0.97-1.03% of AI/NVDA's daily volume. A second 1% leg to the hook
+        is taken and returned in the same swap and costs nothing. So a trader in
+        AI/NVDA pays about 1.7%: 0.7% to liquidity, 1% to LONG.
      1. Traders pay the pool's LP fee (AI/NVDA: 0.7%, the Swap event's fee field).
         LONG's hook owns nearly all the liquidity, so it earns nearly all of it, and
         collects it a few times a day (Collect(poolId, fees0, fees1)). Over 25 Sep -
@@ -114,6 +121,8 @@ export async function indexLiquidity(latest, tm, opts = {}) {
   const D = aiPool ? S.daily[aiPool.id] || {} : {};
   const aiIs0 = aiPool ? aiPool.c0.toLowerCase() === AI.toLowerCase() : true;
   const burnsByDay = new Map((opts.burnsDaily || []).map((r) => [r.t, r]));
+  const revByDay = new Map((opts.revenueDaily || []).map((r) => [r.t, r]));
+  const LONG_SWAP_FEE = 0.01;
   const volByDay = opts.aiNvdaVolByDay || new Map();
   const pxAI = opts.aiUsdAt || (() => null), pxNV = opts.nvdaUsdAt || (() => null);
   const share95 = (S.shares[aiPool?.id]?.[0]?.share) ?? 0.95;
@@ -124,11 +133,19 @@ export async function indexLiquidity(latest, tm, opts = {}) {
     const a = pxAI(d + DAY - 1), n = pxNV(d);
     const b = burnsByDay.get(d) || {};
     const v = volByDay.get(d) || null;
+    const rv = revByDay.get(d) || null;
     const usd = (ai, nvda) => (a == null || n == null ? null : ai * a + nvda * n);
     return {
       t: d, aiPx: a, nvdaPx: n,
       volumeUsd: v?.usd ?? null, feeRate: v?.feePips != null ? v.feePips / 1e6 : null,
-      paidUsd: v?.usd != null && v?.feePips != null ? v.usd * v.feePips / 1e6 : null,
+      /* what traders paid: the LP fee plus LONG's 1% */
+      lpFeeUsd: v?.usd != null && v?.feePips != null ? v.usd * v.feePips / 1e6 : null,
+      paidUsd: v?.usd != null && v?.feePips != null ? v.usd * (v.feePips / 1e6 + LONG_SWAP_FEE) : null,
+      /* LONG's 1% swap fee on AI/NVDA, and as a cross-check the NVDA its revenue wallet
+         actually received that day from the buyback contract (every NVDA pair; AI/NVDA
+         is nearly all of it) */
+      longSwap: { usd: v?.usd != null ? v.usd * LONG_SWAP_FEE : null, revenueNvda: rv?.nvdaToRevenue ?? null,
+        revenueUsd: rv?.nvdaToRevenue != null && n != null ? rv.nvdaToRevenue * n : null },
       collected: { ai: aiC, nvda: nvC, usd: usd(aiC, nvC) },
       longCut: { ai: aiC * (1 - share95), nvda: nvC * (1 - share95), usd: usd(aiC * (1 - share95), nvC * (1 - share95)) },
       burned: { ai: b.burnAI || 0, usd: a == null ? null : (b.burnAI || 0) * a },

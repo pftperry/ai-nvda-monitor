@@ -890,7 +890,7 @@ if (!flag("no-stockfees")) {
       const nvPairs = (R?.backing?.rows || []).filter((r) => r.anchorSymbol === "NVDA").sort((a, b) => b.stockUnits - a.stockUnits).slice(0, 4)
         .map((r) => ({ symbol: r.symbol, poolId: r.poolId, stockUnits: r.stockUnits }));
       const lq = await indexLiquidity(latest, tm, { state: store.get("liquidity"), watch,
-        burnsDaily: readData("burns.json")?.daily || [], aiNvdaVolByDay: volByDay,
+        burnsDaily: readData("burns.json")?.daily || [], revenueDaily: readData("revenue.json")?.daily || [], aiNvdaVolByDay: volByDay,
         aiUsdAt: usdPriceLookup(flowOut), nvdaUsdAt: nvAt, nvdaUsd: nvTok?.priceUsd ?? null,
         longNvdaPairs: nvPairs, longNvdaUnits: nvTok?.priceUsd && R?.longTvl?.perToken?.NVDA ? Math.round(R.longTvl.perToken.NVDA / nvTok.priceUsd) : null,
         pmNvdaUnits: nvTok?.inDex != null ? Math.round(nvTok.inDex) : null, deadline: budget + 150_000 });
