@@ -170,7 +170,7 @@ export async function indexStockFees(latest, tm, opts = {}) {
   }
   const byStock = new Map();
   const row = (a) => byStock.get(a) || byStock.set(a, { token: a, symbol: stocks.get(a)?.symbol || a.slice(0, 8), pools: 0, poolsWithFees: 0, poolsCollected24h: 0,
-    all: { stockUnits: 0, stockUsd: 0, otherUsd: 0 }, d1: { stockUnits: 0, stockUsd: 0, otherUsd: 0 }, d7Usd: 0, unpricedOther: 0, top: [] }).get(a);
+    all: { stockUnits: 0, stockUsd: 0, otherUsd: 0 }, d1: { stockUnits: 0, stockUsd: 0, otherUsd: 0 }, d7Usd: 0, d7StockUsd: 0, unpricedOther: 0, top: [] }).get(a);
   let unread = 0;
   for (const p of pools) {
     const e = S.pools[p.id];
@@ -199,7 +199,11 @@ export async function indexStockFees(latest, tm, opts = {}) {
       const R = row(isStock ? tok : stockSides[0]);
       if (isStock) { R.all.stockUnits += units; R.d1.stockUnits += u1; }
       const usdAll = usdOf(tok, units, other), usd1 = usdOf(tok, u1, other);
-      R.d7Usd += usdOf(tok, u7, other) || 0;
+      const usd7 = usdOf(tok, u7, other) || 0;
+      R.d7Usd += usd7;
+      /* the stock side alone, valued the same way: the numerator for a fee APR whose
+         denominator is the stock held in LONG pools (indexer.mjs) */
+      if (isStock) R.d7StockUsd += usd7;
       if (usdAll == null) { if (units > 0) R.unpricedOther++; continue; }
       if (isStock) { R.all.stockUsd += usdAll; R.d1.stockUsd += usd1 || 0; } else { R.all.otherUsd += usdAll; R.d1.otherUsd += usd1 || 0; }
       poolUsd += usdAll; poolUsd1 += usd1 || 0;
@@ -213,7 +217,7 @@ export async function indexStockFees(latest, tm, opts = {}) {
   }
   const out = [...byStock.values()].filter((R) => R.poolsWithFees > 0).map((R) => ({
     ...R,
-    allUsd: Math.round(R.all.stockUsd + R.all.otherUsd), d1Usd: Math.round(R.d1.stockUsd + R.d1.otherUsd), d7Usd: Math.round(R.d7Usd),
+    allUsd: Math.round(R.all.stockUsd + R.all.otherUsd), d1Usd: Math.round(R.d1.stockUsd + R.d1.otherUsd), d7Usd: Math.round(R.d7Usd), d7StockUsd: Math.round(R.d7StockUsd),
     all: { stockUnits: +R.all.stockUnits.toPrecision(8), stockUsd: Math.round(R.all.stockUsd), otherUsd: Math.round(R.all.otherUsd) },
     d1: { stockUnits: +R.d1.stockUnits.toPrecision(8), stockUsd: Math.round(R.d1.stockUsd), otherUsd: Math.round(R.d1.otherUsd) },
     top: R.top.sort((a, b) => b.usd - a.usd).slice(0, 5),

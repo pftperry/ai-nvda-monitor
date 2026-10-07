@@ -33,8 +33,11 @@ const LONG_HOOK = "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544";
 const HOOK_SWAP = "0x1d9f7b5e406d8c887155e1a78e070d2d41c5d0444dab8b21612f846835c27183";
 /* A pool whose other side is a quote asset is a plain stock trade; anything else is a
    stock paired with a launchpad token. */
-const QUOTES = new Set([USDG, WETH, "0x0000000000000000000000000000000000000000"]);
+export const VENUE_QUOTES = new Set([USDG, WETH, "0x0000000000000000000000000000000000000000"]);
+const QUOTES = VENUE_QUOTES;
 const HOUR = 3600;
+/** The two venue swap topics, OR'd in one filter. */
+export const VENUE_SWAP_TOPICS = [V2_SWAP, V3_SWAP];
 
 const addrOf = (h) => "0x" + h.slice(-40).toLowerCase();
 const word = (data, i) => data.slice(2 + 64 * i, 2 + 64 * (i + 1));
@@ -77,6 +80,21 @@ export async function indexVenues(latest, registry, opts = {}) {
 }
 
 /**
+ * The stock leg of one v2 or v3 Swap log, in raw units. Shared with the rolling 24h
+ * window in rwa.mjs so both read the venues the same way.
+ */
+export function venueStockUnits(l, p) {
+  if (l.topics[0] === V2_SWAP) {
+    /* v2 Swap(amount0In, amount1In, amount0Out, amount1Out): the stock side's
+       in and out, one of which is zero. */
+    const i = p.stockIsToken0 ? 0 : 1;
+    return uint(word(l.data, i)) + uint(word(l.data, i + 2));
+  }
+  /* v3 Swap(amount0, amount1, ...): pool-perspective signed deltas. */
+  return absBig(int(word(l.data, p.stockIsToken0 ? 0 : 1)));
+}
+
+/**
  * Swaps in those pools, folded per stock per UTC day into stock units. The stock leg
  * is what Dune measures, so the amounts taken are the listed token's side: for v2 the
  * in and out amounts of that side summed (only one is non-zero per trade), for v3 the
@@ -109,16 +127,7 @@ export async function indexVenueSwaps(latest, tm, venues, opts = {}) {
       for (const l of logs) {
         const p = venues.pools[l.address.toLowerCase()]; if (!p) continue;
         const d = tm.dayBucket(parseInt(l.blockNumber, 16)); if (d == null) continue;
-        let units;
-        if (l.topics[0] === V2_SWAP) {
-          /* v2 Swap(amount0In, amount1In, amount0Out, amount1Out): the stock side's
-             in and out, one of which is zero. */
-          const i = p.stockIsToken0 ? 0 : 1;
-          units = uint(word(l.data, i)) + uint(word(l.data, i + 2));
-        } else {
-          /* v3 Swap(amount0, amount1, ...): pool-perspective signed deltas. */
-          units = absBig(int(word(l.data, p.stockIsToken0 ? 0 : 1)));
-        }
+        const units = venueStockUnits(l, p);
         if (units <= 0n) continue;
         if (QUOTES.has(p.other) && hookTxs.has(l.transactionHash)) { routed++; continue; }   // routed leg
         const row = (S.days[d] ||= {});

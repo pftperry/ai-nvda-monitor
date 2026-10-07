@@ -4,6 +4,7 @@ import { TOPICS, decodeTransfer, decodeInitialize, decodeSwap, decodeModifyLiqui
 import { multicall, resolveTokens } from "../tokens.mjs";
 import { ladderRawAmounts } from "./depth.mjs";
 import { TimeMap } from "../timemap.mjs";
+import { RIALTO_FILL_NEW, VENUE_SWAP_TOPICS, VENUE_QUOTES, venueStockUnits } from "./venues.mjs";
 
 /**
  * The real-world-asset ledger: how much of Robinhood Chain's tokenized stock
@@ -388,12 +389,24 @@ export async function indexRwa(latest, tm, opts = {}) {
           itself) are read over the same hour-sized sub-ranges and committed together,
           into hourly buckets kept for thirty hours. A run reads only the blocks since
           the last one; the first pass starts a day back and states how many hours it
-          managed. Stock legs valued at today's prices, as everywhere on this page. */
+          managed. Stock legs valued at today's prices, as everywhere on this page.
+
+          v2 of the window: the denominator now also takes the v2 and v3 factories'
+          pools (venues.mjs; the routed-leg rule applied against the hook's
+          transactions in the same sub-range, as the daily fold does) and both of
+          Rialto's fill events. Until then it read Uniswap v4 and Rialto's old event,
+          which stopped on 15 Sep, so "every venue plus Rialto" was v4 alone. The
+          version bump restarts the window a day back so every hour in it carries
+          the same venues. */
     const WINDOW_H = 24, KEEP_H = 30, STEP = Math.round(BLOCKS_PER_DAY / 24);
     let SW = store && store.get("rwaSwapHours");
-    if (!SW || SW.v !== 1) SW = { v: 1, cursor: null, first: null, hours: {} };
+    if (!SW || SW.v !== 2) SW = { v: 2, cursor: null, first: null, hours: {} };
     const hourOf = (b) => tm.hourBucket(b);
-    const bucket = (h) => { const b = (SW.hours[h] ||= { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, perToken: {} }); for (const k of ["perpSwaps", "perpLongSwaps", "perpUsd", "perpLongUsd"]) b[k] ??= 0; b.perPool ??= {}; return b; };
+    const bucket = (h) => { const b = (SW.hours[h] ||= { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, otherUsd: 0, otherSwaps: 0, perToken: {} }); for (const k of ["perpSwaps", "perpLongSwaps", "perpUsd", "perpLongUsd", "otherUsd", "otherSwaps"]) b[k] ??= 0; b.perPool ??= {}; return b; };
+    /* v2/v3 pools holding exactly one listed stock (venues.mjs). Null when that step
+       did not run or failed; the hours read without it are flagged, not zero-filled. */
+    const venuePools = opts.venues?.pools && Object.keys(opts.venues.pools).length ? opts.venues.pools : null;
+    const venueAddrs = venuePools ? Object.keys(venuePools) : [];
     const stockUsd = (e, a0, a1) => { for (const { token, side } of e.stocks) { const px = anchorUsd.get(token); if (!px) continue; return fmtUnits(abs(side === 0 ? a0 : a1), decimals.get(token) ?? 18) * px; } return 0; };
     /* LongX vault-share pools (perps) are bucketed apart, never into the stock
        figures: Dune's convention, and the honest one. */
@@ -412,23 +425,48 @@ export async function indexRwa(latest, tm, opts = {}) {
         for (const { token } of e.stocks) { const p = (B.perToken[token] ||= { all: 0, long: 0, usdAll: 0, usdLong: 0 }); p.all++; p.usdAll += usd; if (e.long) { p.long++; p.usdLong += usd; } }
       }
     };
+    /* transactions carrying a LONG-pool swap in the current sub-range, for the
+       venue fold's routed-leg rule; reset per sub-range */
+    let hookTxs = new Set();
     const foldHook = (logs) => {
       for (const l of logs) {
         const e = allStockPools.get(l.topics[3]); if (!e) continue;
         const h = hourOf(parseInt(l.blockNumber, 16)); if (h == null) continue;
+        hookTxs.add(l.transactionHash);
         const B = bucket(h), usd = stockUsd(e, int256(word(l.data, 3)), int256(word(l.data, 4)));
         B.hookSwaps++; B.hookUsd += usd;
-        if (topicAddr(l.topics[1]) === LONG_BUYBACK) B.buybackSwaps++; else { B.hookUserUsd += usd; B.perPool[l.topics[3]] = (B.perPool[l.topics[3]] || 0) + usd; (B.perPoolN ??= {})[l.topics[3]] = (B.perPoolN[l.topics[3]] || 0) + 1; }
+        /* Per stock: LONG's own buyback legs counted apart, so the by-stock swap
+           counts can be read as user swaps, and user dollars for the 1% fee figure. */
+        const bb = topicAddr(l.topics[1]) === LONG_BUYBACK;
+        for (const { token } of e.stocks) { const p = (B.perToken[token] ||= { all: 0, long: 0, usdAll: 0, usdLong: 0 }); if (bb) p.buyback = (p.buyback || 0) + 1; else p.usdUser = (p.usdUser || 0) + usd; }
+        if (bb) B.buybackSwaps++; else { B.hookUserUsd += usd; B.perPool[l.topics[3]] = (B.perPool[l.topics[3]] || 0) + usd; (B.perPoolN ??= {})[l.topics[3]] = (B.perPoolN[l.topics[3]] || 0) + 1; }
       }
     };
+    /* Both of Rialto's fill formats. Amount in is data word 1 in both; the USDG
+       received on a sell is word 4 in the old event (as this fold always read it)
+       and word 3, the actual amount out, in the new one (docs/dune/README.md). */
     const foldRialto = (logs) => {
       for (const l of logs) {
         if (l.topics.length < 4) continue;
         const a = topicAddr(l.topics[2]), b = topicAddr(l.topics[3]);
         if (!stockSet.has(a) && !stockSet.has(b)) continue;
-        const usdg = b === USDG ? word(l.data, 4) : a === USDG ? word(l.data, 1) : null; if (!usdg) continue;   // USDG-quoted fills, as Dune counts them
+        const outW = l.topics[0] === RIALTO_FILL_NEW ? 3 : 4;
+        const usdg = b === USDG ? word(l.data, outW) : a === USDG ? word(l.data, 1) : null; if (!usdg) continue;   // USDG-quoted fills, as Dune counts them
         const h = hourOf(parseInt(l.blockNumber, 16)); if (h == null) continue;
         const B = bucket(h); B.rialtoFills++; B.rialtoUsd += fmtUnits(BigInt("0x" + usdg), 6);
+      }
+    };
+    /* v2/v3 venue swaps: the stock leg at today's anchor price, routed legs skipped
+       (a quote-paired venue trade inside a transaction that also swapped in a LONG
+       pool is one route, not two trades: Dune's rule, and the daily fold's). */
+    const foldVenues = (logs) => {
+      for (const l of logs) {
+        const p = venuePools[l.address.toLowerCase()]; if (!p) continue;
+        const units = venueStockUnits(l, p); if (units <= 0n) continue;
+        if (VENUE_QUOTES.has(p.other) && hookTxs.has(l.transactionHash)) continue;
+        const h = hourOf(parseInt(l.blockNumber, 16)); if (h == null) continue;
+        const px = anchorUsd.get(p.stock) || 0;
+        const B = bucket(h); B.otherSwaps++; B.otherUsd += fmtUnits(units, decimals.get(p.stock) ?? 18) * px;
       }
     };
     const t4 = Date.now();
@@ -444,9 +482,14 @@ export async function indexRwa(latest, tm, opts = {}) {
       const reach = a.reachedBlock ?? hi;
       let ok = reach >= lo;
       if (ok) {
+        hookTxs = new Set();
         const b = await getLogsRange({ address: LONG_HOOK, topics: [HOOK_SWAP] }, lo, reach, { chunk: 20_000, deadline: opts.deadline + 60_000, onLogs: foldHook });
-        const c = await getLogsRange({ address: RIALTO, topics: [RIALTO_FILL] }, lo, reach, { chunk: 70_000, deadline: opts.deadline + 90_000, onLogs: foldRialto });
+        const c = await getLogsRange({ address: RIALTO, topics: [[RIALTO_FILL, RIALTO_FILL_NEW]] }, lo, reach, { chunk: 70_000, deadline: opts.deadline + 90_000, onLogs: foldRialto });
         ok = !b.truncated && !c.truncated;
+        if (ok && venuePools) {
+          const v = await getLogsRange({ address: venueAddrs, topics: [VENUE_SWAP_TOPICS] }, lo, reach, { chunk: 20_000, deadline: opts.deadline + 120_000, onLogs: foldVenues });
+          ok = !v.truncated;
+        } else if (ok) for (let h = hourOf(lo); h != null && h <= hourOf(reach); h += 3600) bucket(h).noVenues = true;
       }
       if (!ok) { SW.hours = JSON.parse(snap); truncated = true; break; }
       SW.cursor = reach; lo = reach + 1;
@@ -460,38 +503,47 @@ export async function indexRwa(latest, tm, opts = {}) {
     const firstHour = hourOf(SW.first);
     const hoursCovered = Math.max(0, Math.round((endHour - Math.max(startHour, firstHour)) / 3600) + 1);
     const inWin = Object.entries(SW.hours).map(([k, B]) => [Number(k), B]).filter(([h]) => h >= startHour && h <= endHour).sort((x, y) => x[0] - y[0]);
-    const tot = { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, perpSwaps: 0, perpLongSwaps: 0, perpUsd: 0, perpLongUsd: 0 };
+    const tot = { chainSwaps: 0, stockSwaps: 0, longSwaps: 0, aiPaired: 0, usdAll: 0, usdLong: 0, hookSwaps: 0, buybackSwaps: 0, hookUsd: 0, hookUserUsd: 0, rialtoUsd: 0, rialtoFills: 0, otherUsd: 0, otherSwaps: 0, perpSwaps: 0, perpLongSwaps: 0, perpUsd: 0, perpLongUsd: 0 };
     const per = new Map(), perPool = new Map(), perPoolN = new Map();
+    let venueHoursMissing = 0;
     for (const [, B] of inWin) {
       for (const k of Object.keys(tot)) tot[k] += B[k] || 0;
-      for (const [token, p] of Object.entries(B.perToken || {})) { const r = per.get(token) || { all: 0, long: 0, usdAll: 0, usdLong: 0 }; r.all += p.all; r.long += p.long; r.usdAll += p.usdAll; r.usdLong += p.usdLong; per.set(token, r); }
+      if (B.noVenues) venueHoursMissing++;
+      for (const [token, p] of Object.entries(B.perToken || {})) { const r = per.get(token) || { all: 0, long: 0, usdAll: 0, usdLong: 0, buyback: 0, usdUser: 0 }; r.all += p.all || 0; r.long += p.long || 0; r.usdAll += p.usdAll || 0; r.usdLong += p.usdLong || 0; r.buyback += p.buyback || 0; r.usdUser += p.usdUser || 0; per.set(token, r); }
       for (const [id, v] of Object.entries(B.perPool || {})) perPool.set(id, (perPool.get(id) || 0) + v);
       for (const [id, n] of Object.entries(B.perPoolN || {})) perPoolN.set(id, (perPoolN.get(id) || 0) + n);
     }
-    const denominatorUsd = tot.usdAll + tot.rialtoUsd;
+    const denominatorUsd = tot.usdAll + tot.rialtoUsd + tot.otherUsd;
+    /* Counts by user swap: LONG's buyback contract swaps its 1% fee through LONG
+       pools, and each of those legs is a manager Swap in a LONG stock pool, so it
+       sits in both the LONG count and the all-venue count. Taken out of both. */
+    const userLong = Math.max(0, tot.longSwaps - tot.buybackSwaps), userStock = Math.max(0, tot.stockSwaps - tot.buybackSwaps);
     swapShare = {
       rolling: true, windowHours: hoursCovered, windowTargetHours: WINDOW_H, windowFrom: Math.max(startHour, firstHour), windowTo: endHour, cursor: SW.cursor,
       catalogueComplete: catalogued === stocks.length,
       truncated, chainSwaps: tot.chainSwaps,
       stockSwaps: tot.stockSwaps, longSwaps: tot.longSwaps, aiPairedSwaps: tot.aiPaired, share: tot.stockSwaps > 0 ? tot.longSwaps / tot.stockSwaps : null,
+      userStockSwaps: userStock, userLongSwaps: userLong, userShare: userStock > 0 ? userLong / userStock : null,
       usdAll: Math.round(tot.usdAll), usdLong: Math.round(tot.usdLong), usdShare: tot.usdAll > 0 ? tot.usdLong / tot.usdAll : null,
-      /* Dune-equivalent figures (no stock-quoted pool has graduated to v2/v3, so that leg is nil) */
+      /* Dune-equivalent figures (no stock-quoted pool has graduated to v2/v3, so that
+         leg is nil); the denominator is v4 + the v2/v3 venues + Rialto's both events */
       dune: {
         longUsd: Math.round(tot.hookUsd), longUserUsd: Math.round(tot.hookUserUsd), hookSwaps: tot.hookSwaps, buybackSwaps: tot.buybackSwaps, graduatedUsd: 0, graduatedSwaps: 0,
-        rialtoUsd: Math.round(tot.rialtoUsd), rialtoTxs: tot.rialtoFills, denominatorUsd: Math.round(denominatorUsd),
+        rialtoUsd: Math.round(tot.rialtoUsd), rialtoTxs: tot.rialtoFills, v4Usd: Math.round(tot.usdAll), otherVenueUsd: Math.round(tot.otherUsd), otherVenueSwaps: tot.otherSwaps,
+        venueHoursMissing, denominatorUsd: Math.round(denominatorUsd),
         share: denominatorUsd > 0 ? tot.hookUsd / denominatorUsd : null,
       },
       perps: { swaps: tot.perpSwaps, longSwaps: tot.perpLongSwaps, usd: Math.round(tot.perpUsd), longUsd: Math.round(tot.perpLongUsd), pools: perpPools.size, longPools: [...perpPools.values()].filter((p) => p.long).length },
-      hourly: inWin.map(([h, B]) => ({ t: h, usdAll: Math.round(B.usdAll), usdLong: Math.round(B.usdLong), hookUsd: Math.round(B.hookUsd), rialtoUsd: Math.round(B.rialtoUsd), stockSwaps: B.stockSwaps, longSwaps: B.longSwaps,
-        share: B.usdAll + B.rialtoUsd > 0 ? B.hookUsd / (B.usdAll + B.rialtoUsd) : null })),
-      perToken: [...per].map(([t, r]) => ({ token: t, symbol: sym(t), all: r.all, long: r.long, share: r.all ? r.long / r.all : null,
-        usdAll: Math.round(r.usdAll), usdLong: Math.round(r.usdLong) })).sort((x, y) => y.usdAll - x.usdAll || y.all - x.all),
+      hourly: inWin.map(([h, B]) => ({ t: h, usdAll: Math.round(B.usdAll), usdLong: Math.round(B.usdLong), hookUsd: Math.round(B.hookUsd), rialtoUsd: Math.round(B.rialtoUsd), otherUsd: Math.round(B.otherUsd || 0), stockSwaps: B.stockSwaps, longSwaps: B.longSwaps, buybackSwaps: B.buybackSwaps,
+        share: B.usdAll + B.rialtoUsd + (B.otherUsd || 0) > 0 ? B.hookUsd / (B.usdAll + B.rialtoUsd + (B.otherUsd || 0)) : null })),
+      perToken: [...per].map(([t, r]) => ({ token: t, symbol: sym(t), all: r.all, long: r.long, buyback: r.buyback, share: r.all ? r.long / r.all : null,
+        usdAll: Math.round(r.usdAll), usdLong: Math.round(r.usdLong), usdUser: Math.round(r.usdUser) })).sort((x, y) => y.usdAll - x.usdAll || y.all - x.all),
       /* User stock volume per LONG pool (the hook's event, buyback legs excluded), for the backing table. */
       perPool: Object.fromEntries([...perPool].sort((a, b) => b[1] - a[1]).slice(0, 400).map(([id, v]) => [id, Math.round(v)])),
       perPoolN: Object.fromEntries([...perPoolN].sort((a, b) => b[1] - a[1]).slice(0, 400)),
       perPoolHours: Math.max(0, Math.min(hoursCovered, Math.round((endHour - Math.max(startHour, hourOf(SW.perPoolFirst) ?? startHour)) / 3600) + 1)),
     };
-    log(`  stock trading, rolling ${hoursCovered}h of ${WINDOW_H}h${truncated ? " (resumes)" : ""}: ${tot.stockSwaps.toLocaleString()} stock-pool swaps of ${tot.chainSwaps.toLocaleString()} on chain, ${tot.longSwaps.toLocaleString()} through LONG pools (${tot.stockSwaps ? (100 * tot.longSwaps / tot.stockSwaps).toFixed(1) : "—"}% by count, ${tot.usdAll ? (100 * tot.usdLong / tot.usdAll).toFixed(1) : "—"}% by dollars); Dune method: LONG $${Math.round(tot.hookUsd).toLocaleString()} (${tot.hookSwaps} hook swaps, ${tot.buybackSwaps} buyback) of $${Math.round(denominatorUsd).toLocaleString()} incl. Rialto $${Math.round(tot.rialtoUsd).toLocaleString()} (${tot.rialtoFills} fills) → ${denominatorUsd ? (100 * tot.hookUsd / denominatorUsd).toFixed(1) : "—"}%, cursor ${SW.cursor.toLocaleString()}, ${secs(t4)}`);
+    log(`  stock trading, rolling ${hoursCovered}h of ${WINDOW_H}h${truncated ? " (resumes)" : ""}: ${tot.stockSwaps.toLocaleString()} stock-pool swaps of ${tot.chainSwaps.toLocaleString()} on chain, ${tot.longSwaps.toLocaleString()} through LONG pools (${tot.stockSwaps ? (100 * tot.longSwaps / tot.stockSwaps).toFixed(1) : "—"}% by count, ${tot.usdAll ? (100 * tot.usdLong / tot.usdAll).toFixed(1) : "—"}% by dollars); Dune method: LONG $${Math.round(tot.hookUsd).toLocaleString()} (${tot.hookSwaps} hook swaps, ${tot.buybackSwaps} buyback) of $${Math.round(denominatorUsd).toLocaleString()} incl. Rialto $${Math.round(tot.rialtoUsd).toLocaleString()} (${tot.rialtoFills} fills) and v2/v3 $${Math.round(tot.otherUsd).toLocaleString()} (${tot.otherSwaps} swaps${venueHoursMissing ? `, ${venueHoursMissing}h without the venue list` : ""}) → ${denominatorUsd ? (100 * tot.hookUsd / denominatorUsd).toFixed(1) : "—"}%, cursor ${SW.cursor.toLocaleString()}, ${secs(t4)}`);
   }
 
   /* 4b. Stock inventory inside LONG's own pools, for EVERY LONG stock pool.
@@ -900,8 +952,10 @@ export async function indexRwa(latest, tm, opts = {}) {
       /* Transfer-basis volume counts stock entering or leaving the manager. Under v4
          flash accounting a multi-hop route that hands a stock from one pool to the
          next inside the manager moves no token, so those legs are absent here while
-         the hook's event still records them; the share is therefore an upper bound
-         and is capped at one. */
+         the hook's event still records them, which pushes the share up; but liquidity
+         added or withdrawn also moves stock in or out and sits in the denominator,
+         which pushes it down. So it is neither a floor nor a ceiling, only a
+         transfer-basis ratio, capped at one. */
       const R = (v) => Math.round(v);
       return { t: d, allInvUsd: R(allInv), longInvUsd: R(longInv), dexVolUsd: R(dexUser), rialtoVolUsd: R(rialtoOnly), otherVenueVolUsd: R(otherVol), allVolUsd: R(dexUser + rialtoOnly + otherVol),
         longVolUsd: R(longUser), longGrossVolUsd: R(longVol), longAllVolUsd: R(longAllUser), longAllGrossUsd: R(longAllGross),
@@ -937,7 +991,7 @@ export async function indexRwa(latest, tm, opts = {}) {
         shareDex: sum("dexVolUsd") > 0 ? Math.min(1, sum("longVolUsd") / sum("dexVolUsd")) : null, shareAll: sum("allVolUsd") > 0 ? Math.min(1, sum("longVolUsd") / sum("allVolUsd")) : null,
         shareDex7d: last7.reduce((s, r) => s + r.dexVolUsd, 0) > 0 ? Math.min(1, last7.reduce((s, r) => s + r.longVolUsd, 0) / last7.reduce((s, r) => s + r.dexVolUsd, 0)) : null,
         covered: covered.size, perpVolUsd: sum("perpVolUsd"), perpUserVolUsd: sum("perpUserVolUsd"), perpsPartial: !!F.perps?.partial, perpsSince: F.perps ? (rows.find((r) => r.perpVolUsd > 0)?.t ?? null) : null },
-      note: "per-day series cover the stock tokens whose transfer stream has reached the head (coverage = their share of DEX stock value); LONG all-stock volume is complete on its own; LONG figures follow Dune's definition (hook swap event; buyback legs excluded from volume, included in held); transfer-basis volume shares are upper bounds (intra-manager hops move no token); all values at today's prices",
+      note: "per-day series cover the stock tokens whose transfer stream has reached the head (coverage = their share of DEX stock value); LONG all-stock volume is complete on its own; LONG figures follow Dune's definition (hook swap event; buyback legs excluded from volume, included in held); transfer-basis volume shares are not bounds (intra-manager hops move no token and are missing from the denominator, liquidity moves are in it); all values at today's prices",
     };
     log(`  flow histories: ${rows.length} complete day(s) since ${rows[0] ? new Date(rows[0].t * 1000).toISOString().slice(0, 10) : "none"}, ${universe.length} stock tokens (streams at the head for ${series.coverage ? (100 * series.coverage).toFixed(0) : "?"}% of DEX stock value), hook at ${F.hook.cursor.toLocaleString()}${F.hook.partial ? " (resumes)" : ""}, Rialto at ${F.rialto.cursor.toLocaleString()}${F.rialto.partial ? " (resumes)" : ""}, ${series.tokensPartial.length} token stream(s) still catching up, pool sign ${poolSign}, ${secs(t5)}`);
   }
@@ -958,7 +1012,11 @@ export async function indexRwa(latest, tm, opts = {}) {
   };
   totals.share = totals.supplyUsd > 0 ? (totals.dexUsd + totals.vaultUsd) / totals.supplyUsd : null;
   totals.longUsd = longTvl ? longTvl.usd : null;
-  totals.longShare = longTvl && totals.supplyUsd > 0 ? (longTvl.usd + totals.vaultUsd) / totals.supplyUsd : null;
+  /* LONG's share is LONG's pools only. The "vault" here is COMMUNITY_VAULT, AI's
+     Community Vault (a 48h TimelockController), which is AI's, not LONG's; it was
+     added in until 6 Oct. totals.vaultUsd stays published so the page can show it
+     on its own line. */
+  totals.longShare = longTvl && totals.supplyUsd > 0 ? longTvl.usd / totals.supplyUsd : null;
 
   /* 6. Daily DEX inventory for the tracked stock, from transfers, so the trend
         exists from genesis rather than from today. Last, with whatever budget is
