@@ -402,8 +402,8 @@
         <div id="readLiq"></div>
       </div>
       <div class="card">
-        <h3>Fees compounded into liquidity</h3>
-        <p class="sub">Since its second week the hook folds pool fees back into its own positions on each swap. Daily, at today's prices.</p>
+        <h3>Hook liquidity added, by day</h3>
+        <p class="sub">Liquidity the LONG hook added to its own positions, at today's prices. The additions are new-pool seeds; LP fees leave the pools through Collect, 95% to each pair's beneficiary and 5% to LONG.</p>
         <div id="rwaCompound"></div>
         <div class="chart small" id="cCompound"></div>
         <div id="readCompound"></div>
@@ -428,15 +428,15 @@
 
     <div class="card">
       <h3>Fees, and where they leak</h3>
-      <p class="sub">Anyone can open a hookless AI pool, and routers prefer the cheaper venue. Volume that pays the vault against volume that pays nothing.</p>
+      <p class="sub">Anyone can open a competing AI pool, and routers prefer the cheaper venue. Only AI/NVDA funds AI's vault; other LONG-hooked pools pay LONG and their own pair, and hookless pools pay only their LPs.</p>
       <div class="kpis">
         <div id="kpiFee"></div>
         <div id="kpiCapture"></div>
         <div id="kpiLeak"></div>
       </div>
       <div class="legend">
-        <span><i style="background:var(--series-1)"></i>Fee-bearing (funds the vault)</span>
-        <span><i style="background:var(--series-2)"></i>Hookless (pays nothing)</span>
+        <span><i style="background:var(--series-1)"></i>AI/NVDA (funds AI's vault)</span>
+        <span><i style="background:var(--series-2)"></i>Every other pool (pays AI's vault nothing)</span>
       </div>
       <div class="chart" id="cInvLeak"></div>
       <div id="takeLeak"></div>
@@ -445,7 +445,7 @@
 
     <div class="card">
       <h3>Valuation</h3>
-      <p class="sub">Market cap over annualised fees is price-invariant (both are in AI). The capitalised rows are one measured stream under assumed rates.</p>
+      <p class="sub">Market cap over the AI reaching the fee splitter, annualised, is price-invariant (both are in AI). Only the burned 40% of that stream accrues to every holder. The capitalised rows are one measured stream under assumed rates.</p>
       <div id="kpiMultiple"></div>
       <div class="chart small" id="cInvMultiple"></div>
       <div id="takeMultiple"></div>
