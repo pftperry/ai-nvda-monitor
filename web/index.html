@@ -32,14 +32,17 @@
 
 <nav class="tabs">
   <div class="inner" role="tablist">
-    <button class="tab" role="tab" id="tab-investor"  aria-controls="p-investor"  aria-selected="true">RWA</button>
-    <button class="tab" role="tab" id="tab-long500"   aria-controls="p-long500"   aria-selected="false">LONG 500</button>
-    <button class="tab" role="tab" id="tab-liquidity" aria-controls="p-liquidity" aria-selected="false">Liquidity</button>
-    <button class="tab" role="tab" id="tab-backing"   aria-controls="p-backing"   aria-selected="false">Backing</button>
-    <button class="tab" role="tab" id="tab-valuation" aria-controls="p-valuation" aria-selected="false">Valuation</button>
-    <button class="tab" role="tab" id="tab-flow"      aria-controls="p-flow"      aria-selected="false">Tape</button>
+    <!-- Investor order: what AI earns, where its fees go, who holds it, how it trades,
+         then the LONG platform it sits on. -->
+    <button class="tab" role="tab" id="tab-summary"   aria-controls="p-summary"   aria-selected="true">Summary</button>
+    <button class="tab" role="tab" id="tab-liquidity" aria-controls="p-liquidity" aria-selected="false">Value accrual</button>
     <button class="tab" role="tab" id="tab-float"     aria-controls="p-float"     aria-selected="false">Supply &amp; Holders</button>
-    <button class="tab" role="tab" id="tab-bridges"   aria-controls="p-bridges"   aria-selected="false">Hub</button>
+    <button class="tab" role="tab" id="tab-valuation" aria-controls="p-valuation" aria-selected="false">Valuation</button>
+    <button class="tab" role="tab" id="tab-flow"      aria-controls="p-flow"      aria-selected="false">Trading</button>
+    <button class="tab" role="tab" id="tab-bridges"   aria-controls="p-bridges"   aria-selected="false">Routing</button>
+    <button class="tab" role="tab" id="tab-long500"   aria-controls="p-long500"   aria-selected="false">LONG 500</button>
+    <button class="tab" role="tab" id="tab-investor"  aria-controls="p-investor"  aria-selected="false">LONG &amp; stocks</button>
+    <button class="tab" role="tab" id="tab-backing"   aria-controls="p-backing"   aria-selected="false">Pair backing</button>
     <!-- Archived: hidden, not deleted. Their data is still indexed (the treasury task
          also names protocol addresses site-wide, and launchpad data feeds the RWA
          tab's runners card). Remove data-archived and hidden to bring one back. -->
@@ -54,6 +57,40 @@
   <div id="staleBanner" hidden></div>
   <div id="boot" class="loading">Loading on-chain data…</div>
   <div id="bootErr"></div>
+
+  <!-- ───────────────────────── Summary: what AI earns ───────────────────────── -->
+  <section class="panel" id="p-summary" role="tabpanel" aria-labelledby="tab-summary" hidden>
+    <div class="card">
+      <h3>What AI earns</h3>
+      <p class="sub">The value that reaches AI holders, where it comes from, what it yields on the market cap, and what could undercut it. Every figure is measured on chain and matches the tab it comes from.</p>
+      <div id="smTiles"></div>
+      <div id="smRead"></div>
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>Reaching AI holders, per day</h3>
+        <p class="sub">AI burned plus what reaches AI's Community Vault, from the AI/NVDA pool's fees.</p>
+        <div class="legend"><span><i style="background:var(--buy)"></i>To holders</span><span><i style="background:var(--sell)"></i>Of which burned</span></div>
+        <div class="chart small" id="cSmAccrual"></div>
+      </div>
+      <div class="card">
+        <h3>Traded through AI/NVDA, per day</h3>
+        <p class="sub">The volume that generates it: only this pool's fees reach AI's fee splitter.</p>
+        <div class="chart small" id="cSmVolume"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>AI among the LONG tokens</h3>
+      <p class="sub">What each pair's fees give its holders, against its market cap. Highlighted: AI.</p>
+      <div class="scroll"><table id="tSmPeers" class="rank"></table></div>
+      <div id="smPeersNote"></div>
+    </div>
+    <div class="card">
+      <h3>What could undercut it</h3>
+      <p class="sub">The risks to AI's value accrual, in one place, each with where to look for the detail.</p>
+      <div id="smRisks"></div>
+    </div>
+  </section>
 
   <!-- ───────────────────────── RWA: the tokenized-stock liquidity platform ───────────────────────── -->
   <section class="panel" id="p-investor" role="tabpanel" aria-labelledby="tab-investor" hidden>
@@ -729,7 +766,7 @@
     <div class="card">
       <h3>Tokens launched per day</h3>
       <div class="agenote" data-age="launchpad" hidden></div>
-      <p class="sub">Every pool carrying the LONG hook is a launch, so this is a census of the whole platform. Launch counts are a vanity metric on their own; the size table on the RWA tab is what they produced.</p>
+      <p class="sub">Every pool carrying the LONG hook is a launch, so this is a census of the whole platform. Launch counts are a vanity metric on their own; the size table on the LONG &amp; stocks tab is what they produced.</p>
       <div id="kpiLaunches"></div>
       <div class="chart" id="cLaunches"></div>
       <div id="takeLaunches"></div>

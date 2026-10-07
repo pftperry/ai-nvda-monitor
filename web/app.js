@@ -3056,7 +3056,7 @@ function renderMultiple(feeSeries) {
        this measure; only more volume through AI/NVDA can re-rate it.
        ${engineNet != null ? `<span class="muted">Not counted: LONG's buyback contract ${engineNet >= 0 ? "netted" : "ran net short by"} ${compact(Math.abs(engineNet) / 7)} AI a day
        over the same seven days (bought in, less what it sold back into pools). That is LONG's own purchase of AI,
-       demand for the token rather than revenue to its holders; on the RWA tab under "Mechanical AI buying".</span>` : ""}`);
+       demand for the token rather than revenue to its holders; on the LONG &amp; stocks tab under "Mechanical AI buying".</span>` : ""}`);
   return { now, median, burnMult };
 }
 
@@ -3532,7 +3532,7 @@ function renderCockpit(structure, demand) {
     </div>`;
   }).join("");
 
-  /* The market tiles open the Valuation tab (the user moved them off the RWA tab,
+  /* The market tiles open the Valuation tab (the user moved them off the LONG &amp; stocks tab,
      which now carries only the platform's own numbers); the dials, inputs and
      Coulou's credit follow directly beneath them in #rating. */
   rerender($("#ratingDemand"), `
@@ -4257,6 +4257,155 @@ async function refreshLong500Live() {
   } catch { /* a failed poll keeps the last good figures */ }
 }
 
+/* THE SUMMARY TAB: what AI earns, for someone deciding whether to hold it.
+
+   Everything here is assembled from figures the other tabs already measure, so the
+   numbers agree with them by construction. The order follows the question an
+   investor asks: how much value reaches holders, from where, at what yield on the
+   market cap, how that compares with the other LONG tokens, and what could undercut
+   it. Two definitions run through the page:
+     - Holder accrual is AI burned plus what reaches AI's Community Vault (AI and
+       NVDA). The vault is a 48-hour timelock, not a payout, so the burn is the part
+       holders receive outright; both are shown.
+     - Only the AI/NVDA pool's fees reach AI's fee splitter. Every other AI pool,
+       hooked or not, pays someone else. */
+function renderSummary() {
+  const host = $("#smTiles");
+  if (!host) return;
+  const Q = S.liquidity, B = S.burns, L5 = S.long500, RV = S.revenue, H = S.holders?.snapshots || [];
+  const M = typeof marketState === "function" ? marketState() : {};
+  const mcap = M.mcap ?? null, supply = B?.totalSupply ?? M.supply ?? null, px = M.price ?? null;
+  const usd = (v) => v == null || !isFinite(v) ? "—" : v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}K` : v >= 1 ? `$${v.toFixed(0)}` : v > 0 ? `$${v.toFixed(2)}` : "$0";
+  const sTile = (lbl, val, note, sp = "", cls = "", extra = "") =>
+    `<div class="ctile ${extra}">${sp}<div class="lbl">${lbl}</div><div class="val ${cls}">${val}</div><div class="note">${note}</div></div>`;
+  const today = Math.floor((S.meta?.headTime || Date.now() / 1000) / DAY) * DAY;
+
+  /* the fee engine, complete days only */
+  const E = (Q?.aiEngine || []).filter((r) => r.collected && r.t < today);
+  const w = (n, end = 0) => {
+    const rows = E.slice(Math.max(0, E.length - n - end), E.length - end);
+    const s = (f) => rows.reduce((t, r) => t + (f(r) ?? 0), 0);
+    return { days: rows.length, vol: s((r) => r.volumeUsd), paid: s((r) => r.paidUsd), burn: s((r) => r.burned.usd), vault: s((r) => r.vault.usd),
+      recv: s((r) => r.receiver.usd), long: s((r) => (r.longSwap?.usd ?? 0) + (r.longCut?.usd ?? 0)) };
+  };
+  const w7 = w(7), p7 = w(7, 7);
+  const acc7 = w7.burn + w7.vault, accP7 = p7.burn + p7.vault;
+  const accDay = w7.days ? acc7 / w7.days : null;
+  const burnYield = mcap && w7.days ? (w7.burn / w7.days) * 365 / mcap : null;
+  const accYield = mcap && w7.days ? (acc7 / w7.days) * 365 / mcap : null;
+  const allFees = acc7 + w7.recv + w7.long;
+  const longShare = allFees > 0 ? w7.long / allFees : null;
+  const per1m = w7.vol > 0 ? (acc7 / w7.vol) * 1e6 : null;
+  const accSeries = E.slice(-30).map((r) => (r.burned.usd || 0) + (r.vault.usd || 0));
+  const burnYieldSeries = mcap ? E.slice(-30).map((r) => (r.burned.usd || 0) * 365 / mcap) : [];
+
+  /* share of AI's volume that pays AI's vault: the AI/NVDA pool against every
+     indexed AI venue, by day */
+  const byDay = new Map();
+  for (const p of S.flow?.pools || []) for (const h of p.hourly || []) {
+    const d = Math.floor(h.t / DAY) * DAY; if (d >= today) continue;
+    const v = (h.aiBuy || 0) + (h.aiSell || 0); if (!(v > 0)) continue;
+    const r = byDay.get(d) || { t: d, all: 0, funds: 0 };
+    r.all += v; if (fundsVault(p)) r.funds += v; byDay.set(d, r);
+  }
+  const fd = [...byDay.values()].sort((a, b) => a.t - b.t).slice(-30);
+  const f7 = fd.slice(-7), fShare = f7.reduce((s, r) => s + r.funds, 0) / Math.max(1e-9, f7.reduce((s, r) => s + r.all, 0));
+  const fSeries = fd.map((r) => (r.all ? r.funds / r.all : null));
+
+  /* the vault's non-AI backing per AI token: NVDA and other stock, at today's prices */
+  const stockUsd = (L5?.reserve?.stockUsd ?? null);
+  const backPerM = stockUsd != null && supply ? stockUsd / (supply / 1e6) : null;
+  const backPct = backPerM != null && px ? backPerM / 1e6 / px : null;
+  const backSeries = (L5?.nav?.daily || []).slice(-30).map((r) => (r.nvdaUsd != null && supply ? r.nvdaUsd / (supply / 1e6) : null));
+
+  /* AI held by LONG's own wallets: the buyback contract and the accumulation wallet */
+  const longAi = RV?.balances ? (RV.balances.buyback?.ai || 0) + (RV.balances.accumulator?.ai || 0) + (RV.balances.revenue?.ai || 0) : null;
+  const rvDays = completeDays(RV?.daily || []);
+  const netIn = (d) => (d.aiToBuyback || 0) - (d.aiBuybackToPools || 0) - (d.aiBuybackElsewhere || 0) - (d.aiAccumOut || 0);
+  const longAi7 = rvDays.slice(-7).reduce((s, d) => s + netIn(d), 0);
+  const longSeries = (() => { let held = longAi ?? 0; const out = []; for (const d of rvDays.slice(-30).reverse()) { out.push(held); held -= netIn(d); } return out.reverse(); })();
+
+  /* holders */
+  const hNow = H.at(-1), hWk = H.find((x) => x.t >= (hNow?.t ?? 0) - 7 * DAY);
+  const hSeries = H.filter((_, i) => i % 6 === 5 || i === H.length - 1).slice(-30).map((x) => x.holders);
+
+  host.innerHTML = `<div class="tiles four">
+      ${sTile("To holders / day", usd(accDay), `7-day average: ${usd(w7.burn / Math.max(1, w7.days))} of AI burned + ${usd(w7.vault / Math.max(1, w7.days))} to AI's vault${accP7 ? ` · <span class="${acc7 >= accP7 ? "up" : "down"}">${pct(acc7 / accP7 - 1, 0)}</span> on the week before` : ""}`, spark(accSeries, "var(--buy)"), "", "hero")}
+      ${sTile("Burn yield", burnYield != null ? pctLevel(burnYield, 2) : "—", `AI burned a year at the last 7 days' pace, over the ${usd(mcap)} market cap${accYield != null ? ` · ${pctLevel(accYield, 2)} counting the vault` : ""}`, spark(burnYieldSeries, "var(--sell)"))}
+      ${sTile("Vault backing", backPct != null ? pctLevel(backPct, 1) : "—", backPerM != null ? `of AI's price: ${usd(backPerM)} of NVDA and stock per million AI, in a 48h-timelocked vault` : "", spark(backSeries, "var(--series-3)"))}
+      ${sTile("Funds AI's vault", pctLevel(fShare, 0), "of AI's 7-day volume ran through AI/NVDA, the only pool whose fees reach AI's fee splitter", spark(fSeries, "var(--series-1)"), fShare < 0.25 ? "down" : "")}
+      ${sTile("Effective fee rate", B?.effectiveFeeRate != null ? pctLevel(B.effectiveFeeRate, 2) : "—", "of AI/NVDA sell volume that reaches AI's splitter, of a 0.70% LP fee")}
+      ${sTile("LONG's share of the fees", longShare != null ? pctLevel(longShare, 0) : "—", `of what AI/NVDA traders paid in 7 days (${usd(w7.long)}): LONG's 1% swap fee plus 5% of the LP fees`)}
+      ${sTile("AI held by LONG", longAi != null ? compact(longAi) : "—", longAi != null ? `${supply ? pctLevel(longAi / supply, 2) + " of supply · " : ""}${longAi7 >= 0 ? "+" : "−"}${compact(Math.abs(longAi7))} in 7 days · buyback contract and accumulation wallet` : "", spark(longSeries, "var(--warn, #c9a227)"), longAi7 > 0 ? "" : "")}
+      ${sTile("Holders", hNow ? hNow.holders.toLocaleString() : "—", hNow && hWk ? `${pct(hNow.holders / hWk.holders - 1, 1)} in 7 days` : "", spark(hSeries, "var(--series-2)"))}
+    </div>`;
+
+  /* the one-paragraph answer */
+  $("#smRead").innerHTML = takeEl(acc7 >= accP7 ? "pos" : "warn",
+    `Over the last 7 complete days <b>${usd(w7.vol)}</b> traded through AI/NVDA and traders paid <b>${usd(w7.paid)}</b> in fees.
+     <b>${usd(acc7)}</b> of it reached AI holders (${usd(w7.burn)} burned, ${usd(w7.vault)} to the vault): <b>${per1m != null ? usd(per1m) : "—"} per $1M traded</b>,
+     ${allFees ? pctLevel(acc7 / allFees, 0) : "—"} of the total. LONG took ${allFees ? pctLevel(w7.long / allFees, 0) : "—"} and AI's original fee receiver ${allFees ? pctLevel(w7.recv / allFees, 0) : "—"}.
+     Only ${pctLevel(fShare, 0)} of AI's volume ran through that pool; the rest paid no one who holds AI.
+     At this pace the burn retires ${burnYield != null ? pctLevel(burnYield, 2) : "—"} of the market cap a year.`);
+
+  /* accrual over time: two charts, one axis each */
+  const accRows = E.slice(-30).map((r) => ({ t: r.t, burn: r.burned.usd || 0, acc: (r.burned.usd || 0) + (r.vault.usd || 0) }));
+  if (accRows.length >= 2) stackedBars($("#cSmAccrual"), accRows, {
+    xKey: "t", totalKey: "acc", partKey: "burn", totalColor: "var(--buy)", partColor: "var(--sell)", fmt: (v) => usd(v), xFmt: dayFmt,
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${usd(r.acc)} to AI holders</div><div class="k">${usd(r.burn)} of it burned, ${usd(r.acc - r.burn)} to the vault</div>`,
+  });
+  const volRows = E.slice(-30).map((r) => ({ t: r.t, v: r.volumeUsd || 0 }));
+  if (volRows.length >= 2) barChart($("#cSmVolume"), volRows, { xKey: "t", yKey: "v", color: "var(--series-3)", xFmt: dayFmt, fmt: (v) => usd(v),
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${usd(r.v)} traded through AI/NVDA</div>` });
+
+  /* AI among the LONG tokens: what each pair's fees give its holders, on its cap */
+  const rows = [];
+  const capOf = (asset) => (S.rwa?.backing?.rows || []).find((r) => r.asset?.toLowerCase() === asset?.toLowerCase())?.mcapUsd ?? null;
+  if (mcap && w7.days) rows.push({ sym: "AI", stock: "NVDA", cap: mcap, fees7: w7.paid != null ? (acc7 + w7.recv) / 0.95 : null,
+    hold7: acc7, burn7: w7.burn, vaultHold: (L5?.nav?.nowUsd ?? null), trend: accP7 ? acc7 / accP7 - 1 : null, ai: true });
+  const PR = new Map((Q?.pairs || []).map((p) => [p.poolId, p]));
+  for (const c of S.stockfees?.communityVaults || []) {
+    const cap = capOf(c.asset); const g = c.d7?.grossUsd || 0;
+    if (!cap || g < 50) continue;
+    const series = (PR.get(c.poolId)?.daily || []).filter((d) => d.t < today);
+    const a = series.slice(-7).reduce((s, d) => s + d.usd, 0), b = series.slice(-14, -7).reduce((s, d) => s + d.usd, 0);
+    rows.push({ sym: c.assetSymbol, stock: c.numeraireSymbol, cap, fees7: g / 0.95, hold7: (c.d7?.burned.usd || 0) + (c.d7?.vault.usd || 0) + (c.lpFees7dUsd || 0),
+      burn7: c.d7?.burned.usd || 0, vaultHold: c.holdings?.usd ?? null, trend: b > 0 ? a / b - 1 : null, lp: c.holdings?.lpUsd > 0 });
+  }
+  rows.sort((a, b) => b.cap - a.cap);
+  const yr = (v, cap) => (v != null && cap ? (v / 7) * 365 / cap : null);
+  $("#tSmPeers").innerHTML = rows.length ? `<thead><tr><th>Token</th><th class="r">Market cap</th><th class="r" title="LP fees the pair's pool paid its liquidity in 7 days">Pair LP fees, 7d</th><th class="r" title="burned plus what the pair's vault keeps, plus LP-module fees">To holders, 7d</th><th class="r" title="holder accrual a year at this pace, over market cap">Holder yield</th><th class="r">Burn yield</th><th class="r" title="what the pair's vault holds, over market cap">Vault / cap</th><th class="r" title="pair fees, last 7 complete days against the 7 before">Fee trend</th></tr></thead><tbody>` +
+    rows.slice(0, 12).map((r) => `<tr${r.ai ? ' class="hl"' : ""}><td><b>${r.sym}</b> <span class="muted">/ ${r.stock}${r.lp ? " · LP module" : ""}</span></td>
+      <td class="r mono">${usd(r.cap)}</td><td class="r mono">${usd(r.fees7)}</td><td class="r mono">${usd(r.hold7)}</td>
+      <td class="r mono">${yr(r.hold7, r.cap) != null ? pctLevel(yr(r.hold7, r.cap), 1) : "—"}</td><td class="r mono">${yr(r.burn7, r.cap) != null ? pctLevel(yr(r.burn7, r.cap), 1) : "—"}</td>
+      <td class="r mono">${r.vaultHold != null ? pctLevel(r.vaultHold / r.cap, 1) : "—"}</td>
+      <td class="r mono">${r.trend != null ? `<span class="${r.trend >= 0 ? "up" : "down"}">${pct(r.trend, 0)}</span>` : "—"}</td></tr>`).join("") + "</tbody>" : "";
+  $("#smPeersNote").innerHTML = `<p class="muted" style="margin:8px 0 0">LONG tokens whose pair vault received at least $50 of fees this week, beside AI. Pair LP fees are what the pool's liquidity earned (the 95% released to the pair plus LONG's 5%); LONG's own 1% swap fee is not in them. To holders is what is burned or kept by the pair's vault under its split, plus any LP-module fees; the share paid to each pair's original fee receiver is left out. AI's vault includes the AI it holds. Market caps are the stock census's.</p>`;
+
+  /* risks, in one place */
+  const V = S.vault;
+  const top10 = hNow?.top?.[0] ?? null, top10w = hWk?.top?.[0] ?? null;
+  const big = S.tape?.bigTrades?.trades || [];
+  const dayAgo = Math.floor(Date.now() / 1000) - DAY;
+  const sells24 = big.filter((t) => !t.buy && t.t >= dayAgo).reduce((s, t) => s + (t.usd || 0), 0), buys24 = big.filter((t) => t.buy && t.t >= dayAgo).reduce((s, t) => s + (t.usd || 0), 0);
+  const ageMin = S.meta?.updatedAt ? (Date.now() / 1000 - S.meta.updatedAt) / 60 : null;
+  const risk = (tone, k, v, why) => `<div class="smr"><span class="band ${tone === "ok" ? "bull" : tone === "bad" ? "bear" : "base"}">${tone === "ok" ? "ok" : tone === "bad" ? "alert" : "watch"}</span><div><b>${k}</b> <span class="mono">${v}</span><div class="muted">${why}</div></div></div>`;
+  $("#smRisks").innerHTML = [
+    risk(V?.pending ? "bad" : "ok", "Moves out of AI's vault", V?.timelock ? (V.pending ? `${V.pending} scheduled` : "none scheduled") : "—",
+      `The vault is a ${V?.timelock?.minDelay ? Math.round(V.timelock.minDelay / 3600) : 48}-hour timelock; ${V?.opsEver ?? 0} operations have ever been scheduled. Details on the LONG 500 tab.`),
+    risk(fShare < 0.25 ? "bad" : fShare < 0.5 ? "watch" : "ok", "Volume that pays AI's vault", pctLevel(fShare, 0),
+      "Trading through any pool other than AI/NVDA pays AI holders nothing; routers pick the cheapest path, and AI/NVDA charges about 1.7% all in."),
+    risk(longAi7 > 0 ? "watch" : "ok", "AI held by LONG", longAi != null ? `${compact(longAi)} AI (${supply ? pctLevel(longAi / supply, 2) : "—"})` : "—",
+      `LONG's buyback contract and accumulation wallet, ${longAi7 >= 0 ? "up" : "down"} ${compact(Math.abs(longAi7))} AI in 7 days. The accumulation wallet has never sent any AI out (${RV?.totals ? compact(RV.balances?.accumulator?.ai || 0) : "—"} held); the buyback contract sells most AI it takes in straight back into pools (${RV?.totals ? compact(RV.totals.aiBuybackToPools) : "—"} so far) and keeps the rest. A sale from either balance would be supply the market has not priced.`),
+    risk(top10 != null && top10 > 0.3 ? "watch" : "ok", "Top-10 concentration", top10 != null ? pctLevel(top10, 1) : "—",
+      `of holder-owned supply in the ten largest wallets${top10w != null ? `, ${pts(top10 - top10w)} in 7 days` : ""}. Under 50% is the usual healthy line.`),
+    risk(sells24 > buys24 * 2 && sells24 > 100_000 ? "watch" : "ok", "Large trades, 24h", `${usd(sells24)} sold / ${usd(buys24)} bought`,
+      "Trades of $25K or more, sized at the wallet. Detail on the Trading tab."),
+    risk(ageMin != null && ageMin > 180 ? "bad" : ageMin != null && ageMin > 60 ? "watch" : "ok", "Data freshness", ageMin != null ? `${Math.round(ageMin)} min old` : "—",
+      "Every figure here is from the last index run; a stall over an hour is flagged in the header too."),
+  ].join("");
+}
+
 /* THE LIQUIDITY TAB. Three questions, each answered from measured data: where NVDA's
    DEX liquidity sits (and whether AI/NVDA is the largest pool), how AI/NVDA's fees are
    made and where every dollar of them goes, and what the community vaults' LP modules
@@ -4511,7 +4660,7 @@ function renderLong500() {
      fee split, so they are told apart by where each inflow came from, not by where it
      went. Shown side by side so the programme's share is plain. */
   const src = L.bySource || [];
-  /* seven complete days: today's partial day would read low against the Liquidity tab */
+  /* seven complete days: today's partial day would read low against the Value accrual tab */
   const todayStart = Math.floor(Date.now() / 86400000) * 86400;
   const last7 = src.filter((r) => r.t < todayStart).slice(-7);
   const o7 = last7.reduce((s, r) => s + r.originalUsd, 0), l7 = last7.reduce((s, r) => s + r.long500Usd, 0);
@@ -4665,7 +4814,7 @@ function renderSince(R, pending) {
      <span class="muted">Inventory from each token's transfers through the pool manager (exact: the manager's balance only moves by transfer); LONG's volume from the hook's swap event; today's prices, complete UTC days. The series reads all ${Z.stocks} tokens in Robinhood's listing registry; the by-stock table above lists the ${R.totals?.stocks ?? "—"} of them with a supply on chain today. A since-inception volume share needs the same event on both sides, and the chain-wide Swap tape is tens of millions of events, so the transfer-basis share is published as a ratio of transfers, not as a bound.</span>`);
 }
 
-/* The numbers at the top of the RWA tab: the ones an institution, or Robinhood
+/* The numbers at the top of the LONG &amp; stocks tab: the ones an institution, or Robinhood
    itself, would watch to decide whether LONG is the venue for tokenized stocks. Each
    is drawn from a card further down; this is the summary, not a new measurement. */
 function renderRwaKpis(R, D, pending) {
@@ -5348,7 +5497,7 @@ function renderRwa() {
 
 /* ── The fee engine ──────────────────────────────────────────────────────
    The buyback contract, the AI it accumulates and the USDG it routes to the
-   revenue wallet. Two homes: the RWA tab reads it as mechanical AI demand,
+   revenue wallet. Two homes: the LONG &amp; stocks tab reads it as mechanical AI demand,
    the Treasury tab reads it as where the platform's money actually goes. */
 function renderRevenue() {
   const R = S.revenue;
@@ -6098,7 +6247,7 @@ function renderMethod() {
       cumulative numeraire swap deltas which counts the stock a trader paid in but never subtracts the fee legs the hook
       hands out of the pool afterwards (the buyback contract's leg leaves for good) or liquidity that was later removed.
       Replaying the positions gives what the pools hold now; the swap-delta sum is an upper bound on it.
-      <b>Since the chain went live</b> (the two histories on the RWA tab) covers every identified stock token from the
+      <b>Since the chain went live</b> (the two histories on the LONG &amp; stocks tab) covers every identified stock token from the
       chain's first block (30 Apr 2026; a pre-genesis anchor set maps those blocks to days). All-venue inventory is each
       token's transfers into and out of the pool manager, streamed in address batches and netted per day (reconciled against
       the live balance by verify); all-venue volume is the gross of those legs less the hook's and buyback contract's fee legs, plus Rialto's own
@@ -6150,7 +6299,7 @@ function renderMethod() {
       Which wallets belong to the protocol is inferred from the forwards, not declared anywhere.</p>
 
       <p><b style="color:var(--text-primary)">Dollars.</b> Volume and fees are multiplied by the AI/USDG close of the hour
-      they happened in, except on the Tape's largest-trades and traders panels, which value AI at the latest price. NVDA’s dollar price is read from the stock token’s own busiest USDG pool each run (two or
+      they happened in, except on the Trading tab's largest-trades and traders panels, which value AI at the latest price. NVDA’s dollar price is read from the stock token’s own busiest USDG pool each run (two or
       three requests, no history scanned) and cross-checked against the price implied by AI in USDG over AI in NVDA;
       the page says when the two disagree. The vault is therefore stated in dollars and as a share of market cap, and
       AI’s beta to NVDA is measured on hourly returns rather than assumed.</p>
@@ -6318,6 +6467,7 @@ function renderAll() {
   renderInvestor(); renderFlow(); renderBurn(); renderFloat(); renderBridges(); renderMethod();
   try { renderRwa(); } catch (e) { console.error("renderRwa", e); }
   try { renderBacking(); } catch (e) { console.error("renderBacking", e); }
+  try { renderSummary(); } catch (e) { console.error("renderSummary", e); }
   try { renderLong500(); } catch (e) { console.error("renderLong500", e); }
   try { renderLiquidity(); } catch (e) { console.error("renderLiquidity", e); }
   try { renderRevenue(); } catch (e) { console.error("renderRevenue", e); }
@@ -6378,7 +6528,7 @@ async function boot() {
     return;
   }
   $("#boot").remove();
-  $("#p-investor").hidden = false;   // the investor view is what opens by default
+  $("#p-summary").hidden = false;   // the summary of what AI earns is what opens by default
 
   /* A token can have several v4 pools (different fee tier, tick spacing or hook),
      and more than one of them can be busy — there are two live AI/USDG venues.
