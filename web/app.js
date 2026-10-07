@@ -1745,60 +1745,35 @@ function renderBridges() {
     return;
   }
   const total = r.directAI + r.crossRoutedAI;
+  /* Every history here is complete days only: today's partial bucket would sit in
+     the chart and the percentile as a day of near-zero volume. The tile's context
+     is the ratio's rank in its own daily history, not an outside writeup's
+     bear/base/bull label for it. */
+  const rDaily = completeDays(r.daily || []);
+  const kHist = rDaily.map((d) => d.ratio).filter((x) => x != null && isFinite(x));
+  const kPct = percentileOf(kHist, r.measuredKappaRatio);
   $("#routeTiles").innerHTML = [
-    { lbl: "Measured cross-routing", val: pctLevel(r.measuredKappaRatio, 1), note: `of direct volume — implies "${r.impliedRegime}" regime` },
+    { lbl: "Measured cross-routing", val: pctLevel(r.measuredKappaRatio, 1),
+      note: kPct == null ? "of direct volume" : `of direct volume · ${Math.round(kPct * 100)}th percentile of its own ${kHist.length} complete days` },
     { lbl: "Cross-routed AI", val: compact(r.crossRoutedAI), note: `${pctLevel(r.crossRoutedAI / (total || 1), 1)} of all AI volume observed` },
     { lbl: "Cross-routing txs", val: r.transactions.crossRouting.toLocaleString(), note: `of ${r.transactions.multiLeg.toLocaleString()} multi-leg txs` },
-    { lbl: "Active AI bridges", val: `${S.meta.poolCounts.active}`, note: `of ${S.meta.poolCounts.withAI.toLocaleString()} pools that contain AI` },
+    { lbl: "Active AI pools", val: `${S.meta.poolCounts.active}`, note: `of ${S.meta.poolCounts.withAI.toLocaleString()} pools that contain AI` },
   ].map((t) => `<div class="tile"><div class="lbl">${t.lbl}</div><div class="val">${t.val}</div><div class="note">${t.note}</div></div>`).join("");
 
-  /* Markers are this series' own quartiles, with the outside writeup's cases kept
-     only as two faint reference ticks. Four borrowed thresholds across the scale made
-     them read as the axis -- as though "bull" were a property of the measurement
-     rather than of someone's assumption. */
-  const kHist = (r.daily || []).map((d) => d.ratio).filter((x) => x != null && isFinite(x)).sort((a, b) => a - b);
-  const kq = (f) => (kHist.length >= 10 ? kHist[Math.min(kHist.length - 1, Math.floor(f * kHist.length))] : null);
-  const ownMarks = [
-    { name: "own low", at: kq(0.1) },
-    { name: "own median", at: kq(0.5) },
-    { name: "own high", at: kq(0.9) },
-  ].filter((m) => m.at != null);
-  bulletGauge($("#cGauge"), {
-    value: r.measuredKappaRatio, max: Math.max(0.45, r.measuredKappaRatio * 1.2),
-    fmt: (v) => pctLevel(v, 1),
-    label: "of direct volume cross-routed",
-    markers: ownMarks.length ? ownMarks : [
-      { name: "ref base", at: r.scenarios.base },
-      { name: "ref bull", at: r.scenarios.bull },
-    ],
-  });
-
-  groupedBars($("#cRouting"), r.daily, {
+  groupedBars($("#cRouting"), rDaily, {
     xKey: "t", keys: ["direct", "cross"], colors: ["var(--series-1)", "var(--series-2)"],
     tip: (d) => `<div class="k">${dayFmt(d.t)}</div>
       <div><span style="color:var(--series-1)">●</span> direct ${compact(d.direct)} AI <span class="k">(${d.directTx} tx)</span></div>
       <div><span style="color:var(--series-2)">●</span> cross-routed ${compact(d.cross)} AI <span class="k">(${d.crossTx} tx)</span></div>
-      <div class="k">ratio ${pct(d.ratio, 1)}</div>`,
+      <div class="k">ratio ${pctLevel(d.ratio, 1)}</div>`,
   });
 
   if (!br) {
     // Bridge analysis lags or fails independently; say so rather than render blanks.
     $("#bridgeKinds").innerHTML = `<p class="muted">Bridge analysis is still pending for this run.</p>`;
-    for (const id of ["#cFormation", "#tBridges"]) $(id).innerHTML = "";
+    $("#tBridges").innerHTML = "";
     return;
   }
-  /* Bars are the pools still trading, because a pool nobody uses is not a
-     bridge. But that count is survivorship-filtered, so the tooltip carries how
-     many actually opened that day -- otherwise the chart invents a decline in
-     formation out of the older days' casualties. */
-  barChart($("#cFormation"), br.formation, {
-    xKey: "t", yKey: "newBridges", color: "var(--series-3)",
-    fmt: (v) => v.toFixed(0),
-    tip: (d) => `<div class="k">${dayFmt(d.t)}</div>
-      <div>${d.newBridges} still trading</div>${d.opened == null ? "" :
-      `<div class="muted">${d.opened} opened · ${d.opened > d.newBridges
-        ? `${d.opened - d.newBridges} since went quiet` : "all still active"}</div>`}`,
-  });
 
   /* Native launches settle ~100% on their AI pair by construction, so blending
      them with organic bridges would overstate how much flow AI actually wins. */
@@ -1826,8 +1801,18 @@ function renderBridges() {
   }).join("") || `<p class="muted">No bridge data in window.</p>`;
 
   const maxShare = Math.max(0.01, maxOf(br.tokens.map((t) => t.aiPairShare)));
+  /* Ranked by the AI that moves through each bridge, the one column measured in a
+     common unit. The raw volume columns are each in their own token's units, so
+     sorting on them put a billion units of a sub-cent memecoin above a real bridge.
+     Symbols are not unique on a permissionless chain, so a repeated one carries a
+     short address. */
+  const bRows = br.tokens.some((t) => t.aiSideVolume != null)
+    ? [...br.tokens].sort((a, b) => (b.aiSideVolume ?? -1) - (a.aiSideVolume ?? -1)) : br.tokens;
+  const symCount = new Map();
+  for (const t of bRows) symCount.set(t.symbol, (symCount.get(t.symbol) || 0) + 1);
   table($("#tBridges"), [
-    { h: "Token", f: (t) => t.symbol },
+    { h: "Token", f: (t) => symCount.get(t.symbol) > 1 && t.token
+        ? `${t.symbol} <span class="muted" title="${t.token}">${t.token.slice(0, 6)}…</span>` : t.symbol },
     { h: "Kind", f: (t) => t.kind === "native"
         ? `<span class="muted" title="launched against AI">native</span>`
         : `<b>organic</b>` },
@@ -1840,7 +1825,7 @@ function renderBridges() {
     { h: "vs AI", f: (t) => `${t.aiVenues}` },
     { h: "Swaps (AI)", f: (t) => t.swapsInAIPools.toLocaleString() },
     { h: "Bridge opened", f: (t) => dayFmt(t.bridgeOpenedAt) },
-  ], br.tokens);
+  ], bRows);
 
   table($("#tRoutes"), [
     { h: "Route", f: (x) => x.route.replace(">", " → AI → ") },
@@ -2000,8 +1985,9 @@ async function refreshLiveTail() {
 
     /* Toll leakage, live. This is the figure the page calls its dominant fact, and
        it was only ever as fresh as the last index -- hours. The tail now has every
-       indexed venue and each one's hook status, so the same logs answer it for the
-       window just polled, at no extra request. */
+       indexed venue, so the same logs answer it for the window just polled, at no
+       extra request. "Funding" means the AI/NVDA pool only: other LONG-hooked pools
+       pay LONG and their own pair, not AI's vault (see fundsVault). */
     let buy = 0, sell = 0, n = 0, last = null, hookedVol = 0, hooklessVol = 0;
     const priceByPool = {};
     /* Five-minute price buckets for the chart tail. Hourly is the right grain for
@@ -2017,7 +2003,7 @@ async function refreshLiveTail() {
         const row = bk.get(h) || { t: h, aiBuy: 0, aiSell: 0, buys: 0, sells: 0, buyers: 0, sellers: 0, close: 0, live: true };
         if (s.buy) { buy += s.ai; row.aiBuy += s.ai; row.buys++; }
         else { sell += -s.ai; row.aiSell += -s.ai; row.sells++; }
-        if (pools[i].isLongHook) hookedVol += Math.abs(s.ai); else hooklessVol += Math.abs(s.ai);
+        if (fundsVault(pools[i])) hookedVol += Math.abs(s.ai); else hooklessVol += Math.abs(s.ai);
         if (s.price > 0) row.close = s.price;   // a boundary print leaves the close alone
         bk.set(h, row);
         if (i === 0) last = s;
@@ -2126,14 +2112,13 @@ function renderLiveStrip() {
  * Effective fee rate, divided out of the data rather than assumed.
  *
  * The constant here used to be 0.007, on the reasoning that AI/NVDA's dynamic fee
- * resolves to 7000 pips in the swap logs. Dividing measured fee income by measured
- * sell volume on the pools that actually carry the hook gives 0.60% pooled over
- * the last fortnight, and the daily figure ranges 0.27%-0.77%. Three reasons it is
- * not 0.70%: the per-swap fee in the logs appears to include a chain-level
- * component the splitter never receives (across sixteen static pools the logged fee
- * exceeds the pool's configured fee by up to 1000 pips, capped there); the hook now
- * runs on several pools at different tiers, not just AI/NVDA; and buys pay in NVDA,
- * so the AI-denominated leg divides by sell volume only.
+ * resolves to 7000 pips in the swap logs. The splitter receives 95% of the LP fees
+ * the hook's liquidity collects on AI/NVDA (the hook holds nearly all of it), and
+ * buys pay in NVDA, so the AI-denominated leg divides by AI/NVDA's sell volume
+ * only. That lands near 0.62%, not 0.70%. The denominator is AI/NVDA alone: the
+ * hook also runs on AI/SI, AI/OPEN and others, but their LP fees go to their own
+ * pair's beneficiary, never to AI's splitter, and counting their sells halved the
+ * measured rate.
  *
  * So the rate is measured per window. Anything derived from it -- implied notional,
  * above all -- is then a ratio of two measured quantities instead of one measured
@@ -2145,7 +2130,7 @@ function measuredFeeRate(days = 14) {
   // The indexer now makes the same measurement and ships it; one source, not two.
   if (b?.effectiveFeeRate > 0) return b.effectiveFeeRate;
   if (!b?.daily?.length || !f?.pools?.length) return null;
-  const hooked = f.pools.filter((p) => p.isLongHook);
+  const hooked = f.pools.filter(fundsVault);
   if (!hooked.length) return null;
   const sellByDay = new Map();
   for (const p of hooked) {
@@ -2164,6 +2149,30 @@ function measuredFeeRate(days = 14) {
   return sells > 0 ? fees / sells : null;
 }
 const DAY = 86400;
+
+/**
+ * Does this pool fund AI's vault? Only AI/NVDA does.
+ *
+ * Every LONG-hooked pool pays LONG's 1% on the output and its LP fee to the
+ * liquidity, which the hook collects and splits 95% to the pair's beneficiary and
+ * 5% to LONG. AI/NVDA's beneficiary is AI's fee splitter (40% burned, 40% to the
+ * Community Vault, 20% to AI's original fee receiver). AI/SI, AI/OPEN and the other
+ * hooked AI pools pay their own beneficiaries, so they pay LONG but not AI's vault.
+ * `isLongHook` therefore answers "does LONG get paid", and this answers "does AI".
+ */
+const fundsVault = (p) => !!p && p.poolId?.toLowerCase() === S.meta?.contracts?.aiNvdaPool?.toLowerCase();
+
+/* What a swap actually costs, as the venue table and the leak card state it. A
+   LONG-hooked pool charges its LP fee on the input and LONG's 1% on the output, so
+   the LP fee alone understates the cost of trading there by more than half. */
+const LONG_FEE = 0.01;
+const lpFeeOf = (p) => (p.lastFeePips != null ? p.lastFeePips / 1e6 : p.dynamicFee ? null : p.fee / 1e6);
+const feeLabel = (p) => {
+  if (!p) return "—";
+  const lp = lpFeeOf(p), lpTxt = lp == null ? "dynamic" : pctLevel(lp, 2);
+  return p.isLongHook ? `${lpTxt} LP + ${pctLevel(LONG_FEE, 2)} LONG` : lpTxt;
+};
+const allInFee = (p) => { const lp = p ? lpFeeOf(p) : null; return lp == null ? null : lp + (p.isLongHook ? LONG_FEE : 0); };
 
 /** A level, not a change: no leading sign. Using pct() here reads as a delta. */
 const pctLevel = (x, d = 1) => (x == null || !isFinite(x) ? "—" : `${(+(x * 100).toFixed(d)).toFixed(d)}%`);
@@ -2326,25 +2335,12 @@ function renderInvestor() {
   const feeTrend = trend(fee7, fee7p);
   $("#kpiFee").innerHTML = kpiEl(compact(feeAnnual),
     feeTrend == null ? "" : `${pct(feeTrend, 0)} vs prior 7d`, feeTrend >= 0 ? "up" : "down",
-    "AI/yr fee run-rate");
+    "AI/yr reaching the fee splitter");
   lineChart($("#cInvFee"), feeSeries.slice(-30), {
     xKey: "t", yKey: "fee", zeroBase: true, area: true, color: "var(--series-2)", xFmt: dayFmt,
     tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${compact(d.fee)} AI of fees</div>
       ${feeRate ? `<div class="k">implies ${compact(d.fee / feeRate)} AI of tolled volume</div>` : ""}`,
   });
-  $("#takeFee").innerHTML = takeEl(feeTrend >= 0 ? "pos" : "warn",
-    `Fees are running at <b>${compact(feeAnnual)} AI/yr</b> and
-     ${feeTrend == null ? "have no prior period to compare" :
-       `<b>${feeTrend >= 0 ? "rose" : "fell"} ${pct(Math.abs(feeTrend), 0).replace("+", "")}</b> against the prior week`}.
-     AI-denominated fees are charged on <b>sells only</b> (buys pay in NVDA).
-     ${impliedVol == null ? "" : `Dividing measured fee income by measured sell volume on the hooked pools gives an
-       effective rate of <b>${pctLevel(feeRate, 2)}</b>, which implies <b>${compact(impliedVol)} AI/day</b> of
-       <i>sell-side</i> notional through tolled pools — roughly half the round-trip volume.
-       <span class="muted">That rate is measured, not the 0.70% the swap logs report per trade: across sixteen
-       static pools the logged fee runs up to 1000 pips above the pool's own fee, so some of it never reaches
-       the splitter.</span>`}
-     Because the fee is paid in AI, revenue and burn are the same number seen twice — this line is the
-     fundamental floor under the token, and it is the one to watch decay.`);
 
   /* ── 3. hard backing ──────────────────────────────────────────────── */
   const bDaily = completeDays(b.daily);
@@ -2385,21 +2381,6 @@ function renderInvestor() {
   } else {
     $("#cInvKappa").innerHTML = `<p class="muted" style="padding:16px 0">Window too short for a trend; the headline figure is the measurement.</p>`;
   }
-  /* Judged against its own range, with the outside scenarios mentioned second and
-     labelled as someone's assumptions rather than as the scale. */
-  const kOwn = percentileOf(kd.map((d) => d.ratio), kappa);
-  $("#takeKappa").innerHTML = takeEl(kOwn == null ? "warn" : kOwn >= 0.5 ? "pos" : "warn",
-    `<b>${pctLevel(kappa, 1)}</b> of direct AI volume is other tokens passing through AI, measured from transactions
-     where AI is a genuine intermediate hop — not assumed, which is the part that matters: this is the number that
-     decides whether AI becomes infrastructure or stays a trade.
-     ${kOwn == null ? "Too little history yet to say whether that is high or low for this asset." :
-       `That is the <b>${Math.round(kOwn * 100)}th percentile</b> of its own measured range over
-        ${kd.length} days, so it is ${kOwn >= 0.75 ? "near the top of" : kOwn >= 0.5 ? "above the middle of"
-        : kOwn >= 0.25 ? "below the middle of" : "near the bottom of"} what this token has actually done.`}
-     <span class="muted">For reference, one circulating valuation writeup assumed cases of
-     ${pctLevel(sc.bear, 0)} / ${pctLevel(sc.base, 0)} / ${pctLevel(sc.bull, 0)} / ${pctLevel(sc.extraBull, 0)} for this input.
-     Those are that author's assumptions about a two-month-old token, shown for comparison only — nothing on this
-     page is scored against them.</span>`);
 
   /* ── 5. fee capture ───────────────────────────────────────────────── */
   const cap = vols.filter((v) => v.total > 0);
@@ -2412,7 +2393,7 @@ function renderInvestor() {
   const capNow = cap7.reduce((s, v) => s + v.main, 0) / Math.max(1e-9, cap7.reduce((s, v) => s + v.total, 0));
   const capPrior = cap7p.length ? cap7p.reduce((s, v) => s + v.main, 0) / Math.max(1e-9, cap7p.reduce((s, v) => s + v.total, 0)) : null;
   $("#kpiCapture").innerHTML = kpiEl(pctLevel(capNow, 1),
-    capPrior == null ? "" : `${pct(capNow - capPrior, 1)} wk/wk`, capNow >= (capPrior ?? capNow) ? "up" : "down",
+    capPrior == null ? "" : `${pts(capNow - capPrior)} wk/wk`, capNow >= (capPrior ?? capNow) ? "up" : "down",
     "of indexed AI volume on AI/NVDA");
   lineChart($("#cInvCapture"), cap.slice(-30), {
     xKey: "t", yKey: "share", zeroBase: true, color: "var(--series-2)", xFmt: dayFmt,
@@ -2429,8 +2410,6 @@ function renderInvestor() {
 
   /* ── 6. float removal ─────────────────────────────────────────────── */
   const removed = b.burned + b.vault.aiBalance;
-  const rem7 = trailing(bDaily, 7, (d) => (d.burnAI || 0) + (d.lockAI || 0));
-  const yrs = rem7 > 0 ? (b.effectiveFloat / (rem7 / 7 * 365)) : Infinity;
   $("#kpiFloat").innerHTML = kpiEl(compact(removed),
     `${pctLevel(removed / b.genesisSupply, 2)} of genesis`, "up", "AI destroyed or locked")
     + `<div class="livenote">${compact(b.burned)} burned + ${compact(b.vault.aiBalance)} locked. Two different sets of tokens, the same size
@@ -2442,13 +2421,6 @@ function renderInvestor() {
       <div><span style="color:var(--series-1)">●</span> burned ${compact(d.cumBurnAI)} AI</div>
       <div><span style="color:var(--series-2)">●</span> vault-locked ${compact(d.cumLockAI)} AI</div>`,
   });
-  $("#takeFloat").innerHTML = takeEl("pos",
-    `<b>${compact(removed)} AI (${pctLevel(removed / b.genesisSupply, 2)} of genesis)</b> is gone or immobilised, removing about
-     <b>${compact(rem7 / 7)} AI/day</b>. At that pace the current free float would take
-     <b>${isFinite(yrs) ? yrs.toFixed(0) + " years" : "indefinitely"}</b> to absorb, so this is a slow structural tailwind,
-     <b>not</b> a near-term catalyst. Anyone citing the burn as an imminent supply shock is overselling it.
-     <span class="muted">Burned and vault-locked are different tokens, not one counted twice: burned AI is destroyed and
-     outside totalSupply, vault AI still exists inside it. They are near-identical in size only because the fee splits 1:1.</span>`);
 
   renderPrice(feeSeries);
   try { renderAdoption(); } catch { /* the census is optional; never blank the tab */ }
@@ -2456,7 +2428,7 @@ function renderInvestor() {
   try { renderDepth(); } catch { /* depth is optional; never blank the tab */ }
   try { renderAnchorRank(); } catch { /* the anchor census is optional */ }
   try { renderRunners(); renderLaunches(); } catch { /* the launchpad tab is optional */ }
-  const leak = renderLeak();
+  const leak = renderLeak(feeTrend);
   renderVenues();
   const mult = renderMultiple(feeSeries);
   try { renderDollars(feeSeries); } catch (e) { console.error("renderDollars", e); }
@@ -2470,7 +2442,6 @@ function renderInvestor() {
      that window and not the whole history. */
   const H = (S.holders?.snapshots || []).filter((x) => x.holders > 0);
   const capRoll = rolling(capComparable, 7, (w) => { const t = sumOf(w, (d) => d.total); return t > 0 ? sumOf(w, (d) => d.main) / t : null; });
-  const leakRoll = rolling(leak?.comparable || [], 7, (w) => { const t = sumOf(w, (d) => d.total); return t > 0 ? sumOf(w, (d) => d.hookless) / t : null; });
   const nvRoll = rolling(bDaily, 7, (w) => sumOf(w, (d) => d.nvdaIn) / 7);
   const feeRoll = rolling(feeSeries, 14, (w) => { const a = sumOf(w.slice(7), (d) => d.fee), p2 = sumOf(w.slice(0, 7), (d) => d.fee); return p2 > 0 ? a / p2 - 1 : null; });
   const flowRoll = rolling(flows, 7, (w) => { const bb = sumOf(w, (d) => d.buy), ss = sumOf(w, (d) => d.sell); return bb + ss > 0 ? (bb - ss) / (bb + ss) : null; });
@@ -2496,10 +2467,7 @@ function renderInvestor() {
   const structure = [
     { k: "Fee capture on AI/NVDA", v: pctLevel(cur(capRoll), 1), d: wk(capRoll), dFmt: pts,
       s: levelScore(capRoll, cur(capRoll), +1),
-      why: "share of indexed volume crossing the tolled pool, trailing 7 days, on days with both venue kinds" },
-    { k: "Toll leakage", v: cur(leakRoll) == null ? "—" : pctLevel(cur(leakRoll), 1) + " pays nothing", d: wk(leakRoll), dFmt: pts, invert: true,
-      s: levelScore(leakRoll, cur(leakRoll), -1),
-      why: "share of indexed volume on pools that pay the vault nothing; high is bad, so its rank is inverted" },
+      why: "share of indexed volume crossing AI/NVDA, the only pool that funds AI's vault, trailing 7 days, on days with other venues trading; the rest of the volume is the leakage, so it is not scored twice" },
     { k: "Hub conversion κ", v: pctLevel(kappa, 1), d: k7pr > 0 ? k7r - k7pr : null, dFmt: pts,
       s: levelScore(kd.map((d) => ({ t: d.t, v: d.ratio })), kappa, +1),
       why: "cross-routed ÷ direct AI volume, trailing 3 days, ranked among its own daily values" },
@@ -2532,7 +2500,7 @@ function renderInvestor() {
       why: `the last ${L ? fmtAge(L.minutes) : "window"}, read from the chain just now; half weight because it is minutes, not days` },
   ];
   const read = renderCockpit(structure, demand);
-  renderValuation(feeAnnual, impliedVol, vols);
+  renderValuation(feeAnnual, impliedVol, vols, (trailing(feeSeries, 7, (d) => d.burn) / 7) * 365);
   renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak, kd.map((d) => d.ratio));
   renderVerdict(read, net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow, capPrior, removed, leak, kd.map((d) => d.ratio));
 
@@ -2544,7 +2512,9 @@ function renderInvestor() {
     try {
       renderSinceLast({
         at: Math.floor(Date.now() / 1000),
-        price: marketState().price, feeAnnual, leak: leak ? leak.leakNow : null,
+        // keyed afresh: the leak is now measured against AI/NVDA only, so a snapshot
+        // stored under the old hook-based definition must not be compared with it
+        price: marketState().price, feeAnnual, leakVault: leak ? leak.leakNow : null,
         kappa, nvda: b.vault.nvdaBalance,
         structure: read.structure.score, demand: read.demand.score, word: read.title,
         holders100k: H.at(-1)?.aboveAi?.[HOLDER_AI_INDEX] ?? null,
@@ -2993,14 +2963,19 @@ function renderPrice(feeSeries) {
 }
 
 /**
- * Cash-flow multiple: market cap divided by the annualised fee run-rate.
+ * Multiple: market cap divided by the AI reaching the fee splitter, annualised.
  *
  * Both terms scale linearly with the AI price, so it cancels exactly and the
  * multiple reduces to supply / annual-fee-in-AI. That is worth stating plainly,
  * because it has a conclusion most holders will not expect: a price fall does
- * NOT make this token cheaper on cash flow. Revenue is denominated in the token
+ * NOT make this token cheaper on this measure. Revenue is denominated in the token
  * itself, so it falls with the price. Only rising AI-denominated fee income --
- * that is, rising volume through pools that actually charge -- re-rates it.
+ * that is, rising volume through AI/NVDA, the one pool that pays the splitter --
+ * re-rates it.
+ *
+ * The splitter figure is not all holder accrual: 40% is burned, 40% goes to the
+ * Community Vault behind a 48h timelock, 20% to AI's original fee receiver. The
+ * burned leg is the part every holder accrues, so its multiple is stated beside it.
  */
 function renderMultiple(feeSeries) {
   const b = S.burns;
@@ -3019,48 +2994,54 @@ function renderMultiple(feeSeries) {
 
   $("#kpiMultiple").innerHTML = kpiEl(now == null ? "—" : `${now.toFixed(1)}×`,
     chg == null ? "" : `${pct(chg, 0)} wk/wk · ${chg > 0 ? "dearer" : "cheaper"}`,
-    chg <= 0 ? "up" : "down", "supply ÷ annual fees");
+    chg <= 0 ? "up" : "down", "supply ÷ annual AI to the fee splitter");
   if (series.length > 1) {
     lineChart($("#cInvMultiple"), series, {
       xKey: "t", yKey: "mult", color: "var(--series-1)", xFmt: dayFmt,
       fmt: (v) => `${v.toFixed(0)}×`,
-      tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.mult.toFixed(1)}× cash flow</div>`,
+      tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${d.mult.toFixed(1)}× splitter run-rate</div>`,
     });
   } else $("#cInvMultiple").innerHTML = `<p class="muted" style="padding:16px 0">Not enough complete days yet.</p>`;
 
   const sortedM = series.map((x) => x.mult).sort((a, b) => a - b);
   const median = sortedM.length ? sortedM[Math.floor(sortedM.length / 2)] : null;
-  /* The splitter legs are the narrow definition of what AI earns. The fee engine
-     (buyback contract) takes in several times as much AI, and what it keeps is
-     protocol-held rather than burned or locked. Both multiples, labelled. */
+  const feeWk = feeSeries.slice(-7).reduce((s, d) => s + d.fee, 0);
+  const burnWk = feeSeries.slice(-7).reduce((s, d) => s + (d.burn || 0), 0);
+  const supplyNow = b.totalSupply || (b.genesisSupply - (b.burned || 0));
+  const burnMult = burnWk > 0 ? supplyNow / ((burnWk / 7) * 365) : null;
+  /* LONG's buyback contract buys AI with LONG's own 1% swap fee. That AI is held
+     by LONG, so it is demand for the token, not revenue to its holders, and it is
+     kept out of every multiple here. It is stated, labelled, so nobody has to
+     wonder whether it was missed. */
   const rv = S.revenue?.daily?.length ? completeDays(S.revenue.daily).slice(-7) : [];
   const engineNet = rv.length === 7 ? sumOf(rv, (d) => d.aiToBuyback - d.aiBuybackToPools - (d.aiBuybackElsewhere || 0)) : null;
-  const feeWk = feeSeries.slice(-7).reduce((s, d) => s + d.fee, 0);
-  const supplyNow = b.totalSupply || (b.genesisSupply - (b.burned || 0));
-  const broad = engineNet != null && feeWk + engineNet > 0 ? supplyNow / (((feeWk + engineNet) / 7) * 365) : null;
   $("#takeMultiple").innerHTML = takeEl(chg == null ? "" : chg <= 0 ? "pos" : "neg",
     now == null ? "No fee history yet."
-    : `AI trades at <b>${now.toFixed(1)}× its annualised fee run-rate</b>${chg == null ? "" :
-        `, ${chg > 0 ? "up" : "down"} ${pctLevel(Math.abs(chg), 0)} on the week — ${chg > 0 ? "more expensive" : "cheaper"} than seven days ago`}.
+    : `AI trades at <b>${now.toFixed(1)}× the AI reaching its fee splitter</b>, annualised${chg == null ? "" :
+        `, ${chg > 0 ? "up" : "down"} ${pctLevel(Math.abs(chg), 0)} on the week: ${chg > 0 ? "more expensive" : "cheaper"} than seven days ago`}.
+       That stream is 40% burned, 40% sent to the Community Vault behind a 48h timelock and 20% sent to AI's original
+       fee receiver. Only the burned part accrues to every holder${burnMult == null ? "" : `; on it alone the multiple is <b>${burnMult.toFixed(1)}×</b>`}.
        The counterintuitive part: <b>this number does not move when the price moves.</b> Fees are earned in AI, so
-       revenue and market cap rise and fall together and the ratio cancels. You cannot buy this dip on cash flow —
-       only more volume through fee-bearing pools can re-rate it.
-       ${broad != null ? `<br><b>The wider definition:</b> the splitter legs above are ${compact(feeWk / 7)} AI a day; the protocol's buyback contract
-       netted <b>${compact(engineNet / 7)} AI a day</b> on top over the same seven days (taken in, less what it sold back into pools). Counting that
-       AI as accrual, the multiple is <b>${broad.toFixed(1)}×</b>. It is protocol-held rather than burned or locked, so it is a weaker
-       claim than the splitter legs; on the RWA tab under "Mechanical AI buying".` : ""}`);
-  return { now, median, broad };
+       revenue and market cap rise and fall together and the ratio cancels. A lower price does not make AI cheaper on
+       this measure; only more volume through AI/NVDA can re-rate it.
+       ${engineNet != null ? `<span class="muted">Not counted: LONG's buyback contract ${engineNet >= 0 ? "netted" : "ran net short by"} ${compact(Math.abs(engineNet) / 7)} AI a day
+       over the same seven days (bought in, less what it sold back into pools). That is LONG's own purchase of AI,
+       demand for the token rather than revenue to its holders; on the RWA tab under "Mechanical AI buying".</span>` : ""}`);
+  return { now, median, burnMult };
 }
 
 /**
- * Where the fees leak: fee-bearing (hooked) venues versus hookless ones.
+ * Where the fees leak: AI/NVDA, the one pool that funds AI's vault, against
+ * every other venue.
  *
- * This is the mechanism behind the revenue decline, and it is not a demand
- * problem. v4 pools are permissionless, so anyone can open a competing AI pool
- * with no hook and a lower fee. Routers then prefer it on price, and the volume
- * that used to pay the vault stops paying anything.
+ * v4 pools are permissionless, so anyone can open a competing AI pool with a
+ * lower fee, and routers prefer it on price. Being LONG-hooked is not the same as
+ * paying AI's vault: a hooked pool's LP fees go 95% to its own pair's beneficiary
+ * and 5% to LONG, and only AI/NVDA's beneficiary is AI's fee splitter. So AI/SI,
+ * AI/OPEN and the rest pay LONG and their own pair, and AI's vault nothing. The
+ * tooltip keeps that slice visible rather than folding it in silently.
  */
-function renderLeak() {
+function renderLeak(feeTrend = null) {
   const DAYS = 30;
   /* Each day records whether BOTH kinds of venue were actually trading in the
      indexed set, because otherwise the ratio is structural rather than economic:
@@ -3070,20 +3051,21 @@ function renderLeak() {
      `comparable` days only. */
   const perDay = new Map();
   for (const p of S.flow.pools) {
+    const funds = fundsVault(p);
     for (const h of p.hourly) {
       const v = (h.aiBuy || 0) + (h.aiSell || 0);
       if (!(v > 0)) continue;
       const d = Math.floor(h.t / DAY) * DAY;
-      const row = perDay.get(d) || { t: d, hooked: 0, hookless: 0, sawHooked: false, sawHookless: false };
-      if (p.isLongHook) { row.hooked += v; row.sawHooked = true; }
-      else { row.hookless += v; row.sawHookless = true; }
+      const row = perDay.get(d) || { t: d, funding: 0, other: 0, otherHooked: 0, sawFunding: false, sawOther: false };
+      if (funds) { row.funding += v; row.sawFunding = true; }
+      else { row.other += v; row.sawOther = true; if (p.isLongHook) row.otherHooked += v; }
       perDay.set(d, row);
     }
   }
   const series = completeDays([...perDay.values()].sort((a, b) => a.t - b.t))
-    .map((r) => ({ ...r, total: r.hooked + r.hookless,
-      comparable: r.sawHooked && r.sawHookless,
-      leak: (r.hooked + r.hookless) > 0 ? r.hookless / (r.hooked + r.hookless) : 0 }))
+    .map((r) => ({ ...r, total: r.funding + r.other,
+      comparable: r.sawFunding && r.sawOther,
+      leak: (r.funding + r.other) > 0 ? r.other / (r.funding + r.other) : 0 }))
     .slice(-DAYS);
 
   const last = series[series.length - 1];
@@ -3092,53 +3074,62 @@ function renderLeak() {
      against exactly the artifact the comparable filter exists to remove. */
   const comparable = series.filter((d) => d.comparable);
   const first = comparable[0] || null;
-  /* The headline is the trailing WEEK over comparable days, the same figure the
-     Demand/Structure dial ranks, so the tile, the dial and the verdict can never
-     quote three different leakages. The last day sits beside it. */
+  /* The headline is the trailing WEEK over comparable days, the same window the
+     Demand/Structure dial ranks, so the tile and the verdict can never quote two
+     different leakages. The last day sits beside it. */
   const wk7 = comparable.slice(-7);
   const wkTot = sumOf(wk7, (d) => d.total);
-  const leakNow = wkTot > 0 ? sumOf(wk7, (d) => d.hookless) / wkTot : (last ? last.leak : 0);
+  const leakNow = wkTot > 0 ? sumOf(wk7, (d) => d.other) / wkTot : (last ? last.leak : 0);
   const leakDay = last ? last.leak : null;
   const wkPrior = comparable.slice(-14, -7);
   const wkPriorTot = sumOf(wkPrior, (d) => d.total);
-  const leakPrior = wkPriorTot > 0 ? sumOf(wkPrior, (d) => d.hookless) / wkPriorTot : null;
+  const leakPrior = wkPriorTot > 0 ? sumOf(wkPrior, (d) => d.other) / wkPriorTot : null;
 
   const liveLeak = S.live?.leak;
   $("#kpiLeak").innerHTML = kpiEl(pctLevel(leakNow, 1),
     leakPrior == null ? "" : `${pts(leakNow - leakPrior)} wk/wk`, leakPrior != null && leakNow > leakPrior ? "down" : "up",
-    `of indexed volume pays the vault nothing, 7d`)
+    `of indexed volume off AI/NVDA, paying AI's vault nothing, 7d`)
     + `<div class="livenote">${leakDay == null ? "" : `Last complete day <b>${pctLevel(leakDay, 1)}</b>`}${first ? ` · ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : ""}${liveLeak == null ? "" : ` · live <b>${pctLevel(liveLeak, 1)}</b> over the last ${fmtAge(S.live.minutes)}`}</div>`;
   if (series.length > 1) {
     multiLine($("#cInvLeak"), series, {
       xKey: "t", zeroBase: true, area: true, xFmt: dayFmt,
-      series: [{ key: "hooked", color: "var(--series-1)" }, { key: "hookless", color: "var(--series-2)" }],
+      series: [{ key: "funding", color: "var(--series-1)" }, { key: "other", color: "var(--series-2)" }],
       tip: (d) => `<div class="k">${dayFmt(d.t)}</div>
-        <div><span style="color:var(--series-1)">●</span> fee-bearing ${compact(d.hooked)} AI</div>
-        <div><span style="color:var(--series-2)">●</span> hookless ${compact(d.hookless)} AI</div>
-        <div class="k">${pctLevel(d.leak, 1)} of volume pays nothing</div>`,
+        <div><span style="color:var(--series-1)">●</span> AI/NVDA ${compact(d.funding)} AI</div>
+        <div><span style="color:var(--series-2)">●</span> other pools ${compact(d.other)} AI</div>
+        ${d.otherHooked > 0 ? `<div class="k">of which ${compact(d.otherHooked)} on other LONG-hooked pools (pay LONG, not AI's vault)</div>` : ""}
+        <div class="k">${pctLevel(d.leak, 1)} of volume pays AI's vault nothing</div>`,
     });
   }
 
   // Name the venue actually doing the damage, rather than describing it abstractly.
   const recent = (p) => p.hourly.slice(-72).reduce((s, h) => s + (h.aiBuy || 0) + (h.aiSell || 0), 0);
-  const worst = S.flow.pools.filter((p) => !p.isLongHook)
+  const worst = S.flow.pools.filter((p) => !fundsVault(p))
     .map((p) => ({ p, v: recent(p) })).sort((a, b) => b.v - a.v)[0];
-  const feeOf = (p) => p.lastFeePips != null ? pctLevel(p.lastFeePips / 1e6, 2) : (p.dynamicFee ? "dynamic" : pctLevel(p.fee / 1e6, 2));
-  const main = S.flow.pools.find((p) => p.poolId === S.meta.contracts.aiNvdaPool);
+  const main = S.flow.pools.find(fundsVault);
+  const mainAllIn = allInFee(main);
 
+  /* Whether fees rose or fell is measured, not assumed: the same venue share can sit
+     beside a rising fee run-rate when total volume grows faster than the leak. */
+  const feeLine = feeTrend == null ? ""
+    : feeTrend < 0
+      ? `Fees reaching AI's splitter fell <b>${pctLevel(-feeTrend, 0)}</b> on the week, and volume moving off AI/NVDA is the first place to look for why.`
+      : `Fees reaching AI's splitter still rose <b>${pctLevel(feeTrend, 0)}</b> on the week, so this share is capping how much new volume reaches the vault rather than shrinking it.`;
   $("#takeLeak").innerHTML = takeEl(leakNow > 0.5 ? "neg" : leakNow > 0.25 ? "warn" : "pos",
-    `<b>${pctLevel(leakNow, 1)} of AI volume this week crossed pools that pay the vault nothing</b>${first ? `, against ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : ""}.
+    `<b>${pctLevel(leakNow, 1)} of AI volume this week crossed pools other than AI/NVDA</b>, none of which pay AI's vault${first ? `, against ${pctLevel(first.leak, 1)} on ${dayFmt(first.t)}` : ""}${leakPrior == null ? "" : ` and ${pctLevel(leakPrior, 1)} the week before`}.
      ${worst && worst.v > 0
-        ? `The largest of them is <b>AI / ${worst.p.pairSymbol} at ${feeOf(worst.p)}</b>, opened ${dayFmt(worst.p.createdAt)} with no hook —
-           versus <b>${feeOf(main)}</b> on the tolled AI/NVDA pool. Routers choose on execution cost, so the cheaper hookless venue wins the flow.`
+        ? `The largest of them is <b>AI / ${worst.p.pairSymbol} at ${feeLabel(worst.p)}</b>, opened ${dayFmt(worst.p.createdAt)}
+           ${worst.p.isLongHook ? "with LONG's hook, so its fees go to LONG and its own pair rather than to AI's vault" : "with no hook"}.
+           A swap through AI/NVDA pays <b>${feeLabel(main)}</b>${mainAllIn == null ? "" : `, about <b>${pctLevel(mainAllIn, 1)}</b> all in`}.
+           Routers choose on execution cost, so the cheaper venue wins the flow.`
         : ""}
-     This is why revenue fell while total volume did not. It is a <b>structural</b> problem, not a cyclical one:
-     v4 pools are permissionless, so the toll can always be undercut by a pool that provides no funding to the protocol.`);
+     ${feeLine} It is a <b>structural</b> problem, not a cyclical one:
+     v4 pools are permissionless, so the toll can always be undercut by a pool that sends nothing to AI's vault.`);
 
-  return { leakNow, leakDay, worst, series, comparable };
+  return { leakNow, leakDay, leakPrior, worst, series, comparable };
 }
 
-function renderValuation(feeAnnual, impliedVol, vols) {
+function renderValuation(feeAnnual, impliedVol, vols, burnAnnual = null) {
   const b = S.burns;
   const M = marketState();
   const px = M.price;                  // canonical: see marketState()
@@ -3147,15 +3138,23 @@ function renderValuation(feeAnnual, impliedVol, vols) {
   const vol30 = vols.slice(-30);
   const avgDailyVol = vol30.length ? vol30.reduce((s, v) => s + v.total, 0) / vol30.length : 0;
 
+  /* The full splitter figure is labelled for what it is: AI that reaches the fee
+     splitter, of which only the burned 40% accrues to every holder. The rest goes
+     to the 48h-timelocked Community Vault and to AI's original fee receiver. */
   const rows = [
-    { m: "Fee run-rate (annualised)", ai: `${compact(feeAnnual)} AI`, u: usd(feeAnnual), n: "measured, all three legs" },
-    { m: "Capitalised at 7.5%", ai: `${compact(feeAnnual / 0.075)} AI`, u: usd(feeAnnual / 0.075),
-      n: "yield method — the discount rate is an assumption, not a measurement" },
+    { m: "AI reaching the fee splitter, annualised", ai: `${compact(feeAnnual)} AI`, u: usd(feeAnnual),
+      n: "measured: 40% burned / 40% Community Vault, 48h timelock / 20% AI's original fee receiver. Excludes LONG's 1% swap fee, which never reaches AI" },
+    ...(burnAnnual != null ? [{ m: "Of which burned, annualised", ai: `${compact(burnAnnual)} AI`, u: usd(burnAnnual),
+      n: "measured: the leg every holder accrues, by shrinking supply" }] : []),
+    { m: "Splitter stream capitalised at 7.5%", ai: `${compact(feeAnnual / 0.075)} AI`, u: usd(feeAnnual / 0.075),
+      n: "yield method: the discount rate is an assumption, not a measurement" },
     { m: "Capitalised at 6.0%", ai: `${compact(feeAnnual / 0.06)} AI`, u: usd(feeAnnual / 0.06),
       n: "same stream, 1.5 points cheaper: note how far the answer moves" },
     { m: "Capitalised at 5.0%", ai: `${compact(feeAnnual / 0.05)} AI`, u: usd(feeAnnual / 0.05),
-      n: "a rate typically given to listed venues with durable revenue" },
-    { m: "Indexed AI volume, 30d average", ai: `${compact(avgDailyVol)} AI/day`, u: usd(avgDailyVol), n: "indexed pools only — a floor, not the full tape" },
+      n: "the low end of the range used" },
+    ...(burnAnnual != null ? [{ m: "Burned leg alone, capitalised at 6.0%", ai: `${compact(burnAnnual / 0.06)} AI`, u: usd(burnAnnual / 0.06),
+      n: "the holder accrual on its own, at the middle rate" }] : []),
+    { m: "Indexed AI volume, 30d average", ai: `${compact(avgDailyVol)} AI/day`, u: usd(avgDailyVol), n: "indexed pools only, so it understates the full tape" },
     { m: "Current market cap", ai: `${compact(b.totalSupply)} AI supply`, u: mcap ? `$${compact(mcap)}` : "—", n: `${M.source}, ${M.supplyLive ? "live" : "indexed"} supply` },
   ];
   table($("#tValuation"), [
@@ -3166,37 +3165,43 @@ function renderValuation(feeAnnual, impliedVol, vols) {
   ], rows);
 
   const capBase = feeAnnual / 0.06 * (px || 0);
+  const capBurn = burnAnnual != null ? burnAnnual / 0.06 * (px || 0) : null;
   const ratio = mcap && capBase ? capBase / mcap : null;
   $("#takeValuation").innerHTML = takeEl(ratio == null ? "warn" : ratio >= 1 ? "pos" : "neg",
     ratio == null
       ? `No USD price available right now, so only the AI-denominated column is meaningful.`
-      : `On the fee stream alone, capitalised at 6%, the measured revenue supports about
-         <b>$${compact(capBase)}</b> against a market cap of <b>$${compact(mcap)}</b> —
+      : `Capitalised at 6%, the AI reaching the fee splitter supports about
+         <b>$${compact(capBase)}</b> against a market cap of <b>$${compact(mcap)}</b>,
          <b>${ratio >= 1 ? `${ratio.toFixed(2)}× above` : `${(1 / ratio).toFixed(2)}× below`}</b> the current price.
+         ${capBurn ? `The burned leg alone, the part every holder accrues, supports <b>$${compact(capBurn)}</b>.` : ""}
          ${ratio >= 1
-            ? "The revenue alone would justify the price, which means the monetary premium is being had for free."
-            : "So the price already embeds growth the current fee stream does not cover; you are paying for the hub thesis converting, not for today's cash flow."}
-         Treat this as a floor calculation: it values the toll and ignores both the NVDA reserve and any monetary premium.
-         <span class="muted">The only measured input here is the fee run-rate. Every discount rate is an assumption —
-         at 7.5% the same stream supports ${usd(feeAnnual / 0.075)} and at 5% it supports ${usd(feeAnnual / 0.05)}, so
-         the rate moves the answer by more than half. Read the spread, not any single row.</span>`);
+            ? "The full stream would cover the price, but most of it goes to the timelocked vault and AI's original fee receiver rather than to holders directly."
+            : "So the price already embeds growth the current fee stream does not cover; you are paying for the hub thesis converting, not for today's fees."}
+         This values the fee stream only and leaves out the NVDA reserve and any monetary premium. None of it is a floor: the stream itself can shrink.
+         <span class="muted">The only measured inputs are the fee legs. Every discount rate is an assumption:
+         at 7.5% the same stream supports ${usd(feeAnnual / 0.075)} and at 5% it supports ${usd(feeAnnual / 0.05)},
+         one and a half times as much. Read the spread, not any single row.</span>`);
 }
 
 function renderVenues() {
   const recent = (p) => p.hourly.slice(-72).reduce((s, h) => s + (h.aiBuy || 0) + (h.aiSell || 0), 0);
   const rows = S.flow.pools.map((p) => ({ p, v: recent(p) })).sort((a, b) => b.v - a.v);
   const total = rows.reduce((s, r) => s + r.v, 0) || 1;
+  /* Fee is what a trader pays: a LONG-hooked pool adds LONG's 1% on the output to
+     its LP fee. "Funds AI's vault" is AI/NVDA alone; another hooked pool pays LONG
+     and its own pair, which is a different question from paying AI. */
   table($("#tVenues"), [
-    { h: "Venue", f: (r) => `AI / ${r.p.pairSymbol || "?"}${r.p.poolId === S.meta.contracts.aiNvdaPool ? " <b>(tolled)</b>" : ""}` },
-    { h: "Fee", f: (r) => r.p.lastFeePips != null ? pctLevel(r.p.lastFeePips / 1e6, 2) : (r.p.dynamicFee ? "dynamic" : pctLevel(r.p.fee / 1e6, 2)) },
-    { h: "Pays vault?", f: (r) => r.p.isLongHook ? `<span class="band bull">yes</span>` : `<span class="band bear">no</span>` },
+    { h: "Venue", f: (r) => `AI / ${r.p.pairSymbol || "?"}${fundsVault(r.p) ? " <b>(funds AI's vault)</b>" : ""}` },
+    { h: "Fee", f: (r) => feeLabel(r.p) },
+    { h: "Funds AI's vault?", f: (r) => fundsVault(r.p) ? `<span class="band bull">yes</span>`
+        : r.p.isLongHook ? `<span class="band base" title="LONG-hooked: its fees go to LONG and its own pair">no · pays LONG</span>`
+        : `<span class="band bear">no</span>` },
     { h: "Vol (72h)", f: (r) => compact(r.v) },
     { h: "Share", attrs: () => ({ class: "bar-cell" }),
       f: (r) => `<div class="fill" style="width:${(r.v / total) * 110}px"></div><span>${pctLevel(r.v / total, 1)}</span>` },
     { h: "Opened", f: (r) => dayFmt(r.p.createdAt) },
     { h: "Swaps", f: (r) => r.p.totalSwaps.toLocaleString() },
   ], rows);
-  const paying = rows.filter((r) => r.p.isLongHook).reduce((s, r) => s + r.v, 0);
   const boner = (S.bridges?.tokens || []).find((t) => /boner/i.test(t.symbol || ""));
   if (S.bridges?.byKind?.organic?.tokens) {
     const org = (S.bridges?.byKind?.organic) || {};
@@ -3211,25 +3216,27 @@ function renderVenues() {
         ${pctLevel(org.minShare ?? 0, 1)}–${pctLevel(org.maxShare ?? 0, 1)}`}. The spread is the finding: the largest
        organic bridge routes a real fraction through AI while the typical one barely does, so "AI is becoming the
        hub" is true of one token and not yet of the population.
-       ${boner ? `<span class="muted">For context, a circulating writeup put AI/BONER at 35–37% of all BONER trading.
-       Measured here across its ${boner.venues.toLocaleString()} venues it is ${pctLevel(boner.aiPairShare, 1)} — which is
-       worth knowing, but one token was never the test either way.</span>` : ""}`));
+       ${boner ? `<span class="muted">For context, AI/BONER carries ${pctLevel(boner.aiPairShare, 1)} of BONER's trading
+       across its ${boner.venues.toLocaleString()} venues. One token was never the test either way.</span>` : ""}`));
   } else { const host = $("#takeBoner"); if (host) host.innerHTML = ""; }
-  $("#takeVenues").innerHTML = takeEl(paying / total < 0.5 ? "neg" : "pos",
-    `Of the last 72 hours of indexed AI volume, <b>${pctLevel(paying / total, 1)}</b> crossed a venue that funds the vault.
-     The tolled pool is the oldest and the most expensive; every newer hookless pool competes with it directly on price
-     while contributing nothing to the burn. Fee capture is therefore a function of venue competition, not of demand —
-     which is why it can fall on a day when total volume rises.`);
 }
 
 function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak, kappaHist = []) {
   const sorted = kappaHist.filter((x) => x != null && isFinite(x)).sort((a, b) => a - b);
   const q = (f) => (sorted.length >= 10 ? sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))] : null);
   const hi = q(0.9), lo = q(0.1);
+  /* The first trigger reads its own direction: its title and tone follow whether the
+     share off AI/NVDA rose or fell on the week, and the fee line says what fees
+     actually did, rather than asserting a decline in advance. */
+  const lk = leak ? leak.leakNow : null, lkp = leak ? leak.leakPrior : null;
+  const rising = lk != null && lkp != null ? lk > lkp : null;
+  const feeChg = fee7p > 0 ? fee7 / fee7p - 1 : null;
   const rows = [
-    ["Hookless share of AI volume keeps climbing",
-     `${leak ? pctLevel(leak.leakNow, 1) : "—"} of volume now pays the vault nothing. This is the live cause of the revenue decline; if it keeps rising, fee-based valuation keeps falling regardless of how well the ecosystem does.`,
-     leak && leak.leakNow > 0.5 ? "neg" : "warn"],
+    [rising == null ? "Volume off AI/NVDA climbs" : rising ? "Volume off AI/NVDA is climbing" : "Volume off AI/NVDA turns back up",
+     `${lk == null ? "—" : pctLevel(lk, 1)} of indexed volume this week skipped AI/NVDA, the only pool that funds AI's vault${lkp == null ? "" : `, ${rising ? "up" : "down"} from ${pctLevel(lkp, 1)} the week before`}.
+      Fees reaching the splitter ${feeChg == null ? "have no prior week to compare against" : `${feeChg >= 0 ? "rose" : "fell"} ${pctLevel(Math.abs(feeChg), 0)} on the week`}.
+      If this share keeps rising, fee-based valuation falls with it however well the ecosystem does.`,
+     rising == null ? "warn" : rising ? (lk > 0.5 ? "neg" : "warn") : "pos"],
     [hi == null ? "Hub conversion breaks to a new high" : `Hub conversion sustains above ${pctLevel(hi, 0)}`,
      `κ is ${pctLevel(kappa, 1)}${hi == null ? "" : `, against a 90th percentile of ${pctLevel(hi, 1)} over its own history`}.
       Holding in the top decile of its own range would mean routers are choosing AI as the path more than they
@@ -3241,13 +3248,13 @@ function renderTriggers(kappa, sc, capNow, feeAnnual, fee7, fee7p, leak, kappaHi
       explained away as sentiment.`,
      lo != null && kappa < lo ? "neg" : "pos"],
     ["Fee run-rate falls two weeks running",
-     `Fees ${fee7 >= fee7p ? "rose" : "fell"} this week. Revenue is the floor under the valuation; two consecutive declines means the floor is moving down, not the multiple.`,
+     `Fees ${fee7 >= fee7p ? "rose" : "fell"} this week. Fees are the one measured input to the valuation; two consecutive declines mean the fee-based value is falling, whatever the multiple does.`,
      fee7 >= fee7p ? "pos" : "warn"],
     ["Fee capture keeps sliding while κ rises",
      `Capture is ${pctLevel(capNow, 1)}. This combination means the hub is winning volume the vault does not get paid on — growth that does not accrue to holders.`,
      "warn"],
     ["Any move scheduled out of the community vault",
-     `${vaultMoveLine()} The vault is a 48-hour timelock, so a withdrawal is posted on chain two days before it can happen. A move of the vault's AI would undo the locked half of the float maths and should be treated as material; a move of its stock into its own liquidity positions keeps the value in the vault.`,
+     `${vaultMoveLine()} The vault is a 48-hour timelock, so a withdrawal is posted on chain two days before it can happen. A move of the vault's AI would return AI now held in the 48h-timelocked vault to circulation and should be treated as material; a move of its stock into its own liquidity positions keeps the value in the vault.`,
      (S.vault?.pending || 0) > 0 ? "neg" : (S.vault?.executedEver || 0) > 0 ? "warn" : "pos"],
   ];
   $("#triggers").innerHTML = rows.map(([h, d, tone]) => `
@@ -3401,23 +3408,33 @@ function dollarState() {
       if (c) { vol24 += v * c; volAi24 += v; }
     }
   }
-  const lastDay = completeDays(b?.daily || []).at(-1);
+  /* The headline is the average of the last seven COMPLETE days. One day's fees
+     swing by a factor of three or more on this pool, so a single-day tile moved
+     more on noise than on anything a holder could act on. Each day is priced at its
+     own average close, the same way the dollars chart prices it, so the tile and
+     the bars cannot disagree. The last day is kept beside it. */
   const fee = (d) => (d.burnAI || 0) + (d.lockAI || 0) + (d.platformAI || 0);
-  const feesAiDay = lastDay ? fee(lastDay) : null;
-  /* Priced at that day's own average close, the same way the dollars chart prices
-     it, so the tile and the bar for the same day cannot disagree. */
-  let dayPx = null;
-  if (lastDay) {
-    const cl = usdSeries().hrs.filter((h) => h.t >= lastDay.t && h.t < lastDay.t + DAY).map((h) => h.close);
-    dayPx = cl.length ? cl.reduce((s, v) => s + v, 0) / cl.length : px;
-  }
+  const feeRows = completeDays(b?.daily || []).slice(-7);
+  const hrs = usdSeries().hrs;
+  const dayPxOf = (t) => {
+    const cl = hrs.filter((h) => h.t >= t && h.t < t + DAY).map((h) => h.close);
+    return cl.length ? cl.reduce((s, v) => s + v, 0) / cl.length : px;
+  };
+  const nFee = feeRows.length;
+  const feesAi7 = nFee ? sumOf(feeRows, fee) / nFee : null;
+  const burnAi7 = nFee ? sumOf(feeRows, (d) => d.burnAI) / nFee : null;
+  const lastDay = feeRows.at(-1);
   return {
     px, mcap: M.mcap, nvdaUsd, nvdaSource, impliedNvda,
     vaultUsd: nvdaUsd && b ? b.vault.nvdaBalance * nvdaUsd : null,
     vol24: vol24 || null, volAi24,
-    feesUsdDay: feesAiDay != null && dayPx ? feesAiDay * dayPx : null,
+    feeDays: nFee,
+    feesUsd7: nFee && px ? sumOf(feeRows, (d) => fee(d) * (dayPxOf(d.t) || 0)) / nFee : null,
+    feesUsdDay: lastDay && px ? fee(lastDay) * (dayPxOf(lastDay.t) || 0) : null,
     // Fees are earned in AI, so the yield on the cap is price-invariant: AI fees × 365 ÷ supply.
-    feeYield: feesAiDay != null && M.supply ? (feesAiDay * 365) / M.supply : null,
+    feeYield: feesAi7 != null && M.supply ? (feesAi7 * 365) / M.supply : null,
+    // The burned leg alone: the part of the splitter stream every holder accrues.
+    burnYield: burnAi7 != null && M.supply ? (burnAi7 * 365) / M.supply : null,
   };
 }
 
@@ -3516,12 +3533,11 @@ function renderCockpit(structure, demand) {
         AI-pair share, cross-routing κ and the NVDA vault, with the 5–7.5% capitalisation rates used in the valuation
         frame below. <b>Two things differ from the report:</b> each input is ranked against AI’s own measured history
         rather than its bear/base/bull scenario values, and the weights are this site’s. The Demand dial is this site’s
-        addition and is not in the report. Neither is the report’s conclusion — a probability-weighted valuation well
-        above today’s market cap — and neither is investment advice.
+        addition and is not in the report. Neither dial is investment advice.
       </div>
       <details data-k="how"><summary>How this is scored, and what it is not</summary>
         <p class="scope">
-          <b>Structure</b> asks whether the business behind AI is improving: fee capture, toll leakage, hub conversion,
+          <b>Structure</b> asks whether the business behind AI is improving: fee capture on AI/NVDA, hub conversion,
           how often new launches choose AI as a base pair, NVDA accreting to the vault, and the fee run-rate’s trend.
           <b>Demand</b> asks what holders are doing right now: net flow, the count of wallets above a fixed AI balance
           (which a price move cannot manufacture), distinct buyers per day, which side of the near-spot book is heavier,
@@ -3649,15 +3665,14 @@ function renderDollars(feeSeries) {
   const last7 = days.slice(-7), prior7 = days.slice(-14, -7);
   const avg = (rows, pick) => (rows.length ? rows.reduce((s, r) => s + (pick(r) || 0), 0) / rows.length : null);
   const vol7 = avg(last7, (r) => r.volUsd), vol7p = avg(prior7, (r) => r.volUsd);
-  const fee7 = avg(last7.filter((r) => r.feeUsd != null), (r) => r.feeUsd);
   const turnover = D.vol24 && D.mcap ? D.vol24 / D.mcap : null;
 
   const tiles = [
     { lbl: "Volume, last 24h", val: D.vol24 ? `$${compact(D.vol24)}` : "—",
       note: vol7 ? `7d avg $${compact(vol7)}/day${vol7p ? ` · ${pct(vol7 / vol7p - 1, 0)} vs prior week` : ""}` : "indexed venues, priced hourly" },
     { lbl: "Turnover", val: pctLevel(turnover, 1), note: "of market cap traded in 24h" },
-    { lbl: "Fees, per day", val: D.feesUsdDay != null ? `$${compact(D.feesUsdDay)}` : "—",
-      note: fee7 != null ? `7d avg $${compact(fee7)}/day${D.feeYield != null ? ` · ${pctLevel(D.feeYield, 2)} of cap, annualised` : ""}` : "last complete day, all three legs" },
+    { lbl: "Fees, per day", val: D.feesUsd7 != null ? `$${compact(D.feesUsd7)}` : "—",
+      note: D.feesUsd7 != null ? `${D.feeDays}-day average to AI's fee splitter${D.feesUsdDay != null ? ` · last day $${compact(D.feesUsdDay)}` : ""}${D.feeYield != null ? ` · ${pctLevel(D.feeYield, 2)} of cap a year` : ""}` : "AI reaching the fee splitter, complete days" },
     { lbl: "Vault, in dollars", val: D.vaultUsd ? `$${compact(D.vaultUsd)}` : "—",
       note: D.vaultUsd && D.mcap ? `${pctLevel(D.vaultUsd / D.mcap, 2)} of market cap · ${nf(S.burns.vault.nvdaBalance, 0)} NVDA at $${D.nvdaUsd ? D.nvdaUsd.toFixed(0) : "—"}` : "needs an NVDA dollar price" },
   ];
@@ -3686,7 +3701,7 @@ function renderDollars(feeSeries) {
 
   $("#takeDollars").innerHTML = takeEl(turnover == null ? "neu" : turnover > 0.25 ? "warn" : "neu",
     `${D.vol24 ? `<b>$${compact(D.vol24)}</b> of AI traded across the indexed venues in the last 24 hours, <b>${pctLevel(turnover, 1)}</b> of the market cap${vol7 ? ` (a week's average is $${compact(vol7)} a day)` : ""}.` : "No dollar volume yet."}
-     ${D.feesUsdDay != null ? `Fees ran at <b>$${compact(D.feesUsdDay)}</b> on the last complete day${D.feeYield != null ? `, which annualises to <b>${pctLevel(D.feeYield, 2)}</b> of the market cap — the yield the toll pays holders in burned and locked AI` : ""}.` : ""}
+     ${D.feesUsd7 != null ? `AI reaching the fee splitter averaged <b>$${compact(D.feesUsd7)}</b> a day over the last ${D.feeDays} complete days${D.feeYield != null ? `, which annualises to <b>${pctLevel(D.feeYield, 2)}</b> of the market cap. Only the burned 40% accrues to every holder${D.burnYield != null ? ` (${pctLevel(D.burnYield, 2)} of the cap a year)` : ""}; the rest goes to the Community Vault behind its 48h timelock and to AI's original fee receiver` : ""}. LONG's 1% swap fee is not in this figure: it goes to LONG, not AI.` : ""}
      ${D.vaultUsd ? `The vault's <b>${nf(S.burns.vault.nvdaBalance, 0)} NVDA</b> is worth <b>$${compact(D.vaultUsd)}</b> at $${D.nvdaUsd.toFixed(0)} a share, <b>${pctLevel(D.vaultUsd / D.mcap, 2)}</b> of the market cap: real, growing, and small next to the price. The reserve supports the story; it does not support the valuation.` : ""}
      ${ratioNote}${betaNote}
      <span class="muted">Dollar figures multiply each hour's AI volume by that hour's AI/USDG close. NVDA's dollar price is ${D.nvdaSource || "pending"}${N.source.startsWith("implied") ? "; its history is implied from AI's two prices until the direct series is a week deep" : ""}. Turnover above a quarter of the cap a day is a market being traded, not held.</span>`);
@@ -5195,7 +5210,7 @@ function renderRwa() {
     } else { $("#rwaSwaps").innerHTML = `<p class="muted">The pool catalogue is still being built; the trading share appears once it covers the stock tokens.</p>`; for (const id of ["#tSwapShare", "#cSwapShare", "#readSwaps"]) $(id).innerHTML = ""; }
   }
 
-  /* ── liquidity: size, ownership, compounding ─────────────────────────── */
+  /* ── liquidity: size, ownership, hook additions ──────────────────────── */
   if (!D?.pools?.length) {
     for (const id of ["#rwaLiq", "#rwaCompound"]) $(id).innerHTML = pending;
     for (const id of ["#cTvl", "#readLiq", "#cCompound", "#readCompound", "#tImpact", "#readImpact"]) $(id).innerHTML = "";
@@ -5225,7 +5240,7 @@ function renderRwa() {
   } else $("#cTvl").innerHTML = `<p class="muted" style="padding:12px 0">Accrues hourly from ${H.length ? tsFmt(H[0].t) : "the next index"}.</p>`;
   $("#readLiq").innerHTML = takeEl("neu",
     `<b>$${compact(tvl)}</b> of resting liquidity across AI's ${D.pools.length} indexed venues${own != null ? `, of which <b>${pctLevel(tvl ? own / tvl : null, 1)}</b> is the protocol's own position` : ""}.
-     Liquidity the protocol owns cannot be pulled by a market maker on a bad day, which is the "sell wall" the founder describes; the rest can leave in one block.
+     Liquidity the protocol owns cannot be pulled by a market maker on a bad day; the rest can leave in one block.
      <span class="muted">Values every position at spot from the ModifyLiquidity tape; the hourly series is total value, not near-spot depth.</span>`);
 
   const comp = D.compounding || [];
@@ -5235,26 +5250,27 @@ function renderRwa() {
     const total = sumOf(since, (r) => r.addUsd), removed = sumOf(since, (r) => r.remUsd);
     const now = Math.floor(Date.now() / 1000), d7 = sumOf(since.filter((r) => r.t >= now - 8 * 86400 && r.t < Math.floor(now / 86400) * 86400), (r) => r.addUsd);
     const days = since.filter((r) => r.addUsd > 0).length;
-    const firstCompound = since.find((r) => r.addUsd > 0);
-    /* Yield: what the protocol's own liquidity earned and reinvested over the last
-       week, annualised against what it holds today. Compounding is valued at
-       today's prices, so this is a run-rate, not an accounting return. */
-    const apr = own > 0 && d7 > 0 ? (d7 / 7) * 365 / own : null;
+    const firstAdd = since.find((r) => r.addUsd > 0);
+    const lastAdd = [...since].reverse().find((r) => r.addUsd > 0);
+    /* These additions are not fees being reinvested. Traced on chain, each one is
+       the hook seeding a new pool; the LP fees its positions earn leave through
+       Collect and are split 95% to the pair's beneficiary and 5% to LONG. So there
+       is no yield to annualise here, only a record of when the hook put liquidity in. */
     $("#rwaCompound").innerHTML = `<div class="tiles">
-      ${tile("Compounded, 7d", `$${compact(d7)}`, "fees folded into the hook's positions, complete days", "", "hero")}
-      ${tile("Yield on protocol liquidity", apr == null ? "—" : pctLevel(apr, 0), apr == null ? "needs a week of compounding" : `annualised run-rate on $${compact(own)} of protocol-owned liquidity, all reinvested`)}
-      ${tile(firstCompound ? `Since ${dayFmt(firstCompound.t)}` : "Since launch", `$${compact(total)}`, `${days} day${days === 1 ? "" : "s"} of compounding so far, after the $${compact(seedDay.addUsd)} seed on ${dayFmt(seedDay.t)}`)}
+      ${tile("Added, 7d", `$${compact(d7)}`, "liquidity the hook added to its own positions, complete days", "", "hero")}
+      ${tile("Last addition", lastAdd ? dayFmt(lastAdd.t) : "—", lastAdd ? `$${compact(lastAdd.addUsd)} that day; none since` : "none after the launch seed")}
+      ${tile(firstAdd ? `Since ${dayFmt(firstAdd.t)}` : "Since launch", `$${compact(total)}`, `${days} day${days === 1 ? "" : "s"} with additions, after the $${compact(seedDay.addUsd)} seed on ${dayFmt(seedDay.t)}`)}
       ${tile("Withdrawn", `$${compact(removed)}`, removed > 0 ? "liquidity the hook has removed" : "the hook has removed nothing", removed > 0 ? "warn" : "")}
     </div>`;
     barChart($("#cCompound"), since.slice(-30), {
       xKey: "t", yKey: "addUsd", color: "var(--buy)", xFmt: dayFmt, fmt: (v) => `$${compact(v)}`,
       tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>$${compact(r.addUsd)} added to the hook's positions</div><div class="k">${compact(r.addAi)} AI + $${compact(r.addQuoteUsd)} of quote${r.remUsd ? ` · $${compact(r.remUsd)} removed` : ""}</div>`,
     });
-    $("#readCompound").innerHTML = takeEl(d7 > 0 ? "pos" : "warn",
-      `The hook has folded <b>$${compact(total)}</b> of fees back into its own liquidity since launch, <b>$${compact(d7)}</b> of it in the last week.
-       This is the mechanism the founder calls liquidity compounding: it does not bid the price up, it thickens the book under it.
-       <span class="muted">Each day's liquidity additions by the hook, converted to tokens at today's price; the operator's eighteen
-       <code>collect()</code> withdrawals of LP fees between 15 and 27 Jul are treasury withdrawals and are not counted here.</span>`);
+    $("#readCompound").innerHTML = takeEl("neu",
+      `The hook has added <b>$${compact(total)}</b> of liquidity to its own positions since launch, <b>$${compact(d7)}</b> of it in the last week${lastAdd ? `; the last addition was on ${dayFmt(lastAdd.t)}` : ""}.
+       Each addition traces to the hook seeding a new pool, not to fees being folded back in. The LP fees its positions earn
+       leave the pools through Collect: 95% to the pair's beneficiary (for AI/NVDA, AI's fee splitter) and 5% to LONG.
+       <span class="muted">Each day's liquidity additions by the hook, converted to tokens at today's price. Collect withdrawals are fee payouts, not liquidity, and are not counted here.</span>`);
   } else { $("#rwaCompound").innerHTML = pending; $("#cCompound").innerHTML = ""; $("#readCompound").innerHTML = ""; }
 
   /* ── cost to trade ──────────────────────────────────────────────────── */
@@ -5273,11 +5289,14 @@ function renderRwa() {
       { h: `Buy, AI/${flagship.pair} only`, f: (r) => cell(r.fBuy) },
     ], rows);
     const m1 = rows.find((r) => r.usd === 1e6);
+    const nvdaAllIn = allInFee(S.flow?.pools?.find(fundsVault));
     $("#readImpact").innerHTML = takeEl(m1?.sell <= 0.1 ? "pos" : m1?.sell <= 0.25 ? "neu" : "warn",
       `A <b>$1M sale</b> of AI, routed across every venue, would move the price <b>${m1 ? pctLevel(m1.sell, 1) : "—"}</b>;
        in the flagship pool alone <b>${m1?.fSell != null ? pctLevel(m1.fSell, 1) : "—"}</b>. A $1M purchase: <b>${m1 ? pctLevel(m1.buy, 1) : "—"}</b>.
        These are the numbers a desk asks before it asks anything else, and they come from the same ladder as the depth picture.
-       <span class="muted">Walked tick by tick from spot at today's price; routed figures assume a perfect split across venues, so they are a floor on real slippage.</span>`);
+       Fees come on top: a swap through AI/NVDA or another LONG-hooked pool also pays the pool's LP fee plus LONG's 1% on the output${
+         nvdaAllIn == null ? "" : `, about <b>${pctLevel(nvdaAllIn, 1)}</b> all in on AI/NVDA`}.
+       <span class="muted">Walked tick by tick from spot at today's price, before fees; routed figures assume a perfect split across venues, so they are a floor on real slippage.</span>`);
   } else { $("#tImpact").innerHTML = ""; $("#readImpact").innerHTML = pending; }
   collapseIntros($("#p-investor"));
 }
@@ -5467,7 +5486,7 @@ function renderSinceLast(now) {
 
   rel("AI in dollars", prev.price, now.price, 0.02, (v) => "$" + v.toFixed(4));
   rel("fee run-rate", prev.feeAnnual, now.feeAnnual, 0.05, (v) => compact(v) + " AI/yr");
-  abs("toll leakage", prev.leak, now.leak, 0.02, (v) => pctLevel(v, 1));
+  abs("volume off AI/NVDA", prev.leakVault, now.leakVault, 0.02, (v) => pctLevel(v, 1));
   abs("cross-routing", prev.kappa, now.kappa, 0.02, (v) => pctLevel(v, 1));
   rel("NVDA in the vault", prev.nvda, now.nvda, 0.01, (v) => nf(v, 1) + " NVDA");
   rel("holders with 100K+ AI", prev.holders100k, now.holders100k, 0.01, (v) => v.toLocaleString());
@@ -5943,9 +5962,12 @@ function renderVerdict(read, net7, net7p, feeAnnual, feeTrend, kappa, sc, capNow
         (${feeTrend == null ? "no prior week" : `${feeTrend >= 0 ? "up" : "down"} ${pct(Math.abs(feeTrend), 0).replace("+", "")} week over week`});
         hub conversion measures <b>${pctLevel(kappa, 1)}</b>${kMed == null ? "" :
           `, ${kappa >= kMed ? "above" : "below"} its own ${pctLevel(kMed, 1)} median`}; and
-        <b>${pctLevel(removed / b.genesisSupply, 2)}</b> of genesis supply is now destroyed or locked, backed by
+        <b>${pctLevel(removed / b.genesisSupply, 2)}</b> of genesis supply is now burned or held in the 48h-timelocked vault, backed by
         <b>${nf(b.vault.nvdaBalance, 1)} NVDA</b>${S.vault && (S.vault.executedEver || 0) === 0 ? " that has never been withdrawn" : " held by the vault"}.
-        ${leak ? `The dominant fact right now is that <b>${pctLevel(leak.leakNow, 1)}</b> of the volume on the ${S.flow.pools.length} venues indexed in depth <b>crosses pools that pay the vault nothing</b>, so revenue is falling even though total volume is not — this is venue competition, not weakening demand.` : ""}
+        ${leak ? `The dominant fact right now is that <b>${pctLevel(leak.leakNow, 1)}</b> of the volume on the ${S.flow.pools.length} venues indexed in depth <b>skips AI/NVDA, the only pool that funds AI's vault</b>.
+          ${feeTrend == null ? "" : feeTrend < 0
+            ? "Fees fell on the week, and venue competition is the first place to look before reading that as weaker demand."
+            : "Fees still rose on the week, so that share caps how much new volume reaches the vault rather than shrinking it."}` : ""}
         The honest summary: the <i>asset</i> side is compounding quietly and verifiably, while the
         <i>monetary</i> case rests on hub conversion continuing AND on the protocol keeping a toll that
         permissionless pools can undercut at will.

@@ -51,7 +51,13 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, holders, pr
   /* Leakage and capture, over days where BOTH kinds of venue traded. A day with only
      one kind gives a ratio of 1 or 0 by construction, and mixing those into a series
      that will later be correlated against price would manufacture a signal out of
-     the indexed set having grown. */
+     the indexed set having grown.
+
+     "Leak" is volume that pays AI's vault nothing, which is every pool except
+     AI/NVDA: the other LONG-hooked pools pay LONG and their own pair's beneficiary,
+     never AI's fee splitter. The older hook-based share is kept as its own field,
+     leakNoHook, because it answers a different question (what pays LONG nothing)
+     and its history should not be spliced onto the new definition. */
   const perDay = new Map();
   for (const p of flow.pools || []) {
     const isMain = p.poolId.toLowerCase() === AI_NVDA_POOL.toLowerCase();
@@ -59,16 +65,17 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, holders, pr
       const v = (h.aiBuy || 0) + (h.aiSell || 0);
       if (!(v > 0)) continue;
       const d = Math.floor(h.t / DAY) * DAY;
-      const row = perDay.get(d) || { t: d, hooked: 0, hookless: 0, main: 0, total: 0, kinds: new Set() };
-      if (p.isLongHook) { row.hooked += v; row.kinds.add("h"); } else { row.hookless += v; row.kinds.add("n"); }
-      if (isMain) row.main += v;
+      const row = perDay.get(d) || { t: d, other: 0, hookless: 0, main: 0, total: 0, kinds: new Set(), hookKinds: new Set() };
+      if (isMain) { row.main += v; row.kinds.add("m"); } else { row.other += v; row.kinds.add("o"); }
+      if (p.isLongHook) row.hookKinds.add("h"); else { row.hookless += v; row.hookKinds.add("n"); }
       row.total += v;
       perDay.set(d, row);
     }
   }
   const days = [...perDay.values()].filter((r) => r.t < Math.floor(now / DAY) * DAY).sort((a, b) => a.t - b.t);
   const last = days.at(-1);
-  const leak = last && last.kinds.size > 1 ? last.hookless / Math.max(1e-9, last.total) : null;
+  const leak = last && last.kinds.size > 1 ? last.other / Math.max(1e-9, last.total) : null;
+  const leakNoHook = last && last.hookKinds.size > 1 ? last.hookless / Math.max(1e-9, last.total) : null;
   // Fee capture: the tolled pool's share, on days where it had competition at all.
   const capture = last && last.kinds.size > 1 ? last.main / Math.max(1e-9, last.total) : null;
 
@@ -132,6 +139,7 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, holders, pr
     feeAnnual: feeAnnual || null,
     feeTrend,
     leak,
+    leakNoHook,
     capture,
     kappa: routing?.measuredKappaRatio ?? null,
     nvdaPerDay: bDaily.length ? trailing(bDaily, 7, (d) => d.nvdaIn) / 7 : null,
@@ -177,7 +185,8 @@ export function snapshotKpis({ flow, burns, routing, bridges, depth, holders, pr
     aiUsd: "spot, busiest AI/USDG venue, last hourly close",
     feeAnnual: "AI/yr, trailing 7 complete days annualised, all three splitter legs",
     feeTrend: "fee run-rate this 7 complete days vs the prior 7, as a fraction",
-    leak: "hookless share of AI volume, LAST COMPLETE DAY, days with both venue kinds only",
+    leak: "share of AI volume NOT on AI/NVDA (pays AI's vault nothing), LAST COMPLETE DAY, days with both kinds only. Rows before 2026-10-06 carry the older hookless share, which continues as leakNoHook",
+    leakNoHook: "share of AI volume on pools without LONG's hook (pays LONG nothing), LAST COMPLETE DAY, days with both kinds only",
     capture: "AI/NVDA share of AI volume, LAST COMPLETE DAY (the site's card uses a 7-day aggregate, so it differs)",
     kappa: "cross-routed vs direct AI, trailing window set by the routing task",
     nvdaPerDay: "NVDA into the vault, trailing 7 complete days, per day",

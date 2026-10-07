@@ -1,6 +1,6 @@
 import {
   AI, NVDA, USDG, COMMUNITY_VAULT, BURN_ADDRESS, FEE_SPLITTER,
-  PLATFORM_FEE_RECIPIENT, POOL_MANAGER, GENESIS_BLOCK, TOKENS, LONG_HOOK, DEDICATED_RPC,
+  PLATFORM_FEE_RECIPIENT, POOL_MANAGER, GENESIS_BLOCK, TOKENS, LONG_HOOK, DEDICATED_RPC, AI_NVDA_POOL,
 } from "../config.mjs";
 import { getLogsRange, padAddr, blockNumber, hexBlock } from "../rpc.mjs";
 import { TOPICS, decodeTransfer, fmtUnits } from "../decode.mjs";
@@ -213,20 +213,21 @@ export async function indexBurns(latest, tm, opts = {}) {
 
   /* The effective fee rate, divided out of the data rather than assumed.
 
-     The logs report 7000 pips on the tolled pool, but dividing measured fee income
-     by measured sell volume on the hooked venues gives roughly 0.60% over a
-     fortnight (0.27%-0.77% by day): part of the logged fee never reaches the
-     splitter, the hook runs on several pools at different tiers, and buys pay in
-     NVDA so the AI leg divides by sells alone. The page measured this for itself
-     while this ledger still divided by 0.70%, so the two disagreed on implied
-     notional by about a sixth. One measurement, made here, used everywhere. */
+     The logs report 7000 pips on AI/NVDA. The splitter receives 95% of the LP fees
+     the hook's liquidity collects there, and buys pay in NVDA, so the AI leg
+     divides by AI/NVDA's sell volume alone. The denominator is AI/NVDA ONLY: the
+     hook also runs on AI/SI, AI/OPEN and others, but their LP fees go to their own
+     pair's beneficiary and never reach AI's splitter, so counting their sells
+     roughly halved the rate (0.27% against about 0.62%). The page measured this for
+     itself while this ledger still divided by 0.70%, so the two disagreed on
+     implied notional. One measurement, made here, used everywhere. */
   const totalAIFee = feeBurn + feeLock + feePlatform;
   let effectiveFeeRate = null, feeRateDays = 0;
   if (opts.flowPools?.length) {
     const today = tm.dayBucket(latest);
     const sellByDay = new Map();
     for (const p of opts.flowPools) {
-      if (!p.isLongHook) continue;
+      if (p.poolId?.toLowerCase() !== AI_NVDA_POOL.toLowerCase()) continue;
       for (const h of p.hourly || []) {
         const d = Math.floor(h.t / 86400) * 86400;
         sellByDay.set(d, (sellByDay.get(d) || 0) + (h.aiSell || 0));
@@ -281,9 +282,9 @@ export async function indexBurns(latest, tm, opts = {}) {
     nominalFeeRate: 0.007,
     effectiveFeeRate,
     feeRateBasis: effectiveFeeRate
-      ? `fees ÷ sell volume on hooked venues over the last ${feeRateDays} complete days`
+      ? `fees ÷ AI/NVDA sell volume over the last ${feeRateDays} complete days`
       : "nominal 0.70% (no flow to divide by)",
-    // Sell-side notional through tolled pools: fees divided by the MEASURED rate.
+    // Sell-side notional through AI/NVDA: fees divided by the MEASURED rate.
     impliedAILegVolume,
     /* Effective float: what is actually available to trade. The hook's balance is
        launch reserves the protocol holds to seed new pools, not tokens anyone can
