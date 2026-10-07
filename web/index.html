@@ -179,7 +179,7 @@
 
     <div class="card">
       <h3>AI Community Vault</h3>
-      <p class="sub">What the vault holds, valued each day: AI locked by the fee split plus the stock it has accumulated.</p>
+      <p class="sub">What the vault holds, valued each day: AI added by the fee split plus the stock it has accumulated. It is a 48-hour timelock, not a permanent lock.</p>
       <div id="l5NavTiles"></div>
       <div class="chart" id="cL5Nav"></div>
       <div id="l5NavRead"></div>
@@ -228,8 +228,8 @@
   <!-- ───────────────────────── Liquidity: fee engine, NVDA pools, LP modules ───────────────────────── -->
   <section class="panel" id="p-liquidity" role="tabpanel" aria-labelledby="tab-liquidity" hidden>
     <div class="card">
-      <h3>AI/NVDA: the largest NVDA pool</h3>
-      <p class="sub">Every Uniswap pool holding NVDA on Robinhood Chain, by the NVDA it holds. Uniswap v3 pools by balance; LONG pairs from their position ladders.</p>
+      <h3>AI/NVDA: the largest measured NVDA pool</h3>
+      <p class="sub">Every Uniswap v3 NVDA pool and the largest LONG pairs on NVDA, by the NVDA each holds. Uniswap v3 pools by balance; LONG pairs from their position ladders.</p>
       <div id="lqTiles"></div>
       <div class="scroll"><table id="tNvdaPools" class="rank"></table></div>
       <div id="lqPoolsNote"></div>
@@ -237,10 +237,10 @@
 
     <div class="card">
       <h3>How AI/NVDA's fees are made and where they go</h3>
-      <p class="sub">Every swap pays two fees: 0.7% to the pool's liquidity, nearly all LONG's own, whose earnings go mostly to AI's fee splitter (burn, Community Vault, AI's original fee receiver) with 5% to LONG; and 1% of the output straight to LONG. Every figure is a measured transfer or event.</p>
+      <p class="sub">Every swap pays two fees: 0.7% to the pool's liquidity, nearly all LONG's own, whose earnings go mostly to AI's fee splitter (burn, Community Vault, AI's original fee receiver) with 5% to LONG; and 1% of the output straight to LONG. Every figure is a measured transfer or event, except LONG's 1%, which is computed from volume and checked against its revenue wallet.</p>
       <div id="lqEngineTiles"></div>
       <div id="lqMix"></div>
-      <div class="legend"><span><i style="background:var(--mid)"></i>Fees collected</span><span><i style="background:var(--buy)"></i>Of which to AI holders (burned + vault)</span></div>
+      <div class="legend"><span><i style="background:var(--mid)"></i>Traders paid (LP fee + LONG's 1%)</span><span><i style="background:var(--buy)"></i>Of which burned or to the Community Vault</span></div>
       <div class="chart" id="cLqEngine"></div>
       <div class="scroll"><table id="tLqEngine" class="rank"></table></div>
       <div id="lqEngineNote"></div>
@@ -248,7 +248,7 @@
 
     <div class="card">
       <h3>LP modules: community vaults putting stock to work</h3>
-      <p class="sub">Vaults that have moved their stock into a USDG/stock liquidity position. Found automatically as each one deploys; AI's own vault is a 48-hour timelock, so any move of its NVDA shows here two days ahead.</p>
+      <p class="sub">Vaults that have moved their stock into a USDG/stock liquidity position. Found automatically as each one deploys; AI's own vault is a 48-hour timelock, so any move of its NVDA is public two days ahead, with the details on the LONG 500 tab.</p>
       <div id="lqLpTiles"></div>
       <div class="scroll"><table id="tLqLp" class="rank"></table></div>
       <h4 class="subhead">Pair fees before and after an LP deployment</h4>

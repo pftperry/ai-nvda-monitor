@@ -29,6 +29,7 @@ const V3 = {
   collect: keccak256("Collect(address,address,int24,int24,uint128,uint128)"),
 };
 const SEL = {
+  balanceOf: selector("balanceOf(address)"),
   positions: selector("positions(bytes32)"), slot0: selector("slot0()"), token0: selector("token0()"), token1: selector("token1()"),
   fee: selector("fee()"), fgg0: selector("feeGrowthGlobal0X128()"), fgg1: selector("feeGrowthGlobal1X128()"), ticks: selector("ticks(int24)"),
 };
@@ -50,9 +51,13 @@ export async function indexVaultLp(latest, tm, opts = {}) {
   const stocks = opts.stocks || new Map();
   const usdg = USDG.toLowerCase();
   const nowT = tm.at(latest) ?? Math.floor(Date.now() / 1000);
+  const WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
   const decOf = (a) => (a === usdg ? 6 : stocks.get(a)?.decimals ?? 18);
-  const pxOf = (a) => (a === usdg ? 1 : stocks.get(a)?.priceUsd ?? null);
-  const symOf = (a) => (a === usdg ? "USDG" : stocks.get(a)?.symbol || a.slice(0, 8));
+  /* a quote token that is neither USDG nor a priced stock (WETH, on ICOIN's AAPL
+     position) is priced through the pool it sits in, against the stock beside it */
+  const derived = new Map();
+  const pxOf = (a) => (a === usdg ? 1 : stocks.get(a)?.priceUsd ?? derived.get(a) ?? null);
+  const symOf = (a) => (a === usdg ? "USDG" : a === WETH ? "WETH" : stocks.get(a)?.symbol || a.slice(0, 8));
 
   /* first run starts three days back: MOO, the first adopter, deployed on 1 Oct */
   const S = opts.state?.v === STATE_V ? structuredClone(opts.state)
@@ -94,7 +99,7 @@ export async function indexVaultLp(latest, tm, opts = {}) {
   const rows = [];
   for (const [m, M] of Object.entries(S.modules)) {
     const pos = Object.values(M.positions);
-    let usd = 0, feeAll = 0, inRange = null, range = null, pair = null, holds = {};
+    let usd = 0, feeAll = 0, inRange = null, range = null, rangeQuote = null, pair = null, holds = {};
     const feeRaw = {};   // pool -> [fees0, fees1] all time
     for (const p of pos) {
       const key = keccak256("0x" + m.slice(2) + i24hex(p.lo) + i24hex(p.hi));
@@ -116,47 +121,72 @@ export async function indexVaultLp(latest, tm, opts = {}) {
       const un1 = (word(ps, 4) & M128) + ((((in1 - word(ps, 2)) & M256) * L) >> 128n);
       const fr = feeRaw[p.pool] || (feeRaw[p.pool] = { c0, c1, f0: 0n, f1: 0n });
       fr.f0 += un0; fr.f1 += un1;
+      /* price the quote side through the pool when it has no price of its own */
+      const p01 = sqrtP * sqrtP * 10 ** (decOf(c0) - decOf(c1));            // token1 per token0
+      if (pxOf(c0) == null && pxOf(c1) != null) derived.set(c0, p01 * pxOf(c1));
+      if (pxOf(c1) == null && pxOf(c0) != null && p01 > 0) derived.set(c1, pxOf(c0) / p01);
       if (L > 0n) {
         const u0 = a0 / 10 ** decOf(c0), u1 = a1 / 10 ** decOf(c1);
         holds[c0] = (holds[c0] || 0) + u0; holds[c1] = (holds[c1] || 0) + u1;
         usd += (pxOf(c0) ?? 0) * u0 + (pxOf(c1) ?? 0) * u1;
         inRange = tick >= p.lo && tick < p.hi;
-        const stockIs0 = c0 !== usdg, px = (t) => Math.pow(1.0001, t) * 10 ** (decOf(c0) - decOf(c1));
-        range = stockIs0 ? [px(p.lo), px(p.hi)] : [1 / px(p.hi), 1 / px(p.lo)];
-        pair = `${symOf(stockIs0 ? c0 : c1)}/${symOf(stockIs0 ? c1 : c0)}`;
+        /* the range in dollars per share of the stock: the quote per stock at each
+           bound, times the quote's dollar price (1 for USDG; today's for WETH) */
+        const stockIs0 = c0 === M.stock || (c1 !== M.stock && c0 !== usdg);
+        const quote = stockIs0 ? c1 : c0, qPx = pxOf(quote) ?? null;
+        const px = (t) => Math.pow(1.0001, t) * 10 ** (decOf(c0) - decOf(c1));
+        const inQuote = stockIs0 ? [px(p.lo), px(p.hi)] : [1 / px(p.hi), 1 / px(p.lo)];
+        range = qPx != null ? inQuote.map((x) => x * qPx) : null;
+        rangeQuote = { lo: inQuote[0], hi: inQuote[1], symbol: symOf(quote) };
+        pair = `${symOf(stockIs0 ? c0 : c1)}/${symOf(quote)}`;
       }
     }
+    const idleToks = [...new Set([M.stock, usdg, WETH, ...Object.values(feeRaw).flatMap((f) => [f.c0, f.c1])])];
+    const ib = await multicall(idleToks.map((t) => ({ to: t, data: SEL.balanceOf + W(BigInt(m)) })));
+    const idle = idleToks.map((t, i) => ({ token: t, symbol: symOf(t), units: ib[i] ? Number(BigInt(ib[i])) / 10 ** decOf(t) : 0 }))
+      .filter((x) => x.units > 1e-9).map((x) => ({ ...x, usd: pxOf(x.token) == null ? null : x.units * pxOf(x.token) }));
+    const idleUsd = idle.reduce((a, x) => a + (x.usd || 0), 0);
     /* collected minus principal released = fees already taken out */
     for (const [pool, c] of Object.entries(M.collected)) {
       const b = M.burned[pool] || ["0", "0"];
       const fr = feeRaw[pool]; if (!fr) continue;
       fr.f0 += BigInt(c[0]) - BigInt(b[0]); fr.f1 += BigInt(c[1]) - BigInt(b[1]);
     }
-    for (const fr of Object.values(feeRaw)) feeAll += (pxOf(fr.c0) ?? 0) * Number(fr.f0) / 10 ** decOf(fr.c0) + (pxOf(fr.c1) ?? 0) * Number(fr.f1) / 10 ** decOf(fr.c1);
-    /* fee history, at most one reading an hour, kept eight days: baselines a day and
-       a week back */
-    if (!M.hist.length || nowT - M.hist.at(-1)[0] >= 3600) M.hist.push([nowT, feeAll]); else M.hist[M.hist.length - 1] = [nowT, feeAll];
+    const feeUnits = {};
+    for (const fr of Object.values(feeRaw)) {
+      feeUnits[fr.c0] = (feeUnits[fr.c0] || 0) + Number(fr.f0) / 10 ** decOf(fr.c0);
+      feeUnits[fr.c1] = (feeUnits[fr.c1] || 0) + Number(fr.f1) / 10 ** decOf(fr.c1);
+    }
+    const valueUnits = (u) => Object.entries(u || {}).reduce((a, [t, n]) => a + (pxOf(t) ?? 0) * n, 0);
+    feeAll = valueUnits(feeUnits);
+    /* fee history in token units, at most one reading an hour, kept eight days:
+       baselines a day and a week back, valued at today's prices so the difference is
+       fees earned and never a price move. Older entries held dollars; they are dropped. */
+    M.hist = (M.hist || []).filter((x) => x[1] && typeof x[1] === "object");
+    if (!M.hist.length || nowT - M.hist.at(-1)[0] >= 3600) M.hist.push([nowT, feeUnits]); else M.hist[M.hist.length - 1] = [nowT, feeUnits];
     M.hist = M.hist.filter((x) => x[0] > nowT - 8 * DAY);
-    const old = M.hist.filter((x) => x[0] <= nowT - DAY);
-    const old7 = M.hist.filter((x) => x[0] <= nowT - 7 * DAY);
+    const old = M.hist.filter((x) => x[0] <= nowT - DAY).map((x) => [x[0], valueUnits(x[1])]);
+    const old7 = M.hist.filter((x) => x[0] <= nowT - 7 * DAY).map((x) => [x[0], valueUnits(x[1])]);
     const young = (tm.at(M.firstBlock) ?? nowT) > nowT - DAY;
     /* time in range, sampled once a run: a position listed above spot earns nothing
        until price reaches it, so its APR means little without this beside it */
     M.obs = M.obs || { n: 0, inRange: 0 };
     if (inRange != null) { M.obs.n++; if (inRange) M.obs.inRange++; }
     const ageDays = ((nowT - (tm.at(M.firstBlock) ?? nowT)) / DAY);
-    const base = old.length ? old.at(-1)[1] : young ? 0 : M.hist[0][1];
+    const base = old.length ? old.at(-1)[1] : young ? 0 : valueUnits(M.hist[0][1]);
     rows.push({ vault: M.vault, module: m, stock: M.stock, stockSymbol: symOf(M.stock), deployedUnits: +M.deployed.toPrecision(8),
-      pair, range, inRange, holdings: Object.entries(holds).map(([t, u]) => ({ token: t, symbol: symOf(t), units: +u.toPrecision(8) })),
-      positionUsd: Math.round(usd), feesAllUsd: Math.round(feeAll * 100) / 100, fees24hUsd: Math.round((feeAll - base) * 100) / 100,
+      pair, range, inRange, hasPosition: usd > 0, holdings: Object.entries(holds).map(([t, u]) => ({ token: t, symbol: symOf(t), units: +u.toPrecision(8) })),
+      positionUsd: Math.round(usd), idle, idleUsd: Math.round(idleUsd), valueUsd: Math.round(usd + idleUsd), rangeQuote,
+      deployedUsd: pxOf(M.stock) != null ? Math.round(M.deployed * pxOf(M.stock)) : null,
+      feesAllUsd: Math.round(feeAll * 100) / 100, fees24hUsd: Math.max(0, Math.round((feeAll - base) * 100) / 100),
       /* a position younger than a week has earned everything inside the week */
-      fees7dUsd: Math.round((feeAll - (old7.length ? old7.at(-1)[1] : ageDays < 7 ? 0 : M.hist[0][1])) * 100) / 100,
+      fees7dUsd: Math.max(0, Math.round((feeAll - (old7.length ? old7.at(-1)[1] : ageDays < 7 ? 0 : valueUnits(M.hist[0][1]))) * 100) / 100),
       since: tm.at(M.firstBlock) ?? null, ageDays: +ageDays.toFixed(2),
       /* fees so far over the position's value, annualised over its age; withheld until
          it is a day old, when a few hours of fees would annualise into noise */
       apr: usd > 0 && ageDays >= 1 ? +(feeAll / usd * 365 / ageDays).toFixed(4) : null,
       inRangeShare: M.obs.n >= 3 ? +(M.obs.inRange / M.obs.n).toFixed(3) : null, inRangeObs: M.obs.n });
   }
-  log(`  vault LP: ${rows.length} vault(s) in the LP upgrade; $${rows.reduce((s, r) => s + r.positionUsd, 0).toLocaleString()} in positions, $${rows.reduce((s, r) => s + r.feesAllUsd, 0).toFixed(2)} fees all time`);
+  log(`  vault LP: ${rows.length} vault(s) in the LP upgrade; $${rows.reduce((s, r) => s + r.positionUsd, 0).toLocaleString()} in positions, $${rows.reduce((s, r) => s + r.idleUsd, 0).toLocaleString()} idle, $${rows.reduce((s, r) => s + r.feesAllUsd, 0).toFixed(2)} fees all time`);
   return { state: S, rows };
 }

@@ -155,12 +155,19 @@ export async function indexLong500(latest, tm, opts = {}) {
      splitter, plus a few round-number transfers. Without this split the old NVDA pile
      would be read as the programme's work. */
   const long500Units = new Map([...byStock].map(([a, k]) => [a, k.units]));
-  const holdings = (opts.vaultStocks || []).filter((h) => h.units > 0);
+  /* Only real stock tokens count as the stock reserve: the stock census also lists
+     USDG (cash, valued at $1 here and kept out of the stock count) and an unresolved
+     zero-address entry, which is dropped. The vault's NVDA comes from the same live
+     balance read the rest of the site uses, because the census lags it by a run. */
+  const USDG_ADDR = "0x5fc5360d0400a0fd4f2af552add042d716f1d168", NVDA_ADDR = "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec";
+  const holdings = (opts.vaultStocks || []).filter((h) => h.units > 0 && !/^0x0{40}$/.test(h.token))
+    .map((h) => (h.token === NVDA_ADDR && opts.vaultNvda != null ? { ...h, units: opts.vaultNvda + (h.lpUnits || 0) } : h));
   for (const [a, u] of long500Units) if (!holdings.some((h) => h.token === a)) holdings.push({ token: a, symbol: sym(a), units: u, priceUsd: pxOf(a) });
   const reserve = holdings.map((h) => {
     const l5 = Math.min(long500Units.get(h.token) || 0, Math.max(h.units, long500Units.get(h.token) || 0));
-    const px = h.priceUsd ?? pxOf(h.token);
-    return { token: h.token, symbol: h.symbol || sym(h.token), units: +h.units.toPrecision(8), usd: px == null ? null : Math.round(h.units * px * 100) / 100,
+    const px = h.token === USDG_ADDR ? 1 : h.priceUsd ?? pxOf(h.token);
+    return { token: h.token, symbol: h.token === USDG_ADDR ? "USDG" : h.symbol || sym(h.token), cash: h.token === USDG_ADDR || undefined,
+      units: +h.units.toPrecision(8), usd: px == null ? null : Math.round(h.units * px * 100) / 100,
       lpUnits: h.lpUnits ? +h.lpUnits.toPrecision(8) : 0,
       long500Units: +l5.toPrecision(8), long500Usd: px == null ? null : Math.round(l5 * px * 100) / 100 };
   }).sort((a, b) => (b.usd || 0) - (a.usd || 0));
@@ -295,7 +302,7 @@ export async function indexLong500(latest, tm, opts = {}) {
          the same way between index runs */
       module: LONG500_MODULE, cursor: S.cursor, meta: S.meta, partial, totals,
       reserve: { stocks: reserve, stockUsd: Math.round(stockTotal), hhi, top1: shares.length ? +Math.max(...shares).toFixed(4) : null,
-        stocksHeld: reserve.filter((r) => r.units > 0).length, universe, aiUnits, aiUsdValue: aiUnits != null && aiUsd ? Math.round(aiUnits * aiUsd) : null },
+        stocksHeld: reserve.filter((r) => r.units > 0 && !r.cash).length, universe, aiUnits, aiUsdValue: aiUnits != null && aiUsd ? Math.round(aiUnits * aiUsd) : null },
       nav: { nowUsd: Math.round(navNowUsd), sinceLaunch, daily: navDaily.slice(-120) },
       vaultAddress: "0xd14d2eeb9648f53fa153a218eeed908789c28630",
       progress: progress.slice(-24 * 120),

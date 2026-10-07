@@ -1178,7 +1178,9 @@ function renderBurn() {
   const day = 86400;
   const recent = b.daily.slice(-30);
   const last = b.daily[b.daily.length - 1] || { burnAI: 0 };
-  const avg7 = b.daily.slice(-7).reduce((s, r) => s + r.burnAI, 0) / Math.max(1, Math.min(7, b.daily.length));
+  /* seven complete days: today's partial day pulled the average about 13% low */
+  const fullDays = b.daily.filter((r) => r.t < Math.floor(Date.now() / 86400000) * 86400).slice(-7);
+  const avg7 = fullDays.reduce((s, r) => s + r.burnAI, 0) / Math.max(1, fullDays.length);
 
   $("#burnTiles").innerHTML = [
     { lbl: "Total AI burned", val: compact(b.burned), note: `${pctLevel(b.burned / b.genesisSupply, 2)} of genesis supply` },
@@ -1520,8 +1522,9 @@ function renderHolders() {
        holder rather than entering or leaving the market as a whole.` : ""}
      <span class="muted">The threshold is in AI, not dollars, on purpose. Dollar buckets climb whenever the price
      does, so a rally manufactures "new $1k holders" without anyone buying; a fixed token balance cannot be crossed
-     that way. Protocol contracts (pool manager, vault, hook, fee splitter) are excluded from every count and kept
-     in the supply reconciliation. An address is not a person: exchanges and bots hold for many, and one person
+     that way. Machinery is excluded from every count and kept in the supply reconciliation: the v4 pool manager, AI's
+     Community Vault, the LONG hook, AI's fee splitter, LONG's buyback contract (which holds AI it bought with fee legs)
+     and AI's original fee receiver 0x4a0c…cb2. An address is not a person: exchanges and bots hold for many, and one person
      can hold across many.</span>`);
 
   /* Concentration, the largest wallets, cohorts and the whale tape: the detail
@@ -1686,7 +1689,7 @@ function renderFloat() {
 
   shareBars($("#cWaterfall"), [
     { k: "Burned to 0x0 — destroyed", v: b.burned },
-    { k: "Locked in the vault — still exists, never moves", v: b.vault.aiBalance },
+    { k: "In the Community Vault: can leave only through its public 48h timelock", v: b.vault.aiBalance },
     { k: "Held as v4 pool inventory", v: b.poolManagerAI },
     { k: "Held by the LONG hook — launch reserves", v: hook },
     { k: "Free float", v: b.effectiveFloat },
@@ -1720,7 +1723,7 @@ function renderFloat() {
     tip: (r) => `<div class="k">${dayFmt(r.t)}</div>
       <div><span style="color:var(--series-1)">●</span> burned ${compact(r.cumBurnAI)} AI</div>
       <div><span style="color:var(--series-2)">●</span> locked ${compact(r.cumLockAI)} AI</div>
-      <div class="k">removed ${compact(r.cumBurnAI + r.cumLockAI)} AI total</div>`,
+      <div class="k">${compact(r.cumBurnAI + r.cumLockAI)} AI burned or vault-held</div>`,
   });
 
   const s = b.observedSplit || { burn: 1, lock: 1, platform: 0.5 };
@@ -4224,20 +4227,23 @@ function renderLiquidity() {
   const n0 = (v) => v == null ? "\u2014" : Math.round(v).toLocaleString();
   const nvPx = (S.rwa?.tokens || []).find((t) => t.symbol === "NVDA")?.priceUsd ?? null;
 
-  /* 1. NVDA pools */
+  /* 1. NVDA pools. "Largest" is claimed only among what is measured: Uniswap v3 NVDA
+     pools by balance and LONG pairs by ladder. NVDA in other v4 pools is a residual
+     (the pool manager's balance less LONG's, which also holds unclaimed fees and
+     ERC-6909 claims) and is shown as that, not ranked. */
   const P = Q.nvdaPools || [];
   const ai = P.find((p) => p.label === "AI/NVDA"), next = P.find((p) => p !== ai);
   const measured = P.reduce((s, p) => s + p.nvda, 0);
   const other = Q.nvdaPoolManager != null && Q.nvdaLongTotal != null ? Math.max(0, Q.nvdaPoolManager - Q.nvdaLongTotal) : null;
   host.innerHTML = `<div class="tiles four">
       ${tile("NVDA in AI/NVDA", n0(ai?.nvda), nvPx && ai ? `about ${usd(ai.nvda * nvPx)} of NVDA` : "", "", "hero")}
-      ${tile("Next largest pool", next ? `${(ai.nvda / next.nvda).toFixed(1)}\u00d7` : "\u2014", next ? `AI/NVDA's NVDA against ${next.label}'s ${n0(next.nvda)}` : "")}
+      ${tile("Lead over the next pool", ai && next ? `${(ai.nvda / next.nvda).toFixed(1)}\u00d7` : "\u2014", ai && next ? `AI/NVDA's NVDA against ${next.label}'s ${n0(next.nvda)}` : "")}
       ${tile("Share of measured NVDA liquidity", ai && measured ? pctLevel(ai.nvda / measured, 0) : "\u2014", `of ${n0(measured)} NVDA in the pools listed below`)}
       ${tile("NVDA in all LONG pairs", n0(Q.nvdaLongTotal), `${Q.nvdaV3Total != null ? n0(Q.nvdaV3Total) + " in Uniswap v3 pools" : ""}`)}
     </div>`;
   $("#tNvdaPools").innerHTML = `<thead><tr><th>Pool</th><th>Venue</th><th class="r">NVDA held</th><th class="r">Value of NVDA</th></tr></thead><tbody>` +
     P.map((p) => `<tr${p === ai ? ' class="hl"' : ""}><td><b>${p.label}</b></td><td class="muted">${p.venue}</td><td class="r mono">${n0(p.nvda)}</td><td class="r mono">${nvPx ? usd(p.nvda * nvPx) : "\u2014"}</td></tr>`).join("") + "</tbody>";
-  $("#lqPoolsNote").innerHTML = `<p class="muted" style="margin:8px 0 0">${other != null ? `A further ${n0(other)} NVDA sits in Uniswap v4 pools outside LONG (the pool manager's NVDA balance less what LONG pairs hold), spread across about four thousand pools that are not yet measured one by one; the v4 pools Uniswap itself lists for NVDA put AI/NVDA first. ` : ""}NVDA is valued at today's price. LONG pairs' NVDA is read from each pool's position ladder on the stock census's run.</p>`;
+  $("#lqPoolsNote").innerHTML = `<p class="muted" style="margin:8px 0 0">${other != null ? `Not ranked: up to ${n0(other)} NVDA held by the v4 pool manager outside LONG pairs, which is pools outside LONG plus unclaimed fees and internal claim balances, across about four thousand pools not yet measured one by one. AI/NVDA is the largest of the pools measured here. ` : ""}NVDA is valued at today's price. LONG pairs' NVDA is read from each pool's position ladder on the stock census's run.</p>`;
 
   /* 2. AI/NVDA fee engine. Two charges per swap: the LP fee (0.7%) earned by the
      pool's liquidity, nearly all LONG's own and passed on mostly to AI holders, and a
@@ -4256,8 +4262,8 @@ function renderLiquidity() {
   const all = holders + w7.recv + toLong;
   $("#lqEngineTiles").innerHTML = `<div class="tiles four">
       ${tile("Traders paid, 7 days", usd(w7.paid), `on ${usd(w7.vol)} traded through AI/NVDA: the 0.7% LP fee plus LONG's 1%`, "", "hero")}
-      ${tile("To AI holders", usd(holders), `${all ? pctLevel(holders / all, 0) : "—"} of it: ${usd(w7.burn)} of AI burned, ${usd(w7.vault)} to the Community Vault`)}
-      ${tile("To LONG", usd(toLong), `${all ? pctLevel(toLong / all, 0) : "—"} of it: ${usd(w7.longSwap)} from the 1% swap fee, ${usd(w7.long5)} as 5% of the LP fees`)}
+      ${tile("Burned or to the Community Vault", usd(holders), `${all ? pctLevel(holders / all, 0) : "—"} of it: ${usd(w7.burn)} of AI burned, ${usd(w7.vault)} to AI's vault (48h timelock)`)}
+      ${tile("To LONG", usd(toLong), `${all ? pctLevel(toLong / all, 0) : "—"} of it: ${usd(w7.longSwap)} from the 1% swap fee (computed from volume${w7.longRev ? `; its revenue wallet measured ${usd(w7.longRev)}` : ""}), ${usd(w7.long5)} as 5% of the LP fees`)}
       ${tile("To AI's original fee receiver", usd(w7.recv), `${all ? pctLevel(w7.recv / all, 0) : "—"} of it: 20% of what AI's fee splitter receives, to 0x4a0c…cb2`)}
     </div>`;
   const seg = (v, c, l) => v > 0 && all > 0 ? `<i style="width:${(v / all * 100).toFixed(2)}%;background:${c}" title="${l} ${usd(v)} (${pctLevel(v / all, 0)})"></i>` : "";
@@ -4271,39 +4277,46 @@ function renderLiquidity() {
     E.slice(-14).reverse().map((r, i) => `<tr><td class="mono">${dayFmt(r.t)}${i === 0 ? ' <span class="muted">so far</span>' : ""}</td><td class="r mono">${usd(r.volumeUsd)}</td><td class="r mono">${usd(r.paidUsd)}</td><td class="r mono">${usd(r.collected.usd)}</td><td class="r mono">${usd(r.burned.usd)}</td><td class="r mono up">${usd(r.vault.usd)}</td><td class="r mono">${usd(r.receiver.usd)}</td><td class="r mono">${usd((r.longSwap?.usd ?? 0) + (r.longCut.usd ?? 0))}</td></tr>`).join("") +
     `<tr class="grp"><td>7 days</td><td class="r mono">${usd(w7.vol)}</td><td class="r mono">${usd(w7.paid)}</td><td class="r mono">${usd(w7.coll)}</td><td class="r mono">${usd(w7.burn)}</td><td class="r mono">${usd(w7.vault)}</td><td class="r mono">${usd(w7.recv)}</td><td class="r mono">${usd(toLong)}</td></tr></tbody>`;
   const sh = Q.aiShares;
-  $("#lqEngineNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Every AI/NVDA swap pays two things. <b>The LP fee</b> (0.7% of what goes in) is earned by the pool's liquidity, ${sh ? `which LONG's hook nearly all owns; each collect is split by the hook's Lock event at AI's launch, ${sh.map((x) => `${Math.round(x.share * 100)}% to ${x.to.slice(0, 6)}…${x.to.slice(-4)}`).join(" and ")}, and the 95% now goes to AI's fee splitter (40% of its AI burned, 40% to the vault, 20% to AI's original receiver; of its NVDA 80% to the vault, 20% to the receiver). ` : ""}<b>LONG's swap fee</b> (1% of what comes out) goes to LONG's buyback contract, which passes 95% to LONG's revenue wallet${w7.longRev ? `: that wallet took in ${usd(w7.longRev)} of NVDA over these seven days, against ${usd(w7.longSwap)} computed as 1% of volume` : ""}. Traded is the AI leg of each swap at the hour's price. LP fees collected runs below 0.7% of volume because the hook owns nearly but not all of the liquidity and some of a day's fees are collected the next. Burned, vault and receiver are the splitter's own transfers.</p>`;
+  $("#lqEngineNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Every AI/NVDA swap pays two things. <b>The LP fee</b> (0.7% of what goes in) is earned by the pool's liquidity, ${sh ? `which LONG's hook nearly all owns; each collect is split by the hook's Lock event at AI's launch, ${sh.map((x) => `${Math.round(x.share * 100)}% to ${x.to.slice(0, 6)}…${x.to.slice(-4)}`).join(" and ")}, and the 95% now goes to AI's fee splitter (40% of its AI burned, 40% to the vault, 20% to AI's original receiver; of its NVDA 80% to the vault, 20% to the receiver). ` : ""}<b>LONG's swap fee</b> (1% of what comes out) goes to LONG's buyback contract, which passes 95% to LONG's revenue wallet${w7.longRev ? `: that wallet took in ${usd(w7.longRev)} of NVDA over these seven days, against ${usd(w7.longSwap)} computed as 1% of volume` : ""}. Traded is the AI leg of each swap at the hour's price. LP fees collected tracks 0.7% of volume within a few percent over a week; the hook owns nearly but not all of the liquidity, and the timing of collects moves single days either way. Burned, vault and receiver are the splitter's own transfers.</p>`;
 
   /* 3. LP modules and vault pairs */
   const LP = S.stockfees?.vaultLp || [];
   const V = S.vault;
+  const hrs = V?.timelock?.minDelay != null ? Math.round(V.timelock.minDelay / 3600) : 48;
+  const nUsd = (v) => v == null ? "\u2014" : "$" + Math.round(v).toLocaleString();
+  const cvOf = (r) => (S.stockfees.communityVaults || []).find((c) => c.vault === r.vault);
   $("#lqLpTiles").innerHTML = `<div class="tiles four">
-      ${tile("Vaults with an LP module", n0(LP.length), LP.length ? LP.map((r) => r.stockSymbol + " (" + (S.stockfees.communityVaults || []).find((c) => c.vault === r.vault)?.assetSymbol + ")").join(", ") : "none yet", "", "hero")}
-      ${tile("Stock deployed", usd(LP.reduce((s, r) => s + (r.positionUsd || 0), 0)), "current value of the positions")}
+      ${tile("Vaults with an LP module", n0(LP.length), LP.length ? LP.map((r) => `${cvOf(r)?.assetSymbol || "vault"} (${r.stockSymbol})`).join(", ") : "none yet", "", "hero")}
+      ${tile("Stock deployed", usd(LP.reduce((s, r) => s + (r.valueUsd ?? r.positionUsd ?? 0), 0)), "current value: positions plus stock modules still hold idle")}
       ${tile("LP fees, all time", usd(LP.reduce((s, r) => s + (r.feesAllUsd || 0), 0)), "collected plus unclaimed")}
-      ${tile("AI's vault", V?.timelock ? (V.pending ? `${V.pending} move pending` : "no move scheduled") : "\u2014", V?.timelock ? `48-hour timelock \u00b7 ${n0(V.opsEver)} operations ever` : "")}
+      ${tile("AI's vault", V?.timelock ? (V.pending ? `${V.pending} move pending` : "no move scheduled") : "\u2014", V?.timelock ? `${hrs}-hour timelock \u00b7 ${n0(V.opsEver)} operations ever` : "")}
     </div>`;
-  $("#tLqLp").innerHTML = LP.length ? `<thead><tr><th>Vault</th><th>Position</th><th class="r">Range</th><th class="r">In range</th><th class="r">Value</th><th class="r">Fees all / 7d</th><th class="r">APR</th><th class="r" title="stock the position has sold into USDG as price rose through the range">Sold so far</th></tr></thead><tbody>` +
+  $("#tLqLp").innerHTML = LP.length ? `<thead><tr><th>Vault</th><th>Position</th><th class="r">Range, $ per share</th><th class="r">In range</th><th class="r">Value</th><th class="r">Fees all / 7d</th><th class="r">APR</th><th class="r" title="stock the position has sold into its quote token as the price rose through the range">Sold so far</th></tr></thead><tbody>` +
     LP.map((r) => {
-      const stockNow = (r.holdings || []).find((h) => h.symbol === r.stockSymbol)?.units ?? null, usdgNow = (r.holdings || []).find((h) => h.symbol === "USDG")?.units ?? 0;
-      const sold = stockNow != null ? Math.max(0, r.deployedUnits - stockNow) : null;
-      const cv = (S.stockfees.communityVaults || []).find((c) => c.vault === r.vault);
-      return `<tr><td><b>${cv?.assetSymbol || "vault"}</b> <span class="muted">${r.vault.slice(0, 6)}\u2026</span></td><td>${r.pair} <span class="muted">v3, ${n0(r.deployedUnits)} ${r.stockSymbol} in</span></td>
-        <td class="r mono">${r.range ? `$${r.range[0].toFixed(0)}\u2013$${r.range[1].toFixed(0)}` : "\u2014"}</td>
-        <td class="r mono">${r.inRangeShare != null ? pctLevel(r.inRangeShare, 0) : "\u2014"} <span class="${r.inRange ? "up" : "muted"}">${r.inRange ? "now in" : "now out"}</span></td>
-        <td class="r mono">${usd(r.positionUsd)}</td><td class="r mono">${usd(r.feesAllUsd)} / ${usd(r.fees7dUsd)}</td><td class="r mono">${r.apr != null ? pctLevel(r.apr, 0) : "\u2014"}</td>
-        <td class="r mono">${sold != null && sold > 1e-6 ? `${sold.toPrecision(3)} ${r.stockSymbol} for ${usd(usdgNow)}` : "none yet"}</td></tr>`;
+      const stockNow = (r.holdings || []).find((h) => h.token === r.stock || h.symbol === r.stockSymbol)?.units ?? null;
+      const quote = (r.holdings || []).find((h) => !(h.token === r.stock || h.symbol === r.stockSymbol));
+      const sold = r.hasPosition !== false && stockNow != null ? Math.max(0, r.deployedUnits - stockNow - (r.idle || []).filter((x) => x.token === r.stock).reduce((a, x) => a + x.units, 0)) : null;
+      const idleNote = (r.idle || []).length ? ` <span class="muted">\u00b7 ${r.idle.map((x) => `${x.units.toPrecision(4)} ${x.symbol}`).join(", ")} idle</span>` : "";
+      const viaWeth = r.rangeQuote && r.rangeQuote.symbol !== "USDG";
+      return `<tr><td><b>${cvOf(r)?.assetSymbol || "vault"}</b> <span class="muted">${r.vault.slice(0, 6)}\u2026</span></td>
+        <td>${r.pair || `<span class="muted">no position yet</span>`} <span class="muted">${r.pair ? "v3, " : ""}${n0(r.deployedUnits)} ${r.stockSymbol} in</span>${idleNote}</td>
+        <td class="r mono"${viaWeth ? ` title="${r.rangeQuote.lo.toPrecision(4)}\u2013${r.rangeQuote.hi.toPrecision(4)} ${r.rangeQuote.symbol} per share, at today's ${r.rangeQuote.symbol} price"` : ""}>${r.range ? `${nUsd(r.range[0])}\u2013${nUsd(r.range[1])}${viaWeth ? "*" : ""}` : "\u2014"}</td>
+        <td class="r mono">${r.inRangeShare != null ? pctLevel(r.inRangeShare, 0) : "\u2014"}${r.inRange != null ? ` <span class="${r.inRange ? "up" : "muted"}">${r.inRange ? "now in" : "now out"}</span>` : ""}</td>
+        <td class="r mono">${usd(r.valueUsd ?? r.positionUsd)}</td><td class="r mono">${usd(r.feesAllUsd)} / ${usd(r.fees7dUsd)}</td><td class="r mono">${r.apr != null ? pctLevel(r.apr, 0) : "\u2014"}</td>
+        <td class="r mono">${sold != null && sold > 1e-6 && quote ? `${sold.toPrecision(3)} ${r.stockSymbol} for ${quote.units.toPrecision(3)} ${quote.symbol}` : r.hasPosition === false ? "\u2014" : "none yet"}</td></tr>`;
     }).join("") + "</tbody>" : `<tbody><tr><td class="muted">No vault has deployed an LP module yet.</td></tr></tbody>`;
   const PR = (Q.pairs || []).filter((p) => p.daily.length);
   const avg = (rows) => rows.length ? rows.reduce((s, r) => s + r.usd, 0) / rows.length : null;
   const today = Math.floor(Date.now() / 86400000) * 86400;
-  $("#tLqPairs").innerHTML = PR.length ? `<thead><tr><th>Pair</th><th class="r">LP since</th><th class="r" title="average daily fees in the seven complete days before the LP deployment, or the last seven if none">Before, per day</th><th class="r">Since, per day</th><th class="r">Last 7 days</th></tr></thead><tbody>` +
+  $("#tLqPairs").innerHTML = PR.length ? `<thead><tr><th>Pair</th><th class="r">LP since</th><th class="r" title="average daily fees in the seven complete days before the deployment day">Before, per day</th><th class="r" title="average daily fees in complete days after the deployment day">After, per day</th><th class="r">Last 7 days</th></tr></thead><tbody>` +
     PR.sort((a, b) => (b.lpSince ? 1 : 0) - (a.lpSince ? 1 : 0) || avg(b.daily.slice(-7)) - avg(a.daily.slice(-7))).slice(0, 10).map((p) => {
       const full = p.daily.filter((d) => d.t < today);
+      /* the deployment day itself is mixed, so it counts as neither before nor after */
       const dep = p.lpSince ? Math.floor(p.lpSince / 86400) * 86400 : null;
-      const before = dep ? full.filter((d) => d.t < dep).slice(-7) : [], after = dep ? full.filter((d) => d.t >= dep) : [];
-      return `<tr><td><b>${p.label}</b></td><td class="r mono">${dep ? dayFmt(dep) : '<span class="muted">no LP</span>'}</td><td class="r mono">${dep ? usd(avg(before)) : "\u2014"}</td><td class="r mono">${dep ? usd(avg(after)) : "\u2014"}</td><td class="r mono">${usd(full.slice(-7).reduce((s, d) => s + d.usd, 0))}</td></tr>`;
+      const before = dep ? full.filter((d) => d.t < dep).slice(-7) : [], after = dep ? full.filter((d) => d.t > dep) : [];
+      return `<tr><td><b>${p.label}</b></td><td class="r mono">${dep ? dayFmt(dep) : '<span class="muted">no LP</span>'}</td><td class="r mono">${dep ? usd(avg(before)) : "\u2014"}</td><td class="r mono">${dep ? (after.length ? usd(avg(after)) : '<span class="muted">from tomorrow</span>') : "\u2014"}</td><td class="r mono">${usd(full.slice(-7).reduce((s, d) => s + d.usd, 0))}</td></tr>`;
     }).join("") + "</tbody>" : "";
-  $("#lqLpNote").innerHTML = `<p class="muted" style="margin:8px 0 0">A module's position holds the vault's stock in a USDG/stock pool. Listed above the market, as MOO's is, it earns only while the stock trades inside its range and sells stock into USDG as the price rises through it, which is what "sold so far" counts. Pair fees are the hook's collects in the pair's own pool at today's prices, the complete days before and after the deployment; a change there is the pair's own trading, which the LP position sits outside of.</p>`;
+  $("#lqLpNote").innerHTML = `<p class="muted" style="margin:8px 0 0">A module holds the vault's stock in a Uniswap v3 pool against a quote token (USDG, or WETH for ICOIN's AAPL), or idle until it opens one. Listed above the market, it earns only while the stock trades inside its range and sells stock into the quote token as the price rises through it, which is what "sold so far" counts. * A range quoted in WETH is shown in dollars at today's WETH price. Pair fees are the hook's collects in the pair's own pool at today's prices, comparing complete days before and after the deployment day; a change there is the pair's own trading, which the LP position sits outside of.</p>`;
 }
 
 function renderLong500() {
@@ -4371,7 +4384,7 @@ function renderLong500() {
       <div class="l5tv">${usd(grand)}</div>
       <div class="l5bar">${parts.map(([k, v, c]) => v > 0 ? `<i style="width:${(v / grand * 100).toFixed(2)}%;background:${c}" title="${k} ${usd(v)}"></i>` : "").join("")}</div>
       <div class="l5tk">${parts.map(([k, v, c]) => `<span><i style="background:${c}"></i>${k} <b>${usd(v)}</b></span>`).join("")}</div>
-      <div class="l5ts">What AI owns: the protocol's liquidity across ${n0(Dp.pools?.length)} indexed AI pools plus everything in the Community Vault, including the NVDA it has accumulated. Not included: ${usd(outside)} that outside LPs have in AI's pools, which is theirs, not AI's.</div>
+      <div class="l5ts">The liquidity LONG's hook holds across ${n0(Dp.pools?.length)} indexed AI pools (its fees go 95% to AI's fee splitter on AI/NVDA) plus everything in AI's Community Vault, including the NVDA it has accumulated. Not included: ${usd(outside)} that outside LPs have in AI's pools, which is theirs.</div>
     </div>`;
   big.innerHTML = banner + `<div class="l5grid">
       ${card("Protocol-owned liquidity", usd(pol), pol != null ? `held by the LONG hook across AI's pools${polNvda ? ` \u00b7 about ${n0(polNvda)} NVDA` : ""}` : "measured on the next depth run", "gold")}
@@ -4400,8 +4413,8 @@ function renderLong500() {
   else $("#cL5Nav").innerHTML = "";
   const P = since?.parts;
   $("#l5NavRead").innerHTML = `<p class="muted" style="margin:8px 0 0">The vault is mostly AI by value, so its dollar NAV moves mostly with AI's own price.${P && since.baseT < (L.updatedAt || 0) - 86400
-      ? ` Since LONG 500 went live (${dayFmt(since.baseT)}) the change breaks down as: AI price ${usd(P.aiPrice)}, new AI locked ${usd(P.aiAdded)}, NVDA price ${usd(P.nvdaPrice)}, new NVDA ${usd(P.nvdaAdded)}, and ${usd(T.toVaultUsd)} of stock from LONG 500 itself.`
-      : ` The breakdown of what moves it (AI price, new AI locked, stock added, stock price) starts from the day LONG 500 went live and fills in from tomorrow.`} History is rebuilt from the fee ledger: AI locked and NVDA received each day, at that day's prices; AI and NVDA are over 99% of the vault.</p>`;
+      ? ` Since LONG 500 went live (${dayFmt(since.baseT)}) the change in AI and NVDA breaks down as: AI price ${usd(P.aiPrice)}, new AI added ${usd(P.aiAdded)}, NVDA price ${usd(P.nvdaPrice)}, new NVDA ${usd(P.nvdaAdded)}. LONG 500's ${usd(T.toVaultUsd)} of other stock is in the vault total above but outside this AI-and-NVDA breakdown.`
+      : ` The breakdown of what moves it (AI price, new AI added, stock added, stock price) starts from the day LONG 500 went live and fills in from tomorrow.`} History is rebuilt from the fee ledger: AI locked and NVDA received each day, at that day's prices; AI and NVDA are over 99% of the vault.</p>`;
 
   /* PROTOCOL-OWNED LIQUIDITY: the same figure the Valuation tab uses, so the two can
      never disagree. Per pool from the depth run; the NVDA count is the AI/NVDA pool's
@@ -4456,7 +4469,9 @@ function renderLong500() {
      fee split, so they are told apart by where each inflow came from, not by where it
      went. Shown side by side so the programme's share is plain. */
   const src = L.bySource || [];
-  const last7 = src.slice(-7);
+  /* seven complete days: today's partial day would read low against the Liquidity tab */
+  const todayStart = Math.floor(Date.now() / 86400000) * 86400;
+  const last7 = src.filter((r) => r.t < todayStart).slice(-7);
   const o7 = last7.reduce((s, r) => s + r.originalUsd, 0), l7 = last7.reduce((s, r) => s + r.long500Usd, 0);
   $("#l5SrcTiles").innerHTML = `<div class="tiles four">
       ${tile("Original fee split, 7 days", usd(o7), "AI and NVDA from the AI/NVDA pool's fees")}

@@ -776,6 +776,8 @@ if (!flag("no-long500")) {
       ],
       universe: toks.filter((t) => (t.poolsLong || 0) > 0).length || null,
       vaultAi: B?.vault?.aiBalance == null ? null : B.vault.aiBalance + ((vaultLp?.byToken || []).find((e) => e.token === C.AI.toLowerCase())?.units || 0),
+      /* the vault's NVDA wallet balance as read this run (the stock census lags a run) */
+      vaultNvda: B?.vault?.nvdaWallet ?? B?.vault?.nvdaBalance ?? null,
       aiUsd: readData("prices.json")?.aiUsd ?? null,
       burnsDaily: B?.daily || [],
       priceAt: usdPriceLookup(flowOut),
