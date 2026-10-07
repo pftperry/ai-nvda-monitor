@@ -822,12 +822,15 @@ if (!flag("no-stockfees")) {
          - AI's protocol-owned liquidity: the indexed AI pools' fees over LONG's own
            liquidity in them (the depth step).
        Fees are the hook's own and the denominator includes any outside LPs, so the
-       APR errs low. */
+       APR errs low.
+       Numerator and denominator are the same side: the stock-side fees alone
+       (d7StockUsd) over the stock-side liquidity. Dividing both sides' fees by one
+       side's liquidity overstated it; d7Usd stays published as the both-side total. */
     const A = out.artifact, yr = A.days7 > 0 ? 365 / A.days7 : null;
     const liq = R?.longTvl?.perToken || {};
     for (const s of A.stocks) {
       s.liquidityUsd = liq[s.symbol] ?? null;
-      s.apr = yr && s.liquidityUsd > 0 ? +(s.d7Usd * yr / s.liquidityUsd).toFixed(4) : null;
+      s.apr = yr && s.liquidityUsd > 0 && s.d7StockUsd != null ? +(s.d7StockUsd * yr / s.liquidityUsd).toFixed(4) : null;
     }
     if (D?.pools?.length && yr) {
       /* only pools whose fees were actually read: one missing from the census would

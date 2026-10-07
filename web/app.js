@@ -4572,19 +4572,52 @@ function renderLong500() {
   $("#l5Read").innerHTML = `<p class="muted" style="margin:8px 0 0">Read from the LONG 500 module's own event, one record per trigger: stock collected, the half sent to the vault, the half spent buying back the pool's token, and the token burned. Stock is valued at today's prices; burns at the price each trigger's own buyback paid. Tokens airdropped to the vault that are not stocks are left out.</p>`;
 }
 
+/* What the 24h dollar denominator (rwa.swapShare.dune) covers. Until the window
+   folded the v2/v3 venues and Rialto's replacement fill event, it was Uniswap v4
+   alone (Rialto's old event stopped on 15 Sep), so an artifact without the v2/v3
+   figure says that rather than "every venue", and a Rialto figure of zero is never
+   printed as if it were a measurement. */
+function duneScope(du) {
+  if (!du) return "";
+  if (du.otherVenueUsd == null) return "Uniswap v4 venues only; Rialto and v2/v3 pending";
+  return `over Uniswap v4, the v2/v3 venues${du.otherVenueUsd > 0 ? ` ($${compact(du.otherVenueUsd)})` : ""} and Rialto${du.rialtoUsd > 0 ? ` ($${compact(du.rialtoUsd)})` : ""}${du.venueHoursMissing ? `; v2/v3 missing for ${du.venueHoursMissing}h of the window` : ""}`;
+}
+/* Swap counts net of LONG's buyback legs. The buyback contract swaps LONG's 1% fee
+   through LONG pools, so each leg is a Swap in a LONG stock pool and sat in both the
+   LONG count and the all-venue count; on 6 Oct that was 19,242 of 33,103 "LONG
+   swaps". Read from the indexer's user counts, or derived from dune.buybackSwaps
+   for an artifact written before they existed. */
+function userSwaps(ss) {
+  if (!ss) return null;
+  const bb = ss.dune?.buybackSwaps ?? 0;
+  const long = ss.userLongSwaps ?? Math.max(0, ss.longSwaps - bb), all = ss.userStockSwaps ?? Math.max(0, ss.stockSwaps - bb);
+  return { long, all, share: all > 0 ? long / all : null, buyback: bb };
+}
+
 function renderSince(R, pending) {
   const Z = R?.series, host = $("#rwaSince");
   if (!Z?.days?.length) { host.innerHTML = pending; for (const id of ["#cChainTvl", "#cVolShare", "#cNvdaMint", "#readSince"]) $(id).innerHTML = ""; return; }
   const rows = Z.days, last = rows.at(-1), T = Z.totals || {};
   const N = R?.nvdaSupply, nvOk = N?.days?.length && N.launch?.supply > 0 && N.multiple != null;
+  /* One launch date for every "since LONG launched" on this card: the public launch
+     (AI's genesis, 14 Jul), the date the NVDA supply tile measures from. The first
+     LONG pool holding stock is the fallback when the supply block is missing. */
   const firstLong = rows.find((r) => r.longInvUsd > 0) || rows.find((r) => r.allInvUsd > 0);
-  const growth = firstLong && firstLong.allInvUsd > 0 && firstLong !== last ? last.allInvUsd / firstLong.allInvUsd : null;
+  const launchT = N?.launch?.t ?? firstLong?.t ?? null;
+  const base = launchT != null ? rows.find((r) => r.t >= launchT && r.allInvUsd > 0) : null;
+  const growth = base && base !== last ? last.allInvUsd / base.allInvUsd : null;
   const d30 = rows.find((r) => r.t >= last.t - 30 * 86400);
-  const longShare = last.allInvUsd ? Math.min(1, last.longInvUsd / last.allInvUsd) : null;
+  const chg30 = d30 && d30 !== last && d30.allInvUsd ? last.allInvUsd / d30.allInvUsd - 1 : null;
+  /* LONG's portion: the headline is the position replay (what LONG's pools hold now,
+     the same figure as the tab's top tiles) over the day's DEX inventory. The
+     swap-flow series, which sums swaps and never subtracts fee legs or withdrawals,
+     still draws the chart, and is named as such. */
+  const flowShare = last.allInvUsd ? Math.min(1, last.longInvUsd / last.allInvUsd) : null;
+  const longShare = R.longTvl?.usd != null && last.allInvUsd ? Math.min(1, R.longTvl.usd / last.allInvUsd) : flowShare;
   const peakShare = rows.reduce((m, r) => (r.allInvUsd > 0 ? Math.max(m, Math.min(1, r.longInvUsd / r.allInvUsd)) : m), 0);
   const catching = (Z.tokensPartial || []).length || Z.hookPartial || Z.rialtoPartial;
   const xf = (g) => (g >= 10 ? `${g.toFixed(0)}×` : `${g.toFixed(1)}×`);
-  const covNote = `${T.covered ?? "—"} of ${Z.stocks} stock tokens, the ones whose streams have reached the head (${pctLevel(Z.coverage, 0)} of the chain's DEX stock value)`;
+  const covNote = `${T.covered ?? "—"} of the ${Z.stocks} stock tokens in Robinhood's listing registry, the ones whose streams have reached the head (${pctLevel(Z.coverage, 0)} of the chain's DEX stock value)`;
   const censusShare = R.swapShare?.dune?.share ?? R.swapShare?.usdShare ?? null;
   const firstVol = rows.find((r) => r.longAllVolUsd > 0);
   /* The inventory series is drawn only once the complete streams carry at least
@@ -4594,14 +4627,14 @@ function renderSince(R, pending) {
   const progress = `<p class="muted" style="margin:6px 0 0">Backfilling from the chain's first block: streams complete for ${T.covered ?? 0} of ${Z.stocks} stock tokens, ${pctLevel(Z.coverage, 1)} of today's DEX stock value${(Z.tokensPartial || []).length ? `; still reading ${Z.tokensPartial.slice(0, 6).join(", ")}${Z.tokensPartial.length > 6 ? ` and ${Z.tokensPartial.length - 6} more` : ""}` : ""}. The liquidity chart appears once they cover half the value; each slow run adds more.</p>`;
   host.innerHTML = `<div class="tiles">
     ${ready ? tile("Stock in DEX liquidity", `$${compact(last.allInvUsd)}`,
-      `${covNote}, at ${dayFmt(last.t)}${growth ? ` · <span class="up">${xf(growth)}</span> since LONG launched (${dayFmt(firstLong.t)})` : ""}${d30 && d30 !== last && d30.allInvUsd ? ` · ${pct(last.allInvUsd / d30.allInvUsd - 1, 0)} in 30d` : ""}`, "", "hero")
+      `${chg30 != null ? `<b class="${chg30 >= 0 ? "up" : "down"}">${pct(chg30, 0)}</b> over 30 days · ` : ""}${covNote}, at ${dayFmt(last.t)}${growth ? ` · ${xf(growth)} since LONG launched (${dayFmt(base.t)}), from a $${compact(base.allInvUsd)} base` : ""}`, "", "hero")
       : tile("Stock in DEX liquidity", "backfilling", `streams complete for ${T.covered ?? 0} of ${Z.stocks} stocks, ${pctLevel(Z.coverage, 1)} of DEX stock value`)}
-    ${ready ? tile("LONG's portion of it", pctLevel(longShare, 1), `$${compact(last.longInvUsd)} in LONG pools by LONG's own swap-count method (what its dashboard reports)${R.longTvl ? `; the position replay says $${compact(R.longTvl.usd)} is actually there` : ""} · peak ${pctLevel(peakShare, 0)}`) : ""}
+    ${ready ? tile("LONG's portion of it", pctLevel(longShare, 1), `${R.longTvl?.usd != null ? `$${compact(R.longTvl.usd)} held in LONG pools now, every position replayed, of $${compact(last.allInvUsd)} · ` : ""}$${compact(last.longInvUsd)} by the swap-flow method (sums swaps, ignores fee legs and withdrawals), which the chart draws · swap-flow peak ${pctLevel(peakShare, 0)}`) : ""}
     ${tile("LONG stock volume since launch", `$${compact(T.longAllVolUsd)}`, `user swaps in every LONG stock pool${firstVol ? ` since ${dayFmt(firstVol.t)}` : ""}, from the hook's own swap event, at today's prices`, "", "hero")}
     ${nvOk ? tile("Tokenized NVDA supply since LONG launched", xf(N.multiple),
       `${compact(N.launch.supply)} → ${compact(N.now.supply)} NVDA${N.priceUsd ? ` ($${compact(N.now.supply * N.priceUsd)})` : ""} issued by Robinhood, from the token's own mints less redemptions since ${dayFmt(N.launch.t)}${N.week?.netUsd != null ? ` · net ${N.week.netUsd >= 0 ? "+" : "−"}$${compact(Math.abs(N.week.netUsd))} minted over the last ${N.week.days} days` : ""}${N.partial ? " · stream still catching up" : ""}`, "", "hero") : ""}
-    ${tile("Share of stock trading, measured window", censusShare == null ? "—" : pctLevel(censusShare, 1), censusShare == null ? "census pending" : `LONG's Dune definition over every DEX venue plus Rialto, last ${R.swapShare.windowHours}h${R.swapShare.windowTargetHours && R.swapShare.windowHours < R.swapShare.windowTargetHours ? ` of a ${R.swapShare.windowTargetHours}h window still filling` : ""} · the same event on both sides`)}
-    ${ready ? tile("Share since inception, transfer basis", T.shareDex == null ? "—" : `≤ ${pctLevel(T.shareDex, 0)}`, `an upper bound: $${compact(T.longVolUsd)} of LONG volume against $${compact(T.dexVolUsd)} of stock that moved in or out of the pool manager since ${dayFmt(Z.since)}; routes that hand a stock between pools inside the manager move no token and are missing from the denominator${T.rialtoVolUsd ? ` · ≤ ${pctLevel(T.shareAll, 0)} with Rialto's $${compact(T.rialtoVolUsd)} of off-DEX fills added` : ""}`) : ""}
+    ${tile("Share of stock trading, measured window", censusShare == null ? "—" : pctLevel(censusShare, 1), censusShare == null ? "census pending" : `LONG's Dune definition, ${duneScope(R.swapShare.dune)}, last ${R.swapShare.windowHours}h${R.swapShare.windowTargetHours && R.swapShare.windowHours < R.swapShare.windowTargetHours ? ` of a ${R.swapShare.windowTargetHours}h window still filling` : ""} · the same event on both sides`)}
+    ${ready ? tile("Share since inception, transfer basis", T.shareDex == null ? "—" : pctLevel(T.shareDex, 0), `$${compact(T.longVolUsd)} of LONG volume against $${compact(T.dexVolUsd)} of stock that moved in or out of the pool manager since ${dayFmt(Z.since)}. Not a bound either way: the denominator includes liquidity moves, and misses routes that hand a stock between pools inside the manager${T.rialtoVolUsd ? ` · ${pctLevel(T.shareAll, 0)} with Rialto's $${compact(T.rialtoVolUsd)} of off-DEX fills${T.otherVenueVolUsd ? ` and $${compact(T.otherVenueVolUsd)} on v2/v3` : ""} added` : ""}`) : ""}
   </div>${!ready ? progress : catching ? `<p class="muted" style="margin:6px 0 0">Streams still catching up${(Z.tokensPartial || []).length ? ` for ${Z.tokensPartial.length} stock token(s); the per-day series show the ${T.covered ?? 0} already complete` : ""}${Z.hookPartial ? ", LONG swaps" : ""}${Z.rialtoPartial ? ", Rialto" : ""}. The figures fill in over the next slow runs.</p>` : ""}`;
   if (ready) stackedBars($("#cChainTvl"), rows.filter((r) => r.t >= (rows.find((x) => x.allInvUsd > 0)?.t ?? 0)), {
     xKey: "t", weekends: true, totalKey: "allInvUsd", partKey: "longInvUsd", totalColor: "color-mix(in srgb, var(--series-3) 45%, transparent)", partColor: "var(--series-1)",
@@ -4626,13 +4659,13 @@ function renderSince(R, pending) {
   });
   else $("#cNvdaMint").innerHTML = `<p class="muted" style="padding:12px 0">Fills in once the NVDA mint stream has run.</p>`;
   $("#readSince").innerHTML = takeEl(longShare >= 0.08 ? "pos" : "neu",
-    `${ready ? `Across ${covNote}, DEX liquidity has grown to <b>$${compact(last.allInvUsd)}</b>${growth ? ` (${xf(growth)} since LONG launched)` : ""} and LONG holds <b>${pctLevel(longShare, 1)}</b> of it.` : `The liquidity history is still backfilling (streams complete for ${pctLevel(Z.coverage, 1)} of DEX stock value).`}
+    `${ready ? `Across ${covNote}, DEX liquidity stands at <b>$${compact(last.allInvUsd)}</b>${chg30 != null ? `, ${pct(chg30, 0)} over 30 days` : ""}${growth ? ` (${xf(growth)} the $${compact(base.allInvUsd)} it held when LONG launched)` : ""}, and LONG's pools hold <b>${pctLevel(longShare, 1)}</b> of it.` : `The liquidity history is still backfilling (streams complete for ${pctLevel(Z.coverage, 1)} of DEX stock value).`}
      LONG's pools have traded <b>$${compact(T.longAllVolUsd)}</b> of tokenized stock since launch${censusShare != null ? `, and in the measured window LONG carried <b>${pctLevel(censusShare, 1)}</b> of all stock trading by LONG's own Dune definition` : ""}.
      ${nvOk ? `Robinhood's tokenized NVDA supply is <b>${xf(N.multiple)}</b> what it was on launch day (${compact(N.launch.supply)} → ${compact(N.now.supply)} NVDA), read from the token's own mints and redemptions; the chart shows issuance per day, and Robinhood pauses minting and redemption over weekends.` : ""}
-     <span class="muted">Inventory from each token's transfers through the pool manager (exact: the manager's balance only moves by transfer); LONG's volume from the hook's swap event; today's prices, complete UTC days. A since-inception volume share needs the same event on both sides, and the chain-wide Swap tape is tens of millions of events, so the transfer-basis share is published only as an upper bound.</span>`);
+     <span class="muted">Inventory from each token's transfers through the pool manager (exact: the manager's balance only moves by transfer); LONG's volume from the hook's swap event; today's prices, complete UTC days. The series reads all ${Z.stocks} tokens in Robinhood's listing registry; the by-stock table above lists the ${R.totals?.stocks ?? "—"} of them with a supply on chain today. A since-inception volume share needs the same event on both sides, and the chain-wide Swap tape is tens of millions of events, so the transfer-basis share is published as a ratio of transfers, not as a bound.</span>`);
 }
 
-/* The six numbers at the top of the RWA tab: the ones an institution, or Robinhood
+/* The numbers at the top of the RWA tab: the ones an institution, or Robinhood
    itself, would watch to decide whether LONG is the venue for tokenized stocks. Each
    is drawn from a card further down; this is the summary, not a new measurement. */
 function renderRwaKpis(R, D, pending) {
@@ -4642,8 +4675,10 @@ function renderRwaKpis(R, D, pending) {
   const dexShare = L && T.dexUsd ? L.usd / T.dexUsd : null;
   const cov = T.activeStocks ? T.activeListed / T.activeStocks : null;
   const own = D?.tvlUsd && D.hookTvlUsd != null ? D.hookTvlUsd / D.tvlUsd : null;
-  const comp = (D?.compounding || []).slice(1);
-  const now = Math.floor(Date.now() / 1000), d7 = sumOf(comp.filter((r) => r.t >= now - 8 * 86400 && r.t < Math.floor(now / 86400) * 86400), (r) => r.addUsd);
+  /* held by LONG = LONG's pools only; AI's Community Vault is AI's (a 48h timelock),
+     so it is shown beside the figure, never inside it */
+  const held = L && T.supplyUsd > 0 ? L.usd / T.supplyUsd : null;
+  const us = userSwaps(ss);
   const win = ss?.windowHours ? `${ss.windowHours}h` : "window";
   /* Stock volume and perps volume are measured apart, as LONG's own dashboard keeps
      them, but the protocol quotes their sum. Adding them here is the only place the
@@ -4653,22 +4688,22 @@ function renderRwaKpis(R, D, pending) {
   host.innerHTML = `<div class="tiles four">
     ${tile("Traded through LONG since launch", combined == null ? "—" : `$${compact(combined)}`,
       combined == null ? "stream pending" : `$${compact(stockVol)} of tokenized stock${perpVol ? ` and $${compact(perpVol)} of LongX perps` : ""}, user swaps only`, "", "hero")}
-    ${tile("Tokenized stock held by LONG", L && T.longShare != null ? pctLevel(T.longShare, 1) : "—",
-      L ? `of every stock token on the chain, in LONG's pools and vault · $${compact(L.usd + T.vaultUsd)} of $${compact(T.supplyUsd)}` : "position replay pending", "", "hero")}
+    ${tile("Tokenized stock held by LONG", held != null ? pctLevel(held, 1) : "—",
+      L ? `of every stock token on the chain, in LONG's pools · $${compact(L.usd)} of $${compact(T.supplyUsd)}${T.vaultUsd ? ` · AI Community Vault (48h timelock) holds $${compact(T.vaultUsd)} more` : ""}` : "position replay pending", "", "hero")}
     ${tile("Stock liquidity LONG runs", L ? `$${compact(L.usd)}` : "—",
-      L ? `in LONG pools${dexShare != null ? ` · <b>${pctLevel(dexShare, 0)}</b> of the $${compact(T.dexUsd)} of stock liquidity on every DEX venue` : ""}${Z?.days?.at(-1)?.longInvUsd ? ` · LONG's dashboard says $${compact(Z.days.at(-1).longInvUsd)} by its swap-count method` : ""}` : "position replay pending", "", "hero")}
+      L ? `in LONG pools${dexShare != null ? ` · <b>${pctLevel(dexShare, 0)}</b> of the $${compact(T.dexUsd)} of stock liquidity on every DEX venue` : ""}${Z?.days?.at(-1)?.longInvUsd ? ` · $${compact(Z.days.at(-1).longInvUsd)} by the swap-flow method (sums swaps, ignores fee legs and withdrawals)` : ""}` : "position replay pending", "", "hero")}
     ${tile("Stock volume through LONG", ss?.dune ? `$${compact(ss.dune.longUsd)}` : "—",
-      ss?.dune ? `last ${win}${ZT?.longAllVolUsd ? ` · <b>$${compact(ZT.longAllVolUsd)}</b> since launch${Z.since ? "" : ""}` : ""}` : "swap stream pending", "", "hero")}
+      ss?.dune ? `last ${win}${ZT?.longAllVolUsd ? ` · <b>$${compact(ZT.longAllVolUsd)}</b> since launch` : ""}` : "swap stream pending", "", "hero")}
     ${tile("Share of all stock trading", ss?.dune?.share != null ? pctLevel(ss.dune.share, 1) : "—",
-      ss?.dune?.share != null ? `by dollars, every DEX venue plus Rialto, last ${win} · <b>${pctLevel(ss.share, 0)}</b> of stock swaps by count` : "swap stream pending", "", "hero")}
+      ss?.dune?.share != null ? `by dollars, ${duneScope(ss.dune)}, last ${win} · <b>${pctLevel(us?.share, 0)}</b> of user stock swaps by count` : "swap stream pending", "", "hero")}
     ${tile("Stocks with a LONG market", cov == null ? "—" : `${T.activeListed} / ${T.activeStocks}`,
       cov == null ? "stock-event sample pending" : `of the stocks that traded on the chain in the last day (${pctLevel(cov, 0)})${T.poolsAll ? ` · ${pctLevel(T.poolsLong / T.poolsAll, 0)} of all stock pools carry the LONG hook` : ""}`, "", "hero")}
     ${tile("Liquidity the protocol owns", own == null ? "—" : pctLevel(own, 0),
-      own == null ? "ladders pending" : `of AI's liquidity is the protocol's own position, so it cannot be pulled${d7 ? ` · $${compact(d7)} of fees folded back in over 7d` : ""}`, "", "hero")}
+      own == null ? "ladders pending" : `of AI's liquidity is held by the LONG hook, not outside LPs`, "", "hero")}
   </div>`;
-  $("#readKpis").innerHTML = takeEl(T.longShare >= 0.05 && (ss?.dune?.share ?? 0) >= 0.15 ? "pos" : "neu",
-    `LONG holds <b>${pctLevel(T.longShare, 1)}</b> of the tokenized stock on Robinhood Chain and runs <b>${dexShare != null ? pctLevel(dexShare, 0) : "—"}</b> of its DEX stock liquidity;
-     over the last ${win} it carried <b>${ss?.dune?.share != null ? pctLevel(ss.dune.share, 1) : "—"}</b> of all stock trading by dollars and <b>${ss ? pctLevel(ss.share, 0) : "—"}</b> of stock swaps by count, with a market for <b>${cov == null ? "—" : `${T.activeListed} of ${T.activeStocks}`}</b> stocks that traded.
+  $("#readKpis").innerHTML = takeEl((held ?? 0) >= 0.05 && (ss?.dune?.share ?? 0) >= 0.15 ? "pos" : "neu",
+    `LONG's pools hold <b>${pctLevel(held, 1)}</b> of the tokenized stock on Robinhood Chain and run <b>${dexShare != null ? pctLevel(dexShare, 0) : "—"}</b> of its DEX stock liquidity;
+     over the last ${win} LONG carried <b>${ss?.dune?.share != null ? pctLevel(ss.dune.share, 1) : "—"}</b> of all stock trading by dollars and <b>${us ? pctLevel(us.share, 0) : "—"}</b> of user stock swaps by count, with a market for <b>${cov == null ? "—" : `${T.activeListed} of ${T.activeStocks}`}</b> stocks that traded.
      <span class="muted">Each number is measured further down this tab; the Valuation tab prices it.</span>`);
 }
 
@@ -4765,7 +4800,7 @@ function renderFlywheel() {
     `${others.length ? `${others.length} other AI/vault pool(s) are listed but not counted: two-sided venues whose swap flow is ordinary trading, and pools whose liquidity was withdrawn. Across every pair the swap flow nets ${compact(T.allPairsNetAi ?? 0)} AI. ` : ""}` +
     `${seeded.length ? `In the single-sided pools the AI held matches the AI swapped in, which is what a seed of vault tokens alone looks like: every AI there came from a buyer. ` : ""}` +
     `${nv && nvSupply ? `The NVDAx3L pool was seeded with ${pctLevel(nv.seed / nvSupply, 1)} of NVDAx3L supply and now holds ${pctLevel((nv.reservesPair || 0) / nvSupply, 1)}. ` : ""}` +
-    `NVDAx3L targets about three times NVDA's daily move, so a rising NVDA makes the pooled tokens cheap against the market and draws more AI in; a falling one reverses it. ` +
+    `NVDAx3L targets about three times NVDA's daily move. The premise is that a rising NVDA makes the pooled tokens cheap against the market and draws more AI in, and a falling one reverses it; the engine test below checks it. ` +
     (T.ceilingAi ? `The ceiling is the AI these positions would hold if every vault token in them were bought out. It is set by the positions' price ranges, not by the market, so vault tokens rising makes it more likely to be reached but cannot raise it; only new liquidity does, which is why its daily history is kept. At today's AI price it would take AI at $${(1e6 / T.ceilingAi).toFixed(3)} for the full ceiling to be worth $1M. ` : "") +
     (() => {
       const R = F.routing || {};
@@ -4842,7 +4877,7 @@ function renderPerps(R, pending) {
   ], P.vaults);
   const rows = (P.daily || []).filter((d) => d.mintUsd || d.burnUsd);
   if (rows.length > 1) groupedBars($("#cPerps"), rows.slice(-60), { xKey: "t", weekends: true, keys: ["mintUsd", "burnUsd"], colors: ["var(--buy)", "var(--sell)"], fmt: (v) => `$${compact(v)}`,
-    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>$${compact(d.mintUsd)} deposited (shares minted)</div><div>$${compact(d.burnUsd)} withdrawn (shares burned)</div><div class="k">$${compact(d.netMintUsd)} net since launch · bridge, all users: $${compact(d.bridgeInUsd)} in / $${compact(d.bridgeOutUsd)} out</div>` });
+    tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>$${compact(d.mintUsd)} deposited (shares minted)</div><div>$${compact(d.burnUsd)} withdrawn (shares burned)</div><div class="k">$${compact(d.netMintUsd)} of shares outstanding at spot · bridge, all users: $${compact(d.bridgeInUsd)} in / $${compact(d.bridgeOutUsd)} out</div>` });
   else $("#cPerps").innerHTML = `<p class="muted" style="padding:12px 0">Fills in as the share streams backfill.</p>`;
   $("#readPerps").innerHTML = takeEl("neu",
     `LongX's vaults have placed <b>$${compact(L.netUsd)}</b> of USDG on Lighter net of withdrawals, and depositors hold <b>${P.priced ? `$${compact(P.valueUsd)}` : "—"}</b> of vault shares at spot.
@@ -4850,18 +4885,18 @@ function renderPerps(R, pending) {
      <span class="muted">Vaults are recognised by their shared proxy bytecode or a name that says Long or Pre IPO; the bridge is Lighter's for the whole chain, so only the vaults' own transfers count. Shares are priced from their spot pools; the vaults publish no NAV on chain.</span>`);
 }
 
-/* LONG's share of the chain, one bar per measure, all on a 0–100% scale. The six
+/* LONG's share of the chain, one bar per measure, all on a 0–100% scale. The
    tiles above give the numbers; this gives the shape: how much of each thing on
    Robinhood Chain runs through LONG. Same sources as the tiles. */
 function renderCaptureStrip(R, D) {
   const host = $("#rwaStrip");
   if (!R?.tokens?.length) { host.innerHTML = ""; return; }
-  const T = R.totals, L = R.longTvl, ss = R.swapShare;
+  const T = R.totals, L = R.longTvl, ss = R.swapShare, us = userSwaps(ss);
   const rows = [
-    ["Tokenized stock held", L ? T.longShare : null, L ? `$${compact(L.usd + T.vaultUsd)} of $${compact(T.supplyUsd)} on the chain` : ""],
+    ["Tokenized stock held", L && T.supplyUsd > 0 ? L.usd / T.supplyUsd : null, L ? `$${compact(L.usd)} of $${compact(T.supplyUsd)} on the chain, LONG pools only` : ""],
     ["Stock liquidity run", L && T.dexUsd ? L.usd / T.dexUsd : null, L ? `$${compact(L.usd)} of $${compact(T.dexUsd)} on every DEX venue` : ""],
-    ["Stock trading, dollars", ss?.dune?.share ?? null, ss?.dune ? `$${compact(ss.dune.longUsd)} of $${compact(ss.dune.denominatorUsd)}, last ${ss.windowHours}h, DEX plus Rialto` : ""],
-    ["Stock swaps, count", ss?.share ?? null, ss ? `${ss.longSwaps.toLocaleString()} of ${ss.stockSwaps.toLocaleString()} swaps, last ${ss.windowHours}h` : ""],
+    ["Stock trading, dollars", ss?.dune?.share ?? null, ss?.dune ? `$${compact(ss.dune.longUsd)} of $${compact(ss.dune.denominatorUsd)}, last ${ss.windowHours}h, ${duneScope(ss.dune)}` : ""],
+    ["Stock swaps, count", us?.share ?? null, us ? `${us.long.toLocaleString()} of ${us.all.toLocaleString()} user swaps, last ${ss.windowHours}h, LONG's buyback legs left out` : ""],
     ["Stocks with a LONG market", T.activeStocks ? T.activeListed / T.activeStocks : null, T.activeStocks ? `${T.activeListed} of ${T.activeStocks} stocks that traded in the last day` : ""],
   ].filter((r) => r[1] != null && isFinite(r[1]));
   host.innerHTML = `<div class="strip" role="img" aria-label="LONG's share of Robinhood Chain by measure">${rows.map(([l, v, n]) => `<div class="srow">
@@ -5032,8 +5067,8 @@ function renderBacking() {
   $("#backingKpis").innerHTML = `<div class="tiles four">
     ${top ? tile("Top Forward Looking", `${top.symbol} / ${top.anchorSymbol}`, `${top.score}: ${top.why.map((w) => w.l).join(", ") || "base only"}${ai && ai !== top ? ` · AI ${ai.score}` : ""}`, "", "hero") : ""}
     ${topStanding ? tile("Highest Stock-Based", `${topStanding.symbol} / ${topStanding.anchorSymbol}`, `${topStanding.standing}: ${pctLevel(topStanding.stockShare, 0)} of all ${topStanding.anchorSymbol}, ${(100 * topStanding.backing).toFixed(1)}¢ per $1 of cap · the thesis profile, not a forecast`) : ""}
-    ${tile("Accumulating stock", accum.length, accum.length ? accum.map((r) => r.symbol).join(", ") : "no pair added 0–50% to its stock over the last seven traded days")}
-    ${tile("Shedding stock", shedding.length, shedding.length ? shedding.map((r) => r.symbol).join(", ") : "no pair lost more than a tenth of its stock over seven traded days", shedding.length ? "bad" : "")}
+    ${tile("Accumulating stock", accum.length, accum.length ? accum.map((r) => r.symbol).join(", ") : "no pair added 0–50% to its stock since the close seven days ago")}
+    ${tile("Shedding stock", shedding.length, shedding.length ? shedding.map((r) => r.symbol).join(", ") : "no pair lost more than a tenth of its stock since the close seven days ago", shedding.length ? "bad" : "")}
   </div>`;
   const cents = (v) => `${(100 * v).toFixed(v >= 0.1 ? 0 : 1)}¢`;
   const col = (k) => rows.map((r) => r[k]);
@@ -5043,7 +5078,7 @@ function renderBacking() {
   const th = (k, label, cls = "", title = "") => `<th class="${cls}${backingSort === k ? " on" : ""}" data-k="${k}" title="${title}">${label}</th>`;
   const q = (k, v) => tint(pctRank(col(k), v));
   host.innerHTML = `<thead><tr>
-      <th class="r">#</th><th>Pair</th>${th("score", "Forward Looking", "r", "points from a base of 50 for the shapes that led price in both samples, see the definitions below")}<th>Signals</th>${th("standing", "Stock-Based", "r", "the thesis profile as percentile ranks: share ×3, cushion ×2, turnover fit ×2, swaps ×1, stock ×1; describes the pair, does not forecast it")}${th("swWk", "Swaps, 24h vs week", "r", "swaps in the trailing 24 hours against the average complete day of the last seven")}${th("dU7", "Stock held, vs 7d ago", "r", "the pool's stock level now against its level at the close seven days ago")}${th("pr7", "Price, vs 7d ago", "r", "the pair's live dollar price against its dollar close seven days ago")}${th("pr28", "Price, vs 28d ago", "r", "the pair's live dollar price against its dollar close 28 days ago")}${th("mcapUsd", "Market cap", "r")}${th("stockUsd", "Stock in pools", "r")}${th("backing", "Stock per $1 cap", "r", "cents of stock behind each dollar of market cap")}${th("stockShare", "Share of stock", "r", "share of the stock's whole tokenized supply held in the pair")}${th("turnover", "Turnover", "r", "last complete day's stock traded over market cap; 1% to 50% reads as a market")}<th>Own 30d</th>
+      <th class="r">#</th><th>Pair</th>${th("score", "Forward Looking", "r", "points from a base of 50 for the shapes that led price in both samples of the 16 Sep backtest; the weekly retest below says how that has held up")}<th>Signals</th>${th("standing", "Stock-Based", "r", "the thesis profile as percentile ranks: share ×3, cushion ×2, turnover fit ×2, swaps ×1, stock ×1; describes the pair, does not forecast it")}${th("swWk", "Swaps, 24h vs week", "r", "swaps in the trailing 24 hours against the average complete day of the last seven")}${th("dU7", "Stock held, vs 7d ago", "r", "the pool's stock level now against its level at the close seven days ago")}${th("pr7", "Price, vs 7d ago", "r", "the pair's live dollar price against its dollar close seven days ago")}${th("pr28", "Price, vs 28d ago", "r", "the pair's live dollar price against its dollar close 28 days ago")}${th("mcapUsd", "Market cap", "r")}${th("stockUsd", "Stock in pools", "r")}${th("backing", "Stock per $1 cap", "r", "cents of stock behind each dollar of market cap")}${th("stockShare", "Share of stock", "r", "share of the stock's whole tokenized supply held in the pair")}${th("turnover", "Turnover", "r", "last complete day's stock traded over market cap; 1% to 50% reads as a market")}<th>Own 30d</th>
     </tr></thead><tbody>` +
     rows.map((r, i) => `<tr>
       <td class="r muted mono">${i + 1}</td>
@@ -5066,12 +5101,23 @@ function renderBacking() {
   $("#backingToggle").onclick = () => { backingAll = !backingAll; renderBacking(); };
   for (const h of host.querySelectorAll("th[data-k]")) h.onclick = () => { backingSort = h.dataset.k; for (const o of $("#backingSort").querySelectorAll("button")) o.setAttribute("aria-pressed", o.dataset.k === backingSort ? "true" : "false"); renderBacking(); };
   const byShare = major.slice().sort((a, b) => (b.stockShare || 0) - (a.stockShare || 0)).slice(0, 2);
-  const best = major.filter((r) => r.score >= 70).sort((a, b) => b.score - a.score);
-  $("#readBacking").innerHTML = takeEl(best.length ? "pos" : "neu",
-    `${best.length ? `<b>${best.map((r) => r.symbol).join(", ")}</b> score 70 or better: in the backtest that band was up the next week 65–68% of the time among survivors and was the only band above base in the launch cohort.` : `No pair scores 70 or better today.`}
-     ${shedding.length ? `<b>${shedding.map((r) => r.symbol).join(", ")}</b> lost more than a tenth of their stock over the last seven traded days, the one shape that trailed in both samples.` : ""}
+  /* The top band and what it has done, both from the live retest (rwa.scoreTest),
+     never from the 16 Sep backtest's figures: the band is the retest's own (75+ for
+     Forward Looking), and the tone turns positive only when the out-of-sample band
+     beats the base rate by five points or more on at least twenty pair-days, so a
+     one-point edge on a handful of weeks does not read as a signal. */
+  const ST = R.scoreTest, band = ST?.bands?.tape ?? 75;
+  const best = major.filter((r) => r.score >= band).sort((a, b) => b.score - a.score);
+  const oosW = ST?.oos?.all?.tape?.[7], survW = ST?.all?.survivors?.tape?.[7];
+  const P0 = (v) => v == null ? "—" : `${(100 * v).toFixed(0)}%`;
+  const oosBeats = oosW?.topUp != null && oosW.baseUp != null && (oosW.topN ?? 0) >= 20 && oosW.topUp >= oosW.baseUp + 0.05;
+  const testLine = !ST?.all ? "The retest has not run yet, so there is no measured record for the band."
+    : `In the retest of ${dayFmt(ST.at)}, the ${band}+ band was up the following week ${P0(survW?.topUp)} of the time among survivors against a base of ${P0(survW?.baseUp)} (in sample)${oosW?.topN ? `, and ${P0(oosW.topUp)} against ${P0(oosW.baseUp)} on the ${oosW.topN} out-of-sample pair-days in the band, median week ${oosW.topMed == null ? "—" : `${oosW.topMed >= 0 ? "+" : "−"}${Math.abs(100 * oosW.topMed).toFixed(0)}%`}` : ", with no out-of-sample pair-day in the band yet"}.`;
+  $("#readBacking").innerHTML = takeEl(best.length && oosBeats ? "pos" : "neu",
+    `${best.length ? `<b>${best.map((r) => r.symbol).join(", ")}</b> score ${band} or better today.` : `No pair scores ${band} or better today.`} ${testLine}
+     ${shedding.length ? `<b>${shedding.map((r) => r.symbol).join(", ")}</b> lost more than a tenth of their stock since the close seven days ago, the shape that trailed in both samples of the 16 Sep backtest.` : ""}
      ${venues.length ? `<b>${venues.map((r) => r.symbol).join(", ")}</b> hold over a tenth of their stock's tokenized supply.` : ""}
-     ${byShare.length ? `The largest holders of their stock's tokenized supply are ${byShare.map((r) => `<b>${r.symbol}</b> (${pctLevel(r.stockShare, 0)} of all ${r.anchorSymbol})`).join(" and ")}; share carries no score weight because a higher share preceded weaker weeks in every cut of the test.` : ""}
+     ${byShare.length ? `The largest holders of their stock's tokenized supply are ${byShare.map((r) => `<b>${r.symbol}</b> (${pctLevel(r.stockShare, 0)} of all ${r.anchorSymbol})`).join(" and ")}; share carries no score weight because a higher share preceded weaker weeks in every cut of the 16 Sep backtest.` : ""}
      ${ai ? `AI holds the most stock in absolute terms, <b>$${compact(ai.stockUsd)}</b> of NVDA, and <b>${cents(ai.backing)}</b> per dollar of its cap.` : ""}
      <span class="muted">Forward Looking is points from 50 and Stock-Based is the thesis profile as percentile ranks (definitions below); shading is percentile rank among the rows shown, one hue, for reading only. Trend columns are read intraday: the trailing 24 hours of each pool's own swap tape against its complete days, the live stock level and dollar price against the closes 7 and 28 days back; they move every standard run, about every two hours. Stock per pool from the position replay; market cap from each token's own supply at the pool's last price; turnover is the last complete day's. Own 30d builds one point per four hours from ${dayFmt(B.historySince)}. A screen of measured numbers, not a recommendation.</span>`);
   renderScoreTest(R.scoreTest);
@@ -5092,57 +5138,15 @@ function renderRwa() {
   try { renderFlywheel(); } catch (e) { console.error("renderFlywheel", e); }
   try { renderFlywheelEngine(); } catch (e) { console.error("renderFlywheelEngine", e); }
 
-  /* ── capture ─────────────────────────────────────────────────────────── */
+  /* ── by stock, community vaults, trading share ───────────────────────────
+     The tab's headline tiles are renderRwaKpis; this block fills the tables. */
   if (!R?.tokens?.length) {
-    $("#rwaTiles").innerHTML = pending;
-    for (const id of ["#readRwa", "#tStocks", "#cStockDex", "#takeStockDex", "#rwaSwaps", "#tSwapShare", "#cSwapShare", "#readSwaps"]) $(id).innerHTML = "";
+    for (const id of ["#tStocks", "#rwaSwaps", "#tSwapShare", "#cSwapShare", "#readSwaps"]) $(id).innerHTML = "";
   } else {
     const T = R.totals;
-    const nv = R.tokens.find((t) => t.token === (S.meta.contracts.nvdaToken || "").toLowerCase()) || R.tokens[0];
     const hist = R.history || [];
-    const wk = hist.find((h) => h.t >= (hist.at(-1)?.t || 0) - 7 * 86400);
-    /* A week-over-week delta needs a row at least six days old; comparing against a
-       two-hour-old row from a run that saw a different token set is not a trend. */
-    const dShare = wk && wk !== hist.at(-1) && hist.at(-1).t - wk.t >= 6 * 86400 && wk.share != null && T.share != null ? T.share - wk.share : null;
-    /* Issuance capture: of the stock supply minted over the last week (supply on
-       chain grows daily), how much landed in DEX liquidity. From the history rows'
-       per-token supply and inventory, dollar-weighted at today's prices. */
-    let issuance = null;
-    if (wk && wk !== hist.at(-1) && hist.at(-1).t - wk.t >= 5 * 86400 && wk.perToken && hist.at(-1).perToken) {
-      let dSup = 0, dDex = 0;
-      for (const t of R.tokens) {
-        const a = wk.perToken[t.symbol], b = hist.at(-1).perToken[t.symbol];
-        if (!a || !b || !t.priceUsd) continue;
-        dSup += (b[0] - a[0]) * t.priceUsd; dDex += (b[1] - a[1]) * t.priceUsd;
-      }
-      if (dSup > 0) issuance = { dSup, dDex, share: dDex / dSup, days: (hist.at(-1).t - wk.t) / 86400 };
-    }
-    const cov = T.activeStocks ? T.activeListed / T.activeStocks : null;
-    /* The headline is LONG's own share: what LONG's pools (and the vault) hold, over
-       everything that exists on the chain. The all-venues figure is context. */
     const L = R.longTvl;
-    const nvLong = L?.perToken?.[nv.symbol] != null && nv.priceUsd ? L.perToken[nv.symbol] / nv.priceUsd : null;
-    $("#rwaTiles").innerHTML = `<div class="tiles">
-      ${tile("Stock supply held by LONG", L && T.longShare != null ? pctLevel(T.longShare, 1) : "—",
-        L ? `$${compact(L.usd + T.vaultUsd)} of $${compact(T.supplyUsd)} of tokenized stock on the chain, in LONG's pools and vault${L.complete ? "" : ` · ladders ${pctLevel(L.backfillShare, 0)} backfilled, a floor until complete`}` : "ladders replay on the next slow run", "", "hero")}
-      ${tile(`${nv.symbol} held by LONG`, nvLong != null ? pctLevel((nvLong + nv.inVault) / nv.supply, 1) : "—", nvLong != null ? `${nf(nvLong + nv.inVault, 0)} of ${nf(nv.supply, 0)} ${nv.symbol} on chain · ${nf(nvLong, 0)} in LONG pools, ${nf(nv.inVault, 0)} in the vault` : "pending")}
-      ${tile("All on-chain liquidity", T.share == null ? "—" : pctLevel(T.share, 1),
-        `of stock supply sits in any DEX pool or the vault · $${compact(T.dexUsd + T.vaultUsd)} of $${compact(T.supplyUsd)}${dShare != null ? ` · <span class="${dShare >= 0 ? "up" : "down"}">${pts(dShare)}</span> in 7d` : ""}`)}
-      ${tile("Market coverage", cov == null ? "—" : `${T.activeListed} / ${T.activeStocks}`, cov == null ? "stock-event sample pending" : `stock tokens that moved on the chain in the last day have a LONG market (${pctLevel(cov, 0)})`)}
-      ${tile("New issuance captured", issuance ? pctLevel(issuance.share, 0) : "—", issuance ? `of $${compact(issuance.dSup)} of stock minted in ${Math.round(issuance.days)}d, $${compact(issuance.dDex)} went into DEX liquidity` : "needs a week of history; supply grows daily")}
-      ${(() => { const dn = R.series?.days?.at(-1)?.longInvUsd; return tile("Stock TVL in LONG pools", L ? `$${compact(L.usd)}` : "—", L ? `held right now, every position in ${(L.pools ?? 0).toLocaleString()} LONG pools replayed${L.graduatedUsd ? ` + $${compact(L.graduatedUsd)} in ${L.graduatedPools} graduated pools` : ""}${dn ? ` · LONG's dashboard reports <b>$${compact(dn)}</b> by summing swap flow, which never subtracts the fee legs the hook takes out or liquidity withdrawn` : ""}` : "ladders replay on the next slow run"); })()}
-      ${tile("Stock pools", T.poolsAll ? `${T.poolsLong.toLocaleString()} / ${T.poolsAll.toLocaleString()}` : "—", T.poolsAll ? `pools quoting a stock token carry the LONG hook (${pctLevel(T.poolsLong / T.poolsAll, 0)})${T.cataloguePartial ? " · catalogue still filling" : ""}` : "catalogue building")}
-      ${(() => { const p = S.prices; const basis = p?.nvdaUsd && p?.nvdaUsdImplied ? p.nvdaUsdImplied / p.nvdaUsd - 1 : null;
-        return tile("Cross-venue basis", basis == null ? "—" : `${(basis * 1e4).toFixed(0)} bps`, basis == null ? "NVDA price pending" : `NVDA implied by AI/NVDA × AI/USDG vs the NVDA/USDG pool; near zero means the venues are arbitraged tight`, basis != null && Math.abs(basis) > 0.02 ? "warn" : ""); })()}
-      ${tile("Listed stocks", `${T.listed} / ${T.stocks}`, `stock tokens with a LONG pool, of all identified on the chain`)}
-    </div>`;
     const win = R.swapShare?.windowHours ? (R.swapShare.windowHours >= 48 ? `${Math.round(R.swapShare.windowHours / 24)}d` : `${R.swapShare.windowHours}h`) : "window";
-    $("#readRwa").innerHTML = takeEl(T.share >= 0.25 ? "pos" : "neu",
-      `<b>${pctLevel(T.share, 1)}</b> of the tokenized-stock value on Robinhood Chain sits inside DEX liquidity or the community vault${R.longTvl ? `; <b>${pctLevel(T.longShare, 1)}</b> ($${compact(R.longTvl.usd)}) of it inside LONG's own pools${R.longTvl.complete ? "" : ` (ladders ${pctLevel(R.longTvl.backfillShare, 0)} backfilled; a floor until they reach the head)`}` : ""}${T.poolsAll ? `,
-       and <b>${pctLevel(T.poolsLong / T.poolsAll, 0)}</b> of the ${T.poolsAll.toLocaleString()} pools that quote a stock token are LONG launches` : ""}.
-       <b>${pctLevel(nv.share, 1)}</b> of every ${nv.symbol} token on the chain is in a pool or the vault${R.tokens[0] !== nv ? `; ${R.tokens[0].symbol} leads by dollars at ${pctLevel(R.tokens[0].share, 1)}` : ""}.
-       <span class="muted">Supply is the token's on-chain <code>totalSupply</code>; the pool-manager balance is DEX inventory on every venue,
-       LONG-hooked or not, so the share is an upper bound on LONG's own. Prices from each stock's busiest USDG pool.</span>`);
     const sw = R.swapShare?.perToken || [];
     const FEES = new Map((S.stockfees?.stocks || []).map((s) => [s.token, s]));
     const compactUsd = (v) => (v != null && v < 1000 ? v.toFixed(v < 10 ? 2 : 0) : compact(v));
@@ -5161,15 +5165,27 @@ function renderRwa() {
       { h: "On chain", f: (t) => nf(t.supply, 0) },
       { h: "In pools", f: (t) => nf(t.inDex, 0) },
       { h: "In LONG pools", f: (t) => (L?.perToken?.[t.symbol] != null ? `$${compact(L.perToken[t.symbol])}` : `<span class="muted">—</span>`) },
-      { h: "Held by LONG", attrs: () => ({ class: "bar-cell" }), f: (t) => { const s = L?.perToken?.[t.symbol] != null && t.priceUsd ? (L.perToken[t.symbol] / t.priceUsd + t.inVault) / t.supply : null; return `<div class="fill" style="width:${Math.min(120, (s || 0) * 120)}px"></div><span>${pctLevel(s, 1)}</span>`; } },
+      /* LONG pools only. AI's Community Vault (0xd14d…8630, a 48h TimelockController)
+         is AI's, not LONG's, so it has its own column and is not added in here. */
+      { h: "Held by LONG", attrs: () => ({ class: "bar-cell" }), f: (t) => { const s = L?.perToken?.[t.symbol] != null && t.priceUsd ? L.perToken[t.symbol] / t.priceUsd / t.supply : null; return `<div class="fill" style="width:${Math.min(120, (s || 0) * 120)}px"></div><span>${pctLevel(s, 1)}</span>`; } },
+      { h: "AI Community Vault (48h timelock)", f: (t) => (t.inVault > 0 ? `${nf(t.inVault, t.inVault < 10 ? 2 : 0)} <span class="muted">${pctLevel(t.inVault / t.supply, 1)}</span>` : `<span class="muted">—</span>`) },
       { h: "In any pool", f: (t) => `${pctLevel(t.share, 1)} <span class="muted">${t.dexUsd == null ? "unpriced" : `$${compact(t.dexUsd)}`}</span>` },
       { h: "LONG pools / all", f: (t) => (t.poolsAll || !t.poolsPartial ? `${t.poolsLong.toLocaleString()} / ${t.poolsAll.toLocaleString()}${t.poolsPartial ? "*" : ""}` : `<span class="muted">cataloguing</span>`) },
-      { h: `Swaps ${win} via LONG`, f: (t) => { const s = sw.find((x) => x.token === t.token); return s ? `${s.long.toLocaleString()} / ${s.all.toLocaleString()} <span class="muted">${pctLevel(s.share, 0)}</span>` : "—"; } },
+      /* user swaps: LONG's buyback legs (counted per stock by the indexer) come out of
+         both sides; an artifact written before that count shows the raw figures */
+      { h: `User swaps ${win} via LONG`, f: (t) => { const s = sw.find((x) => x.token === t.token); if (!s) return "—"; const bb = s.buyback || 0, l = Math.max(0, s.long - bb), a = Math.max(0, s.all - bb); return `<span${s.buyback == null ? ` title="includes LONG's buyback legs until the next standard run"` : ""}>${l.toLocaleString()} / ${a.toLocaleString()}</span> <span class="muted">${pctLevel(a ? l / a : null, 0)}</span>`; } },
       /* fees from the LONG hook's own per-pool counter, every LONG pool on this stock
          summed; a stock with no price shows its stock-side fees in shares */
       { h: "LP fees, all time", f: (t) => feeCell(t, "all") },
       { h: "LP fees, 24h", f: (t) => feeCell(t, "d1") },
-      { h: "Fee APR, 7d", f: (t) => { const s = FEES.get(t.token); return s?.apr != null ? `<span title="${usd0(s.d7Usd)} of fees over ${S.stockfees.days7 < 6.9 ? S.stockfees.days7.toFixed(1) + " days" : "7 days"}, annualised, over ${usd0(s.liquidityUsd)} of ${t.symbol} held in LONG pools">${pctLevel(s.apr, s.apr < 0.1 ? 1 : 0)}</span>` : `<span class="muted">—</span>`; } },
+      /* LONG's own 1% swap fee is not in the hook's LP accounting, so it is computed:
+         1% of the window's user stock volume through LONG pools on this stock (the
+         hook's swap event, buyback legs out; older artifacts fall back to all
+         LONG-pool volume). An estimate from volume, labelled as one. */
+      { h: `LONG 1% fee, ${win} (computed)`, f: (t) => { const s = sw.find((x) => x.token === t.token); const v = s ? (s.usdUser ?? s.usdLong) : null; return v > 0 ? `<span title="1% of $${compact(v)} of user stock volume through LONG pools">$${compactUsd(v * 0.01)}</span>` : `<span class="muted">—</span>`; } },
+      /* stock-side fees over stock-side liquidity, both from the same side; an
+         artifact without d7StockUsd carries the old both-side APR and is not shown */
+      { h: "Stock-side fee APR, 7d", f: (t) => { const s = FEES.get(t.token); return s?.apr != null && s.d7StockUsd != null ? `<span title="${usd0(s.d7StockUsd)} of stock-side fees over ${S.stockfees.days7 < 6.9 ? S.stockfees.days7.toFixed(1) + " days" : "7 days"}, annualised, over ${usd0(s.liquidityUsd)} of ${t.symbol} held in LONG pools">${pctLevel(s.apr, s.apr < 0.1 ? 1 : 0)}</span>` : `<span class="muted" title="${s ? "recomputing on the stock side next run" : ""}">—</span>`; } },
       { h: "Vault LP fees", f: (t) => { const s = FEES.get(t.token); return s?.lpVaults ? `$${compactUsd(s.lpAllUsd)} <span class="muted">${s.lpD1Usd ? "$" + compactUsd(s.lpD1Usd) + " 24h" : ""}${s.lpApr != null ? ` · ${pctLevel(s.lpApr, 0)} APR` : s.lpAgeDays != null && s.lpAgeDays < 1 ? " · APR after a day" : ""}${s.lpInRange != null ? ` · in range ${pctLevel(s.lpInRange, 0)} of the time` : ""}</span>` : `<span class="muted">—</span>`; } },
     ], R.tokens);
     /* COMMUNITY VAULTS. Each pair vault's share of its pool's fees over seven days,
@@ -5190,37 +5206,24 @@ function renderRwa() {
             <td class="r mono">${usd0(r.d7?.burned.usd)}</td>
             <td class="r mono up">${usd0(kept)}${r.lpFees7dUsd ? ` <span class="muted">incl. LP ${usd0(r.lpFees7dUsd)}</span>` : ""}</td>
             <td class="r mono">${usd0(r.holdings.usd)}</td>
-            <td class="r mono">${r.apr != null ? pctLevel(r.apr, 0) : "—"}</td></tr>`;
+            <td class="r mono">${r.apr == null ? "—" : (r.holdings?.usd ?? 0) < 10000 ? `<span class="muted" title="too small to annualise">—</span>` : pctLevel(r.apr, 0)}</td></tr>`;
         }).join("") + "</tbody>" : "";
       const cvn = $("#cvNote");
       if (cvn) cvn.innerHTML = CV.length ? `<p class="muted" style="margin:8px 0 0">A pair in community mode has a vault from LONG's LongFeeVaultFactory as its fee beneficiary. LONG's hook releases 95% of every fee collect to it, and the vault splits that by the mode its deployer chose, read from the factory: the launched token's fees to the pair's original fee receiver, burned, or locked in the vault; the stock's to the receiver or kept. Seven days of collects, each spread over the time since the pool's previous one. The vault's holdings are its locked tokens and stock at today's prices plus any LP position. ${S.stockfees.communityVaults.length} vaults deployed; those with fees this week shown.</p>` : "";
     }
     const SF = S.stockfees, fn = $("#stockFeeNote");
-    if (fn) fn.innerHTML = SF ? `<p class="muted" style="margin:8px 0 0">LP fees are what LONG's own liquidity has collected in every LONG pool on that stock, from the hook's own accounting: its running total per pool for all time ($${compact(SF.totals.allUsd)}), and its Collect events for the last 24 hours ($${compact(SF.totals.d1Usd)}), across ${SF.stocks.length} stocks. Each collect is spread over the time since that pool's previous one, so a pool that catches up on weeks of fees does not land them all in one day. Fee APR is seven days of those fees, annualised, over the value of the stock held in LONG pools on that stock. The stock side is counted in the stock; the other side (the launched token, AI or USDG) is valued at the pool's current price, so all-time figures are at today's prices. Fees earned by outside LPs are not included, and neither is LONG's own 1% fee on every swap's output, which goes to LONG rather than to liquidity (on AI/NVDA it runs larger than the LP fees: see the Liquidity tab).${SF.complete ? "" : ` Still reading: ${SF.poolsUnread.toLocaleString()} of ${SF.poolsTotal.toLocaleString()} pools.`} Vault LP fees are what a pair's community vault has earned from its LP position since the vault LP upgrade, collected plus unclaimed${(SF.vaultLp || []).length ? `; ${SF.vaultLp.map((v) => `${v.stockSymbol} vault ${v.pair || ""} $${compactUsd(v.feesAllUsd)}`).join(", ")}` : ""}.</p>` : "";
-    const nvAddr = Object.keys(R.daily || {})[0];
-    const daily = nvAddr ? (R.daily[nvAddr] || []) : [];
-    if (daily.length > 1) {
-      const sym = R.dailyTracked?.[nvAddr] || "NVDA";
-      lineChart($("#cStockDex"), daily.slice(-120), {
-        xKey: "t", yKey: "cum", zeroBase: true, area: true, color: "var(--series-3)", xFmt: dayFmt, fmt: (v) => nf(v, 0),
-        tip: (d) => `<div class="k">${dayFmt(d.t)}</div><div>${nf(d.cum, 0)} ${sym} in DEX liquidity</div><div class="k">${d.net >= 0 ? "+" : ""}${nf(d.net, 1)} that day</div>`,
-      });
-      const d7 = daily.at(-1).cum - (daily.find((d) => d.t >= daily.at(-1).t - 7 * 86400)?.cum ?? daily[0].cum);
-      $("#takeStockDex").innerHTML = takeEl(d7 >= 0 ? "pos" : "warn",
-        `<b>${nf(daily.at(-1).cum, 0)} ${sym}</b> sits in DEX liquidity today, <b>${d7 >= 0 ? "+" : ""}${nf(d7, 0)}</b> over the last 7 days.
-         Stock tokens enter the pools when traders buy AI-side tokens with them and when liquidity is seeded; they leave when
-         traders sell tokens for stock or liquidity is pulled. A rising line is stock being absorbed into the ecosystem.${R.dailyPartial?.[nvAddr] ? " <span class=\"warnline\">Replay still catching up; the series ends early.</span>" : ""}`);
-    } else { $("#cStockDex").innerHTML = pending; $("#takeStockDex").innerHTML = ""; }
+    const longFee = R.swapShare?.dune?.longUserUsd != null ? 0.01 * R.swapShare.dune.longUserUsd : null;
+    if (fn) fn.innerHTML = SF ? `<p class="muted" style="margin:8px 0 0">LP fees are what LONG's own liquidity has collected in every LONG pool on that stock, from the hook's own accounting: its running total per pool for all time ($${compact(SF.totals.allUsd)}), and its Collect events for the last 24 hours ($${compact(SF.totals.d1Usd)}), across ${SF.stocks.length} stocks. Each collect is spread over the time since that pool's previous one, so a pool that catches up on weeks of fees does not land them all in one day. Stock-side fee APR is seven days of the stock-side fees alone, annualised, over the value of the stock held in LONG pools on that stock, so both halves of the ratio are the same side. The stock side is counted in the stock; the other side (the launched token, AI or USDG) is valued at the pool's current price, so all-time figures are at today's prices. Fees earned by outside LPs are not included, and neither is LONG's own 1% fee on every swap's output, which goes to LONG's buyback contract rather than to liquidity. The LONG 1% fee column computes that one: 1% of each stock's user volume through LONG pools over the last ${win}${longFee != null ? `, $${compactUsd(longFee)} across every stock` : ""}; a computed figure from volume, not a reading of the fee transfers.${SF.complete ? "" : ` Still reading: ${SF.poolsUnread.toLocaleString()} of ${SF.poolsTotal.toLocaleString()} pools.`} Vault LP fees are what a pair's community vault has earned from its LP position since the vault LP upgrade, collected plus unclaimed${(SF.vaultLp || []).length ? `; ${SF.vaultLp.map((v) => `${v.stockSymbol} vault${v.pair ? ` ${v.pair}` : ""} $${compactUsd(v.feesAllUsd)}`).join(", ")}` : ""}.</p>` : "";
 
     /* ── trading share ──────────────────────────────────────────────────── */
     const ss = R.swapShare;
     if (ss && ss.stockSwaps > 0) {
-      const du = ss.dune;
+      const du = ss.dune, us = userSwaps(ss);
       $("#rwaSwaps").innerHTML = `<div class="tiles">
-        ${tile("Stock volume via LONG", du?.share != null ? pctLevel(du.share, 1) : ss.usdShare == null ? pctLevel(ss.share, 1) : pctLevel(ss.usdShare, 1),
-          du?.share != null ? `$${compact(du.longUsd)} of $${compact(du.denominatorUsd)} of stock trading, last ${win} · LONG's Dune definition: hook swaps + graduated pools, over every DEX venue plus Rialto ($${compact(du.rialtoUsd)})` : ss.usdShare == null ? `by count; dollar value pending prices` : `$${compact(ss.usdLong)} of $${compact(ss.usdAll)} of stock-leg notional, last ${win}`, "", "hero")}
-        ${tile("Stock swaps via LONG", pctLevel(ss.share, 1), `${ss.longSwaps.toLocaleString()} of ${ss.stockSwaps.toLocaleString()} swaps touching a stock token, by count`)}
-        ${tile(`Stock swaps, ${win}`, ss.stockSwaps.toLocaleString(), ss.chainSwaps ? `${pctLevel(ss.stockSwaps / ss.chainSwaps, 1)} of ${ss.chainSwaps.toLocaleString()} swaps on the chain` : "all venues")}
+        ${tile("Stock volume via LONG", du?.share != null ? pctLevel(du.share, 1) : ss.usdShare == null ? pctLevel(us.share, 1) : pctLevel(ss.usdShare, 1),
+          du?.share != null ? `$${compact(du.longUsd)} of $${compact(du.denominatorUsd)} of stock trading, last ${win} · LONG's Dune definition: hook swaps + graduated pools, ${duneScope(du)}` : ss.usdShare == null ? `by user-swap count; dollar value pending prices` : `$${compact(ss.usdLong)} of $${compact(ss.usdAll)} of stock-leg notional, last ${win}`, "", "hero")}
+        ${tile("User stock swaps via LONG", pctLevel(us.share, 1), `${us.long.toLocaleString()} of ${us.all.toLocaleString()} user swaps touching a stock token, by count, on Uniswap v4; LONG's ${us.buyback.toLocaleString()} buyback legs left out of both`)}
+        ${tile(`User stock swaps, ${win}`, us.all.toLocaleString(), ss.chainSwaps ? `${pctLevel(us.all / ss.chainSwaps, 1)} of ${ss.chainSwaps.toLocaleString()} swaps on the chain's v4 pool manager` : "v4 pool manager")}
         ${du ? tile("LONG user volume", `$${compact(du.longUserUsd)}`, `${du.hookSwaps.toLocaleString()} hook swaps, ${du.buybackSwaps.toLocaleString()} of them the protocol's own buyback legs (excluded here) · $${compact(du.graduatedUsd)} in ${du.graduatedSwaps} graduated-pool swaps`) : tile("Paired with AI", ss.longSwaps ? pctLevel(ss.aiPairedSwaps / ss.longSwaps, 0) : "—", `of LONG's stock swaps were in an AI pool (${ss.aiPairedSwaps.toLocaleString()})`)}
         ${tile("Elsewhere", (ss.stockSwaps - ss.longSwaps).toLocaleString(), `stock swaps in hookless or other-hook pools${ss.truncated ? " · window cut short by budget" : ""}${ss.catalogueComplete === false ? " · pool catalogue still filling" : ""}`)}
       </div>`;
@@ -5228,7 +5231,7 @@ function renderRwa() {
         { h: "Stock", f: (r) => `<b>${r.symbol}</b>` },
         { h: `Volume ${win}`, f: (r) => (r.usdAll ? `$${compact(r.usdAll)}` : `<span class="muted">unpriced</span>`) },
         { h: "Via LONG", f: (r) => (r.usdAll ? `$${compact(r.usdLong)}` : "—") },
-        { h: "Swaps", f: (r) => `${r.long.toLocaleString()} / ${r.all.toLocaleString()}` },
+        { h: "User swaps", f: (r) => `${Math.max(0, r.long - (r.buyback || 0)).toLocaleString()} / ${Math.max(0, r.all - (r.buyback || 0)).toLocaleString()}` },
         { h: "Share", attrs: () => ({ class: "bar-cell" }), f: (r) => { const s = r.usdAll ? r.usdLong / r.usdAll : r.share; return `<div class="fill" style="width:${Math.min(120, (s || 0) * 120)}px"></div><span>${pctLevel(s, 0)}</span>`; } },
       ], ss.perToken.slice(0, 12));
       const sh = hist.filter((h) => h.swapShare != null);
@@ -5236,7 +5239,7 @@ function renderRwa() {
       if (hourly.length > 1) {
         lineChart($("#cSwapShare"), hourly, {
           xKey: "t", yKey: "share", zeroBase: true, area: true, color: "var(--series-3)", xFmt: tsFmt, fmt: (v) => pctLevel(v, 0),
-          tip: (h) => `<div class="k">${tsFmt(h.t)} hour</div><div>${pctLevel(h.share, 1)} of stock trading via LONG</div><div class="k">$${compact(h.hookUsd)} of $${compact(h.usdAll + h.rialtoUsd)} · ${(h.longSwaps || 0).toLocaleString()} of ${(h.stockSwaps || 0).toLocaleString()} stock-pool swaps</div>`,
+          tip: (h) => `<div class="k">${tsFmt(h.t)} hour</div><div>${pctLevel(h.share, 1)} of stock trading via LONG</div><div class="k">$${compact(h.hookUsd)} of $${compact(h.usdAll + h.rialtoUsd + (h.otherUsd || 0))} · ${Math.max(0, (h.longSwaps || 0) - (h.buybackSwaps || 0)).toLocaleString()} of ${Math.max(0, (h.stockSwaps || 0) - (h.buybackSwaps || 0)).toLocaleString()} stock-pool swaps${h.buybackSwaps != null ? ", buyback legs left out" : ""}</div>`,
         });
       } else if (sh.length > 1) {
         lineChart($("#cSwapShare"), sh.slice(-24 * 14), {
@@ -5244,11 +5247,11 @@ function renderRwa() {
           tip: (h) => `<div class="k">${tsFmt(h.t)}</div><div>${pctLevel(h.swapShare, 1)} of stock swaps via LONG</div><div class="k">${(h.longSwaps || 0).toLocaleString()} of ${(h.stockSwaps || 0).toLocaleString()} in the ${win} window</div>`,
         });
       } else $("#cSwapShare").innerHTML = `<p class="muted" style="padding:12px 0">The share is sampled each slow-path run; a line appears once there are two.</p>`;
-      $("#readSwaps").innerHTML = takeEl(ss.share >= 0.5 ? "pos" : "neu",
-        `Over the last ${win}, <b>${pctLevel(ss.share, 1)}</b> of every swap on Robinhood Chain that touched a tokenized stock went through a
-         LONG pool${ss.longSwaps ? `, and <b>${pctLevel(ss.aiPairedSwaps / ss.longSwaps, 0)}</b> of those were AI pairs` : ""}. The rest traded in
-         pools without the hook, which pay LONG nothing. <span class="muted">Counted from every Swap the pool manager emitted in the census's
-         activity window, matched against every pool ever initialised with a stock token on either side; sampled each slow-path run and kept as a series.</span>`);
+      $("#readSwaps").innerHTML = takeEl(us.share >= 0.5 ? "pos" : "neu",
+        `Over the last ${win}, <b>${pctLevel(us.share, 1)}</b> of the user swaps on Robinhood Chain's v4 pool manager that touched a tokenized stock went through a
+         LONG pool. The rest traded in pools without the hook, which pay LONG nothing. <span class="muted">Counted from every Swap the pool manager emitted in the
+         window, matched against every pool ever initialised with a stock token on either side. LONG's buyback contract swaps its 1% fee through LONG pools;
+         those ${us.buyback.toLocaleString()} legs are not trades by anyone and are left out of both counts. The dollar share above follows LONG's Dune definition instead.</span>`);
     } else { $("#rwaSwaps").innerHTML = `<p class="muted">The pool catalogue is still being built; the trading share appears once it covers the stock tokens.</p>`; for (const id of ["#tSwapShare", "#cSwapShare", "#readSwaps"]) $(id).innerHTML = ""; }
   }
 
