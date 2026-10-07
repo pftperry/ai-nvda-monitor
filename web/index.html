@@ -478,7 +478,7 @@
 
     <div class="card">
       <h3>Hourly buy / sell volume, in AI</h3>
-      <p class="sub">Above the axis is AI bought (leaving the pool), below is AI sold.</p>
+      <p class="sub">Above the axis is AI bought (leaving the pool), below is AI sold. Pool-side amounts: on LONG pools the trader receives 1% less than the pool pays out (LONG's output fee).</p>
       <div class="legend">
         <span><i style="background:var(--buy)"></i>Bought</span>
         <span><i style="background:var(--sell)"></i>Sold</span>
@@ -500,8 +500,8 @@
     </div>
 
     <div class="card">
-      <h3>Biggest trades, last 24 hours</h3>
-      <p class="sub">Every swap of 1,000 AI or more in the flagship pools, largest first, with the pool's price before and after it. Impact is the price move that one swap caused, in dollars where the quote token is priced.</p>
+      <h3>Biggest trades</h3>
+      <p class="sub">Every trade of $25K or more, grouped by transaction and sized by the AI that left or entered the trader's wallet across every V2, V3 and v4 pool. Impact is the % move on the v4 pools it touched.</p>
       <div id="bigKpis"></div>
       <div class="scroll"><table id="tBig" class="rank"></table></div>
       <div id="bigNote"></div>
@@ -515,7 +515,7 @@
       <div id="ledgerNote"></div>
     </div>
     <div class="card">
-      <h3>Who is trading, last 24 hours</h3>
+      <h3>Who is trading</h3>
       <p class="sub">Every AI transfer grouped by transaction, so routers cancel out and the wallet left most negative is the seller. Concentration answers whether one holder is moving the price or a crowd is.</p>
       <div id="traderKpis"></div>
       <div class="scroll"><table id="tTraders" class="rank"></table></div>
@@ -523,7 +523,7 @@
     </div>
     <div class="card">
       <h3>Recent tape</h3>
-      <p class="sub">Most recent swaps across the indexed AI pools.</p>
+      <p class="sub">Most recent swaps across the indexed AI pools. Pool-side amounts: on LONG pools the trader receives 1% less than the pool pays out (LONG's output fee).</p>
       <div class="scroll"><table id="tTape"></table></div>
     </div>
   </section>

@@ -745,6 +745,18 @@ function setLiveLabel(text) {
   lbl.hidden = !text;
 }
 
+/* The header's AI/NVDA print is read from the last flagship swap in the live
+   window. A quiet flagship (no swap in that window) or an unreachable RPC would
+   leave it at a dash, so it falls back to the pool's last indexed hourly close
+   and says so on hover. */
+function paintIndexedNvdaPrice() {
+  const p = S.flow?.pools?.find((x) => (x.poolId || "").toLowerCase() === AI_NVDA_POOL.toLowerCase());
+  const close = p?.hourly?.length ? [...p.hourly].reverse().find((h) => h.close > 0) : null;
+  if (!close) return;
+  $("#hPrice").textContent = sig(close.close, 5);
+  $("#hPrice").title = `last indexed close, ${tsFmt(close.t)}`;
+}
+
 async function refreshLive() {
   try {
     const [bnHex, supplyHex] = await Promise.all([
@@ -772,7 +784,8 @@ async function refreshLive() {
       const sq = BigInt("0x" + nv.data.slice(2 + 128, 2 + 192));
       const x = Number(sq) / 2 ** 96;
       $("#hPrice").textContent = sig(x * x, 5);
-    }
+      $("#hPrice").title = "last AI/NVDA swap, read from the chain";
+    } else paintIndexedNvdaPrice();
     if (usd) {
       const l = lastFor(usd.poolId);
       if (l) {
@@ -792,7 +805,9 @@ async function refreshLive() {
     $("#liveDot").classList.add("stale");
     $("#liveDot").title = `RPC unreachable: ${e.message}`;
     setLiveLabel(/cors|failed to fetch|networkerror/i.test(e.message || "") ? "rpc blocked" : "rpc down");
+    if ($("#hPrice").textContent === "—") paintIndexedNvdaPrice();
   }
+  renderStaleBanner();   // whether the price is live changes what the banner may claim
   // USD price is a convenience cross-check from a public aggregator.
   try {
     const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${AI_TOKEN}`);
@@ -895,7 +910,7 @@ function renderBigTrades() {
   }));
   $("#bigNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Showing the last ${bpick} of a tape indexed over 24 hours from ${tsFmt(B.since)}. ${B.sizedBy === "wallet"
       ? "Each trade is sized by the AI that actually left or entered the trader's wallet, across every Uniswap V2, V3 and v4 pool it routed through; a transaction counts only if it contains a swap. Sized by the v4 pools alone, as this panel used to be, a wallet that sold 5.4M AI in five sales on 29 Sep showed less than half of it."
-      : `Every one of the ${B.poolsScanned} AI pools in the census, ${B.legsSeen.toLocaleString()} swap legs grouped into trades by transaction.`} ${routed} of these were routed across more than one pool. AI is valued at the current AI price; impact is each touched v4 pool's own price before the transaction against after it, so it is blank for a trade that touched no v4 pool. Transaction hashes open on Robinhood's Blockscout explorer.</p>`;
+      : `Every one of the ${B.poolsScanned} AI pools in the census, ${B.legsSeen.toLocaleString()} swap legs grouped into trades by transaction.`} ${routed} of these were routed across more than one pool. AI is valued at the current AI price; impact is each touched v4 pool's own price before the transaction against after it, so it is blank for a trade that touched no v4 pool. Transaction hashes open on Robinhood's Blockscout explorer. On LONG pools a buy arrives 1% short of what the pool paid out (LONG's output fee), so buys here are net of that fee and sells, sized by the AI that left the wallet, are before it.</p>`;
 }
 
 
@@ -935,7 +950,7 @@ function renderWhaleLedger() {
       `across ${live.length.toLocaleString()} wallets holding over 1M AI \u00b7 ${d(sum("d7"))} over 7 days, ${d(sum("d1"))} over 24 hours`,
       sum("d30") < 0 ? "bad" : "")}
     ${tile("Largest realised profit", topReal ? "$" + compact(topReal.realizedUsd) : "—",
-      topReal ? `${nameOf(topReal.address) ? "@" + nameOf(topReal.address).handle : topReal.address.slice(0, 10)} \u00b7 bought around $${topReal.avgCost?.toFixed(4) ?? "?"}, now ${pctLevel(topReal.offPeak, 1)} off its high` : "no realised selling among the large wallets")}
+      topReal ? `${nameOf(topReal.address) ? "@" + nameOf(topReal.address).handle : topReal.address.slice(0, 10)} \u00b7 bought around $${topReal.avgCost?.toFixed(4) ?? "?"}${topReal.offPeak == null ? "" : topReal.offPeak === 0 ? ", now at its high" : `, now ${pctLevel(Math.abs(topReal.offPeak), 1)} below its high`}` : "no realised selling among the large wallets")}
     ${tile("Named wallets", `${L.filter((r) => nameOf(r.address)).length} of ${L.length}`,
       "verified handles from the FOMO trader leaderboard; the rest trade unlabelled")}
   </div>`;
@@ -971,8 +986,10 @@ function renderWhaleLedger() {
       <td class="r">${r.history ? spark(r.history.map((p) => p[1]), r.d30 < 0 ? "var(--down)" : "var(--up)") : ""}</td>
     </tr>`).join("") + "</tbody>";
 
+  /* Named from names.json (the FOMO leaderboard handle), not asserted to be the
+     protocol's wallet: LONG's protocol wallet is a different address. */
   const dev = L.find((r) => nameOf(r.address)?.handle === "Natan_benish");
-  $("#ledgerNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Top 50 by current position, of ${L.length.toLocaleString()} wallets the ledger follows.     Unrealised marks the position at ${px == null ? "the last price" : "$" + px.toFixed(4)}; realised is booked only on sales through a pool, so moving tokens between your own addresses never shows as a gain.     ${dev ? `The protocol\u2019s own wallet is in this table at ${compact(dev.ai)} AI, ${dev.offPeak === 0 ? "at its high" : pctLevel(dev.offPeak, 1) + " off its high"}, with ${dev.realizedUsd ? "$" + compact(dev.realizedUsd) + " realised" : "nothing realised"}.` : ""}</p>`;
+  $("#ledgerNote").innerHTML = `<p class="muted" style="margin:8px 0 0">Top 50 by current position, of ${L.length.toLocaleString()} wallets the ledger follows.     Unrealised marks the position at ${px == null ? "the last price" : "$" + px.toFixed(4)}; realised is booked only on sales through a pool, so moving tokens between your own addresses never shows as a gain.     ${dev ? `The wallet named @${nameOf(dev.address).handle} on FOMO is in this table at ${compact(dev.ai)} AI${dev.offPeak == null ? "" : dev.offPeak === 0 ? ", at its high" : ", " + pctLevel(Math.abs(dev.offPeak), 1) + " below its high"}, with ${dev.realizedUsd ? "$" + compact(dev.realizedUsd) + " realised" : "nothing realised"}.` : ""}</p>`;
 }
 
 /* Who is doing the selling, by how much the seller already held.
@@ -1031,23 +1048,29 @@ function renderTraders() {
      than it sold. Net is what tells you a wallet is leaving. */
   const netOut = T.topSellers.filter((r) => r.netAi < 0).sort((a, b) => a.netAi - b.netAi);
   const dumping = netOut.filter((r) => r.holderRank != null);
-  const wbtn = (k) => `<button aria-pressed="${pick === k}" data-traderwin="${k}">${k}</button>`;
+  /* The data's day key is "1d"; it is shown as "24h" so this switch reads the same
+     as the big-trades one above it. The keys themselves are left as published. */
+  const wlbl = (k) => (k === "1d" ? "24h" : k);
+  const span = wlbl(T.label || pick);
+  const wbtn = (k) => `<button aria-pressed="${pick === k}" data-traderwin="${k}">${wlbl(k)}</button>`;
   const switcher = wins ? `<div class="flowhead"><span class="muted">Window</span>
       <span class="seg">${Object.keys(wins).map(wbtn).join("")}</span></div>` : "";
   $("#traderKpis").innerHTML = switcher + `<div class="tiles four">
     ${tile("Busiest seller's share", pc(C.sellTop1), `of everything sold · top five ${pc(C.sellTop5)}, top ten ${pc(C.sellTop10)} · ${C.sellers} selling wallets${thin ? ", too few to read much into" : ""}`, !thin && C.sellTop1 > 0.35 ? "bad" : "", "hero")}
     ${tile("Busiest buyer's share", pc(C.buyTop1), `of everything bought · top five ${pc(C.buyTop5)} · ${C.buyers} buying wallets`)}
-    ${tile("Sold vs bought", `$${compact(T.totalSoldUsd)} / $${compact(T.totalBoughtUsd)}`, `${T.tradesAttributed.toLocaleString()} trades attributed from ${T.transfersSeen.toLocaleString()} transfers`)}
-    ${tile("Top-25 holders selling", dumping.length, dumping.length ? dumping.map((r) => `#${r.holderRank} cut ${pctLevel(r.sharePctOfBalance, 0)} of its stack`).join(" · ") : "no ranked holder ended the day net down", dumping.length ? "bad" : "")}
+    ${tile("Sold vs bought", `$${compact(T.totalSoldUsd)} / $${compact(T.totalBoughtUsd)}`, T.txInWindow != null
+      ? `${T.tradesAttributed.toLocaleString()} trades attributed from ${T.txInWindow.toLocaleString()} transactions in the last ${span}`
+      : `${T.tradesAttributed.toLocaleString()} trades attributed in the last ${span}`)}
+    ${tile("Top-25 holders selling", dumping.length, dumping.length ? dumping.map((r) => `#${r.holderRank} cut ${pctLevel(r.sharePctOfBalance, 0)} of its stack`).join(" · ") : `no ranked holder ended the last ${span} net down`, dumping.length ? "bad" : "")}
   </div>`;
   const addr = (r) => `${addrCell(r.address)}${r.holderRank ? ` <span class="badge tier venue">holder #${r.holderRank}</span>` : ""}`;
   const rows = [...T.topSellers].sort((a, b) => b.soldAi - a.soldAi).slice(0, 15);
-  host.innerHTML = `<thead><tr><th class="r">#</th><th>Wallet</th><th class="r">Sold</th><th class="r">Bought</th><th class="r" title="bought minus sold: negative means the wallet left with less AI than it started">Net</th><th class="r">Trades</th><th class="r">Of its stack</th></tr></thead><tbody>` +
+  host.innerHTML = `<thead><tr><th class="r">#</th><th>Wallet</th><th class="r">Sold</th><th class="r">Bought</th><th class="r" title="bought minus sold, in dollars">Net</th><th class="r">Trades</th><th class="r">Of its stack</th></tr></thead><tbody>` +
     rows.map((r, i) => `<tr>
       <td class="r muted mono">${i + 1}</td><td>${addr(r)}</td>
       <td class="r mono down">$${compact(r.soldUsd)}</td>
       <td class="r mono up">${r.boughtUsd ? "$" + compact(r.boughtUsd) : "—"}</td>
-      <td class="r mono ${r.netAi < 0 ? "down" : "up"}"><b>${r.netAi < 0 ? "−" : "+"}${compact(Math.abs(r.netAi) * T.aiUsd)}</b></td>
+      <td class="r mono ${r.netAi < 0 ? "down" : "up"}"><b>${r.netAi < 0 ? "−" : "+"}$${compact(Math.abs(r.netAi) * T.aiUsd)}</b></td>
       <td class="r mono">${r.sellTx + r.buyTx}</td>
       <td class="r mono">${r.sharePctOfBalance == null ? "—" : pctLevel(r.sharePctOfBalance, 0)}</td>
     </tr>`).join("") + "</tbody>";
@@ -1112,11 +1135,12 @@ function renderFlow() {
   const first = rows[0], last = rows[rows.length - 1];
   const chg = first && last && first.close ? last.close / first.close - 1 : 0;
 
+  const span = !S.hours ? "all" : S.hours % 24 === 0 && S.hours > 24 ? `${S.hours / 24}d` : `${S.hours}h`;
   const tiles = [
-    { lbl: `Net flow (${S.hours ? S.hours + "h" : "all"})`, val: compact(aiBuy - aiSell), note: `AI · ${aiBuy - aiSell >= 0 ? "net bought" : "net sold"}`, cls: aiBuy - aiSell >= 0 ? "up" : "down" },
-    { lbl: "Flow imbalance", val: pctLevel(imb), note: `${compact(aiBuy)} bought / ${compact(aiSell)} sold`, cls: imb >= 0 ? "up" : "down" },
+    { lbl: `Net flow (${span})`, val: compact(aiBuy - aiSell), note: `AI · ${aiBuy - aiSell >= 0 ? "net bought" : "net sold"}`, cls: aiBuy - aiSell >= 0 ? "up" : "down" },
+    { lbl: "Flow imbalance", val: pct(imb), note: `${compact(aiBuy)} bought / ${compact(aiSell)} sold`, cls: imb >= 0 ? "up" : "down" },
     { lbl: "Swaps", val: `${(buys + sells).toLocaleString()}`, note: `${buys.toLocaleString()} buy · ${sells.toLocaleString()} sell · pool events, not people` },
-    { lbl: `Price change (${S.hours ? S.hours + "h" : "all"})`,
+    { lbl: `Price change (${span})`,
       val: Math.abs(chg) > 10 ? `${(1 + chg).toFixed(1)}×` : pct(chg, 2),
       note: `${q} per AI`, cls: chg >= 0 ? "up" : "down" },
   ];
@@ -1145,27 +1169,24 @@ function renderFlow() {
     tip: (r) => `<div class="k">${tsFmt(r.t)}</div><div>${sig(r.close, 6)} ${q} per AI</div>`,
   });
 
-  /* Swaps, not people: a v4 Swap's sender is the router, so the per-address
-     columns this table used to carry counted routers and are gone. Wallet-level
-     activity lives on the holders replay, netted per transaction. */
-  table($("#tRollup"), [
-    { h: "Window", f: (r) => `last ${r.hours} complete hour${r.hours === 1 ? "" : "s"}` },
-    { h: "Buy swaps", f: (r) => r.buys.toLocaleString() },
-    { h: "Sell swaps", f: (r) => r.sells.toLocaleString() },
-    { h: "AI bought", f: (r) => compact(r.aiBuy) },
-    { h: "AI sold", f: (r) => compact(r.aiSell) },
-    { h: "Net AI", f: (r) => `<span class="${r.netAI >= 0 ? "up" : "down"}">${compact(r.netAI)}</span>` },
-    { h: "Imbalance", f: (r) => `<span class="${r.imbalance >= 0 ? "up" : "down"}">${pct(r.imbalance)}</span>` },
-    { h: "Price Δ", f: (r) => `<span class="${r.priceChange >= 0 ? "up" : "down"}">${r.priceChange.toFixed(2)}%</span>` },
-  ], p.rollups);
-
   renderBigTrades();
   renderWhaleLedger();
   renderTraders();
   const names = S.tape?.pools || [];   // the tape is optional; a missing file must not blank the tab
+  /* Two pools can share a pair (there are two live AI/USDG venues), so a repeated
+     symbol gets the same pool-id stub the picker uses, with the fee tier on hover.
+     The tape's pool index is the flow file's, checked by symbol before it is used. */
+  const symN = {};
+  for (const n of names) symN[n] = (symN[n] || 0) + 1;
+  const tapePool = (i) => {
+    const sym = names[i] || "?", fp = S.flow?.pools?.[i];
+    if (symN[sym] < 2 || !fp || fp.pairSymbol !== sym) return `AI / ${sym}`;
+    const fee = fp.dynamicFee ? "dynamic fee" : `${(fp.fee / 10000).toFixed(2)}% fee`;
+    return `AI / ${sym} <span class="muted mono" title="${fee} · ${fp.poolId}">${fp.poolId.slice(0, 8)}…</span>`;
+  };
   table($("#tTape"), [
     { h: "Time", f: (r) => tsFmt(r.t) },
-    { h: "Pool", f: (r) => `AI / ${names[r.pool] || "?"}` },
+    { h: "Pool", f: (r) => tapePool(r.pool) },
     { h: "Side", f: (r) => `<span class="${r.buy ? "up" : "down"}">${r.buy ? "BUY" : "SELL"}</span>` },
     { h: "AI", f: (r) => compact(r.ai) },
     { h: "Quote", f: (r) => compact(r.pair) },
@@ -2067,14 +2088,12 @@ const fmtAge = (mins) => (mins == null ? "—"
 /**
  * How stale the indexed layer is, said out loud.
  *
- * This was a footnote at the bottom of the page, which was defensible when the
- * refresh was believed to be every five minutes. It is not: GitHub throttles the
- * schedule to roughly one run every four hours, and measured on the deployed site
- * the indexed data was 4.8 hours behind the chain. Live price and live flow come
- * straight from the browser's own RPC calls and are current; every LEVEL below
- * them -- fee run-rate, leakage, cross-routing, the rating built on all three -- is
- * as old as the last successful index. Someone deciding anything off those levels
- * has to know that without hunting for it.
+ * The indexer runs every fifteen to twenty minutes through a relay, with a deploy
+ * watchdog behind it, so an hour behind means at least a couple of runs have been
+ * missed and three hours means the chain of refreshes has stopped. The banner says
+ * when the last refresh actually landed rather than promising when the next one will.
+ * Price and market cap are only called current when the browser's own RPC read is
+ * working; with the RPC down they are the last index run's, like everything else.
  */
 function renderStaleBanner() {
   const host = $("#staleBanner");
@@ -2083,13 +2102,21 @@ function renderStaleBanner() {
   const lagMin = headBlock
     ? Math.round((headBlock - S.meta.headBlock) * SEC_PER_BLOCK / 60)
     : Math.round((Date.now() / 1000 - (S.meta.updatedAt || 0)) / 60);
-  if (!isFinite(lagMin) || lagMin < 45) { host.hidden = true; return; }
+  if (!isFinite(lagMin) || lagMin < 60) { host.hidden = true; return; }
   host.hidden = false;
   host.className = lagMin >= 180 ? "bad" : "";
-  host.innerHTML = `The indexed history behind every level on this page is <b>${fmtAge(lagMin)} old</b>.
-    Price, market cap and the live flow strip are read from the chain directly and are current; the fee
-    run-rate, leakage, cross-routing and the rating built on them are not. Refreshes normally land every few
-    minutes, so a gap this long means the refresh chain has stalled; it restarts itself within a few hours.`;
+  const rpcDown = $("#liveDot").classList.contains("stale");
+  let livePrice = false;
+  try { livePrice = !rpcDown && marketState().source.startsWith("live"); } catch { /* artifacts not loaded yet */ }
+  const landed = lagMin < 20 * 60 ? clockFmt(S.meta.updatedAt) : tsFmt(S.meta.updatedAt) + " CT";
+  host.innerHTML = `The indexed history behind every level on this page is <b>${fmtAge(lagMin)} old</b>; the
+    last refresh landed at ${landed}. ${livePrice
+      ? "Price, market cap and the live flow strip are read from the chain directly and are current."
+      : rpcDown
+        ? "The chain cannot be read from this browser right now, so price and market cap are also from the last index run."
+        : "Price and market cap are from the last index run until a live trade is read from the chain."}
+    The fee run-rate, leakage, cross-routing and the rating built on them, and the Tape panels (big trades,
+    traders, whale ledger), are indexed, not live.`;
 }
 
 function renderLiveStrip() {
@@ -6276,6 +6303,7 @@ function renderAll() {
   /* Also on first paint, from the artifact timestamp -- waiting for the live poll
      would leave the staleness unreported for thirty seconds, or forever if the RPC
      is blocked, which is exactly when it matters most. */
+  if ($("#hPrice").textContent === "—") paintIndexedNvdaPrice();   // until a live read replaces it
   renderStaleBanner();
   const m = S.meta;
   $("#footMeta").innerHTML = `
