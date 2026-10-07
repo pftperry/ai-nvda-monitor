@@ -5980,15 +5980,15 @@ function renderMethod() {
       its transfers into and out of the manager. <b>Trading share</b> counts every Swap on the chain in the last day
       whose pool holds a stock token and asks whether that pool carries the LONG hook. <b>LP size</b> values every
       resting position in AI's indexed venues at spot; the <b>protocol-owned</b> share is the part held by the hook
-      itself, and <b>compounding</b> is the hook's own liquidity additions by day (its fee fold-ins since 27 Jul; the
+      itself, and <b>compounding</b> is the hook's own liquidity additions by day (fee fold-ins from 27 Jul${(() => { const c = (S.depth?.compounding || []).filter((x) => x.addUsd > 0); return c.length ? `; the last was on ${dayFmt(c.at(-1).t)}, none since` : ""; })()}; the
       launch seed on 14 Jul is shown separately), valued at today's prices. <b>Cost to trade</b> walks the tick ladder
       from spot until a dollar amount is absorbed, per venue and across all venues at once (the single price at which
       the pools together take the whole order, which is what a router achieves). <b>Coverage</b> uses the stock tokens'
       own transfer event, which no other contract on the chain emits: a short window of it is scanned each slow-path run
       and unioned over the trailing day, so the universe is every stock token actually in use, listed on LONG or not.
       <b>The universe</b> is Robinhood's own listing registry: every token its stock factory announced, stablecoins
-      dropped by name, 204 of them. An earlier version classified tokens by bytecode and found 169, all of which are in
-      the registry, so that reading was a strict subset. <b>The venues</b> are every DEX on the chain, not one: the v4
+      dropped by name${S.rwa?.registry?.tokens ? `, ${S.rwa.registry.tokens} of them` : ""}. An earlier version classified tokens by bytecode and found a strict
+      subset of the registry. <b>The venues</b> are every DEX on the chain, not one: the v4
       PoolManager, a v2-style factory, a v3-style factory carrying thousands of stock pools, and Robinhood's own Rialto,
       which replaced its fill event in September and is read in both formats. A trade with no launchpad token is skipped
       when its transaction also holds a stock-by-launchpad trade, so one arbitrage route through two pools counts once.
@@ -6027,8 +6027,8 @@ function renderMethod() {
       <code>ModifyLiquidity</code> tape at each pool's last swap price; pools that graduated to v2/v3 through
       <code>Airlock.Migrate</code> hold their own tokens and are read by balance (one migration has ever happened, before AI
       launched, so this leg is currently nil). Until the stream reaches the head the v4 figure is labelled a floor.
-      <b>Why Dune's stock TVL reads higher</b> ($12.9M against this site's ~$10M on 14 Sep): Dune sums each pool's
-      cumulative numeraire swap deltas, which counts the stock a trader paid in but never subtracts the fee legs the hook
+      <b>Why a swap-delta sum reads higher than this replay:</b> summing each pool's
+      cumulative numeraire swap deltas which counts the stock a trader paid in but never subtracts the fee legs the hook
       hands out of the pool afterwards (the buyback contract's leg leaves for good) or liquidity that was later removed.
       Replaying the positions gives what the pools hold now; the swap-delta sum is an upper bound on it.
       <b>Since the chain went live</b> (the two histories on the RWA tab) covers every identified stock token from the
@@ -6057,17 +6057,11 @@ function renderMethod() {
       (the vaults publish no NAV on chain, so Dune prices them the same way). Pools quoting a vault share are catalogued
       like stock pools and bucketed apart in both swap streams, so no perps volume reaches any stock figure.</p>
 
-      <p><b style="color:var(--text-primary)">Cross-checks against LONG's own Dune dashboard</b> (@natan_benish2001, read 14 Sep 2026;
-      it identifies LONG pools from the factories' <code>LaunchCreated</code> events and follows pools that graduate to v2/v3,
-      prices with Chainlink, and counts Robinhood's Rialto venue in "all stock trading"). Dune: <b>16.4%</b> LONG share of all
-      tokenized-stock trading volume since 1 Jun, <b>37.0%</b> among launchpad-token pairs, <b>30.1%</b> of stock traders,
-      <b>$12.9M</b> of stock TVL in LONG pools, <b>$1.18B</b> cumulative LONG stock volume, and per stock: <b>15.6%</b> of all NVDA on
-      the chain held in LONG pools (13.5% in AI/NVDA alone), AMC 27.4%, HIMS 22.6%, MU 16.6%, AAPL 13.5%, MSTR 13.6%, SPCX 11.2%.
-      This site's two-hour window read 14–16% of stock volume by dollars the same night (since 14 Sep the window is a rolling
-      24 hours, hourly buckets from one cursor-resumed stream of the manager's Swap tape, the hook's swap event and Rialto's fill
-      event, read over the same blocks and committed together); its pool-manager inventory ($54M, every venue)
-      is the ceiling of which Dune's LONG-only figure is a part, and its replay of the 200 most active LONG stock pools ($8.8M) is a floor
-      under it. Where the two disagree, Dune's launch list is the more exact definition of "LONG".</p>
+      <p><b style="color:var(--text-primary)">Definitions.</b> What counts as a LONG pool follows LONG's own public Dune
+      definitions (the factories' <code>LaunchCreated</code> events, pools that graduate to v2/v3, Chainlink prices, Robinhood's
+      Rialto venue counted in all stock trading); every figure on this site is this site's own measurement. Stock-trading share
+      is a rolling 24 hours of hourly buckets from one cursor-resumed stream of the manager's Swap tape, the hook's swap event and
+      Rialto's fill event, read over the same blocks and committed together.</p>
 
       <p><b style="color:var(--text-primary)">Holders.</b> Every AI transfer since genesis is replayed into a balance per
       address and snapshotted every four hours; balances must sum to supply exactly before anything is published. On
@@ -6089,7 +6083,7 @@ function renderMethod() {
       Which wallets belong to the protocol is inferred from the forwards, not declared anywhere.</p>
 
       <p><b style="color:var(--text-primary)">Dollars.</b> Volume and fees are multiplied by the AI/USDG close of the hour
-      they happened in. NVDA’s dollar price is read from the stock token’s own busiest USDG pool each run (two or
+      they happened in, except on the Tape's largest-trades and traders panels, which value AI at the latest price. NVDA’s dollar price is read from the stock token’s own busiest USDG pool each run (two or
       three requests, no history scanned) and cross-checked against the price implied by AI in USDG over AI in NVDA;
       the page says when the two disagree. The vault is therefore stated in dollars and as a share of market cap, and
       AI’s beta to NVDA is measured on hourly returns rather than assumed.</p>
@@ -6136,20 +6130,21 @@ function renderMethod() {
       many of its inputs are actually ranked.</p>
 
       <p><b style="color:var(--text-primary)">Comparisons across time.</b> The indexed set grew from one pool to
-      eight, so any share-of-indexed-volume figure has a break in it: before 3 September fee capture reads 100%
+      ${m.poolCounts?.indexed ?? "dozens"}, so any share-of-indexed-volume figure has a break in it: before 3 September fee capture reads 100%
       and leakage 0%, not because the toll captured everything but because nothing else was being measured. Days
       without at least one venue of each kind are excluded from those comparisons, so a denominator change cannot
       masquerade as a record high or low.</p>
 
       <p><b style="color:var(--text-primary)">The effective fee rate is divided out, not assumed.</b> Swap logs
-      report about 7000 pips on the tolled pool, but dividing measured fee income by measured sell volume on the
-      hooked pools gives roughly 0.60% over the last fortnight. Across sixteen static pools the logged per-swap fee
-      exceeds the pool's own configured fee by up to 1000 pips, capped there, so part of what the log reports never
-      reaches the splitter. Anything derived from the rate — implied notional above all — therefore divides one
-      measured quantity by another.</p>
+      report 7000 pips on AI/NVDA, the pool's LP fee. What reaches AI's fee splitter is less: the hook earns only its share of
+      the liquidity (about 98% on AI/NVDA), releases 95% of each collect to the splitter (5% goes to LONG), and fees are counted
+      when collected, a few times a day. Dividing the splitter's measured AI income by measured sell volume on the hooked pools
+      gives ${b.effectiveFeeRate != null ? pctLevel(b.effectiveFeeRate, 2) : "the rate shown on the Supply tab"} over ${b.feeRateBasis ? "the window the burns card states" : "the recent window"}. None of this includes LONG's own 1% fee on each
+      swap's output, which goes to LONG and never reaches the splitter. Anything derived from the rate (implied notional above
+      all) therefore divides one measured quantity by another.</p>
 
-      <p><b style="color:var(--text-primary)">Dollars.</b> There is no USD oracle on this chain, so the
-      dollar price is the AI/USDG pool's own price: USDG is a dollar stablecoin, which makes that
+      <p><b style="color:var(--text-primary)">Dollars for AI.</b> There is no USD oracle for AI (stock tokens have Chainlink feeds, used above), so
+      AI's dollar price is the AI/USDG pool's own price: USDG is a dollar stablecoin, which makes that
       pool's ratio a dollar quote with nothing interpolated and no aggregator in the path. Two limits
       follow. It assumes USDG holds its peg, which is not verified here. And it only exists back to
       <b>3 September 2026</b>, when that pool opened — before then there is no on-chain dollar price
@@ -6178,7 +6173,10 @@ function renderMethod() {
     "Hook permissions": m.hookPermissions.join(", "),
     "Fee splitter": c.feeSplitter,
     "Community vault": c.communityVault,
-    "Platform fee recipient": c.platformFeeRecipient,
+    "AI's original fee receiver (20% of the splitter)": c.platformFeeRecipient,
+    "LONG buyback (1% swap fee)": "0x6f02324d20cc679d0e585290caa6b16bacbc0f77",
+    "LONG revenue wallet": "0x92d435c96e63c43e12d6d0ab28f6b0b04072f765",
+    "LONG protocol (5% of LP fees)": "0xedeaa06e2eb42a5c19ce27c6cffb36fd4fe1eda8",
     "AI/NVDA pool id": c.aiNvdaPool,
     "AI/USDG pool id": c.aiUsdgPool,
   }).map(([k, v]) => `<div>${k}</div><div><code>${v}</code></div>`).join("");
