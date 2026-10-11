@@ -607,7 +607,7 @@ function table(host, cols, rows) {
 /* ── data ───────────────────────────────────────────────────────────────── */
 const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, names: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json", "long500.json", "vault.json", "stockfees.json", "liquidity.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json", "long500.json", "vault.json", "stockfees.json", "liquidity.json", "baskets.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -4867,6 +4867,51 @@ function renderRwaKpis(R, D, pending) {
    swap, which is how a single-sided seed looks from outside: the AI it holds matches
    the AI swappers paid in. A pool that was stocked with AI on both sides from the
    start has no seed in that sense, and giving it one would be invented. */
+/* LongX baskets: which LongX vaults are baskets, what they hold at spot, the pools
+   and LONG launches quoted in them, and whether any pairs with AI. The launch chart
+   joins the census's daily launch count (every LONG pool) to the baskets task's
+   count of LONG pools paired with AI, one bar per day on one axis. */
+function renderBaskets() {
+  const B = S.baskets, host = $("#bkTiles");
+  if (!host) return;
+  if (!B?.baskets) { host.innerHTML = `<p class="muted">The basket watch builds on the next index run.</p>`; for (const id of ["#tBk", "#cBkLaunch", "#readBk"]) $(id).innerHTML = ""; return; }
+  const rows = B.baskets, live = rows.filter((r) => (r.valueUsd || 0) >= 1000);
+  const value = rows.reduce((s, r) => s + (r.valueUsd || 0), 0);
+  const launches = rows.reduce((s, r) => s + r.longPools, 0), aiPools = rows.reduce((s, r) => s + r.aiPools.length, 0);
+  const vol = rows.reduce((s, r) => s + (r.volume24hUsd || 0), 0), longVol = rows.reduce((s, r) => s + (r.longVolume24hUsd || 0), 0);
+  const L7 = B.launches7d || { ai: 0, baskets: 0 };
+  host.innerHTML = `<div class="tiles four">
+    ${tile("Held in baskets", `$${compact(value)}`, `${live.length} live basket${live.length === 1 ? "" : "s"} of ${rows.length} found${live[0] ? ` · largest ${live[0].symbol}, $${compact(live[0].valueUsd)}` : ""} · shares at spot`, "", "hero")}
+    ${tile("LONG launches quoted in a basket", launches.toLocaleString(), `${L7.baskets.toLocaleString()} in the last 7 days, against ${L7.ai.toLocaleString()} quoted in AI`)}
+    ${tile("Traded in basket pools, last day", `$${compact(vol)}`, `$${compact(longVol)} of it in LONG launches · basket side at today's share price`)}
+    ${tile("Basket pools paired with AI", aiPools.toLocaleString(), aiPools ? "counted in the flywheel above" : "none yet: no basket is absorbing AI", aiPools ? "" : "")}
+  </div>`;
+  const census = new Map((S.launchpad?.launchesByDay || []).map((d) => [d.t, d.launched]));
+  const days = (B.launchesByDay || []).filter((d) => census.has(d.t)).map((d) => ({ t: d.t, all: census.get(d.t), ai: Math.min(d.ai, census.get(d.t)), b: Object.values(d.baskets || {}).reduce((s, n) => s + n, 0), per: d.baskets }));
+  if (days.length >= 2) stackedBars($("#cBkLaunch"), days, {
+    xKey: "t", totalKey: "all", partKey: "ai", totalColor: "var(--mid)", partColor: "var(--series-1)", fmt: (v) => compact(v, 0), xFmt: dayFmt,
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${r.all.toLocaleString()} LONG launches</div><div>${r.ai.toLocaleString()} quoted in AI (${pctLevel(r.all ? r.ai / r.all : null, 0)})</div><div class="k">${r.b.toLocaleString()} quoted in a basket${r.b ? ": " + Object.entries(r.per).filter(([, n]) => n).map(([s, n]) => `${s} ${n}`).join(", ") : ""}</div>`,
+  });
+  else $("#cBkLaunch").innerHTML = `<p class="muted" style="padding:12px 0">Fills in once the launchpad census and the basket scan share two complete days.</p>`;
+  table($("#tBk"), [
+    { h: "Basket", f: (r) => `<b>${r.symbol}</b>${r.name ? ` <span class="muted">${r.name}</span>` : ""}` },
+    { h: "Value", f: (r) => (r.valueUsd != null ? `$${compact(r.valueUsd)}` : `<span class="muted">—</span>`) },
+    { h: "Price", f: (r) => (r.priceUsd != null ? `$${r.priceUsd.toFixed(3)}` : `<span class="muted">—</span>`) },
+    { h: "To Lighter", f: (r) => `$${compact(r.depositedUsd)}` },
+    { h: "Minted 24h", f: (r) => nf(r.mint24h, 0) },
+    { h: "LONG launches", f: (r) => `${r.longPools.toLocaleString()}${r.launches7d && r.launches7d !== r.longPools ? ` <span class="muted">${r.launches7d} in 7d</span>` : ""}` },
+    { h: "Swaps, last day", f: (r) => r.swaps24h.toLocaleString() },
+    { h: "AI pool", f: (r) => (r.aiPools.length ? `<b>${r.aiPools.length}</b>` : `<span class="muted">none</span>`) },
+  ], rows);
+  const last = days.at(-1), first = days.find((d) => d.all > 0);
+  const top = live[0];
+  $("#readBk").innerHTML = takeEl(aiPools ? "neu" : "warn",
+    `${top ? `<b>${top.symbol}</b> holds <b>$${compact(top.valueUsd)}</b> at spot and has <b>${top.longPools.toLocaleString()}</b> LONG launches quoted in it. ` : "No live basket yet. "}
+     ${aiPools ? `${aiPools} basket pool${aiPools === 1 ? "" : "s"} pair${aiPools === 1 ? "s" : ""} with AI, so buying the basket there pays in AI.` : "No basket pairs with AI, so baskets absorb no AI today, and every launch quoted in a basket is buy demand that goes to the basket rather than to AI."}
+     ${last && first && first !== last ? `Launches quoted in AI were ${pctLevel(first.ai / first.all, 0)} of all LONG launches on ${dayFmt(first.t)} and ${pctLevel(last.all ? last.ai / last.all : null, 0)} on ${dayFmt(last.t)}.` : ""}
+     <span class="muted">Baskets are LongX vaults whose name says basket, nexus or index; a new one raises an alert on the index run that first sees it.</span>`);
+}
+
 function renderFlywheel() {
   const F = S.flywheel, host = $("#tFly");
   if (!host) return;
@@ -5285,6 +5330,7 @@ function renderRwa() {
   try { renderSince(R, pending); } catch (e) { console.error("renderSince", e); }
   try { renderPerps(R, pending); } catch (e) { console.error("renderPerps", e); }
   try { renderFlywheel(); } catch (e) { console.error("renderFlywheel", e); }
+  try { renderBaskets(); } catch (e) { console.error("renderBaskets", e); }
   try { renderFlywheelEngine(); } catch (e) { console.error("renderFlywheelEngine", e); }
 
   /* ── by stock, community vaults, trading share ───────────────────────────

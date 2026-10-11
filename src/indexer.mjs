@@ -26,6 +26,7 @@ import { indexBigTrades, resizeBigTrades } from "./tasks/bigtrades.mjs";
 import { indexTraders } from "./tasks/traders.mjs";
 import { classifyAccounts, CONTRACT } from "./tasks/accounts.mjs";
 import { indexFlywheel } from "./tasks/flywheel.mjs";
+import { indexBaskets } from "./tasks/baskets.mjs";
 import { indexLong500 } from "./tasks/long500.mjs";
 import { indexVaultWatch, lpUnitsByToken } from "./tasks/vaultwatch.mjs";
 import { indexStockFees } from "./tasks/stockfees.mjs";
@@ -666,13 +667,35 @@ if (!flag("no-holders") && (store.get("holders") || fs.existsSync("seed/holders-
    ids, resumed from a cursor, and the point of it is to watch a sink fill or drain
    day by day. The vault list comes from the perps block, which only refreshes on
    heavier runs; vault tokens do not appear often enough for that to matter. */
+/* LongX baskets: which LongX vaults are baskets, every pool on either side of one,
+   its swaps per day, and LONG launches per day quoted in a basket against those
+   quoted in AI. Every run and cheap (a few address-filtered scans resumed from
+   cursors); it also hands the flywheel any AI/basket pool the census has not met. */
+let basketAiPools = [];
+if (!flag("no-baskets")) {
+  step("Watching LongX baskets");
+  try {
+    const out = await indexBaskets(latest, tm, {
+      state: store.get("baskets"),
+      vaults: readData("rwa.json")?.perps?.vaults || [],
+      deadline: Date.now() + opt("baskets-budget", deep ? 300 : 90) * 1000,
+    });
+    store.set("baskets", out.state);
+    writeData("baskets.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact });
+    basketAiPools = out.artifact.aiPairPools;
+  } catch (e) {
+    softFail("baskets", e, "the previous baskets.json stays in place");
+    basketAiPools = readData("baskets.json")?.aiPairPools || [];
+  }
+}
+
 if (!flag("no-flywheel")) {
   step("Measuring the LongX flywheel");
   try {
     const vaults = readData("rwa.json")?.perps?.vaults || [];
     /* both lists: pools.json is the full census, `all` is this run's selection and can
        carry a pool the last census predates; the task de-duplicates by id */
-    const censusPools = [...(readData("pools.json")?.pools || []), ...all];
+    const censusPools = [...(readData("pools.json")?.pools || []), ...all, ...basketAiPools];
     const H = readData("holders.json");
     const out = await indexFlywheel(latest, tm, {
       state: store.get("flywheel"),
