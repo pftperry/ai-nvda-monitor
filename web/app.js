@@ -4906,13 +4906,44 @@ function renderBaskets() {
     { h: "AI pool", f: (r) => (r.aiPools.length ? `<b>${r.aiPools.length}</b>` : `<span class="muted">none</span>`) },
   ], rows);
   const last = days.at(-1), prior = days.slice(-8, -1).filter((d) => d.ai || d.b);
+  const aiLegs = (B.lighter?.accounts || []).reduce((t, x) => t + (x.aiLeg?.size || 0), 0);
   const avg = (k) => prior.length ? prior.reduce((s, d) => s + d[k], 0) / prior.length : null;
   const top = live[0];
   $("#readBk").innerHTML = takeEl(aiPools ? "neu" : "warn",
     `${top ? `<b>${top.symbol}</b> holds <b>$${compact(top.valueUsd)}</b> at spot and has <b>${top.longPools.toLocaleString()}</b> LONG launches quoted in it. ` : "No live basket yet. "}
-     ${aiPools ? `${aiPools} basket pool${aiPools === 1 ? "" : "s"} pair${aiPools === 1 ? "s" : ""} with AI, so buying the basket there pays in AI.` : "No basket pairs with AI, so baskets absorb no AI today, and every launch quoted in a basket is buy demand that goes to the basket rather than to AI."}
+     ${aiPools ? `${aiPools} basket pool${aiPools === 1 ? "" : "s"} pair${aiPools === 1 ? "s" : ""} with AI, so buying the basket there pays in AI.` : `No basket pairs with AI, so baskets absorb no AI on this chain, and every launch quoted in a basket is buy demand that goes to the basket rather than to AI.${aiLegs ? ` Through Lighter, baskets hold <b>${compact(aiLegs)} AI</b> long as a perp, price exposure rather than tokens bought here.` : ""}`}
      ${last ? `On ${dayFmt(last.t)}, ordinary wallets launched <b>${last.ai}</b> tokens quoted in AI and <b>${last.b}</b> quoted in a basket${avg("ai") != null ? `, against an average of ${avg("ai").toFixed(0)} in AI and ${avg("b").toFixed(0)} in baskets over the week before` : ""}.` : ""}
      <span class="muted">Baskets are LongX vaults whose name says basket, nexus or index; a new one raises an alert on the index run that first sees it.</span>`);
+}
+
+/* Inside each live basket: its legs on Lighter, its NAV against its pool price,
+   and its AI leg against Lighter's whole AI perp market. */
+function renderBasketLegs() {
+  const host = $("#bkLegs");
+  if (!host) return;
+  const L = S.baskets?.lighter, M = L?.aiMarket;
+  const accts = (L?.accounts || []).filter((a) => (a.equityUsd || 0) >= 1000 && a.legs.length);
+  if (!accts.length) { host.innerHTML = ""; return; }
+  const usd0 = (v) => (v == null ? "—" : `$${compact(v)}`);
+  const sgnUsd = (v) => (v == null ? "—" : `${v >= 0 ? "+" : "−"}$${compact(Math.abs(v))}`);
+  host.innerHTML = accts.map((a) => `
+    <h4 class="subhead">Inside ${a.symbol}, on Lighter</h4>
+    <div class="tiles four">
+      ${tile("Live NAV per share", a.liveNav != null ? `$${a.liveNav.toFixed(4)}` : "—", `account equity ${usd0(a.equityUsd)} over the share supply · last proven on chain $${a.provenNav != null ? a.provenNav.toFixed(4) : "—"}${a.provenAt ? ", " + dayFmt(a.provenAt) : ""}`, "", "hero")}
+      ${tile("Pool price against NAV", a.premium != null ? `${a.premium >= 0 ? "+" : "−"}${pctLevel(Math.abs(a.premium), 1)}` : "—", a.poolPrice != null ? `$${a.poolPrice.toFixed(4)} in its busiest pool · ${a.premium > 0 ? "a premium" : "a discount"} to the live NAV` : "no pool price", a.premium != null && Math.abs(a.premium) >= 0.02 ? "warn" : "")}
+      ${tile("Gross leverage", a.grossLeverage != null ? `${a.grossLeverage.toFixed(2)}x` : "—", `${usd0(a.grossUsd)} of positions on ${usd0(a.equityUsd)} of equity · net ${a.netUsd >= 0 ? "long" : "short"} ${usd0(Math.abs(a.netUsd))} · open PnL ${sgnUsd(a.upnlUsd)}`)}
+      ${tile("Its AI position", a.aiLeg ? `${compact(a.aiLeg.size)} AI` : "none", a.aiLeg ? `${usd0(a.aiLeg.valueUsd)}, ${pctLevel(a.aiLeg.weight, 1)} of the basket · ${a.aiLeg.shareOfOi != null ? pctLevel(a.aiLeg.shareOfOi, 0) + " of all AI perp open interest on Lighter" : ""}` : "no AI leg")}
+    </div>
+    <div class="scroll"><table id="tBkLegs-${a.symbol}"></table></div>`).join("") +
+    (M ? `<p class="muted" style="margin:8px 0 0">Lighter's AI perp: <b>${compact(M.openInterest)} AI</b> open interest (${usd0(M.openInterestUsd)}), ${usd0(M.volume24hUsd)} traded in 24h over ${(M.trades24h || 0).toLocaleString()} trades, mark $${M.mark?.toFixed(5)} against an index of $${M.index?.toFixed(5)}${M.fundingRate != null ? `, funding ${pctLevel(M.fundingRate, 4)} an hour` : ""}. A perp gives price exposure to AI without buying it on this chain.</p>` : "");
+  for (const a of accts) table($(`#tBkLegs-${a.symbol}`), [
+    { h: "Leg", f: (l) => `<b>${l.symbol}</b> <span class="badge tier ${l.side === "short" ? "na" : ""}">${l.side}</span>` },
+    { h: "Weight", attrs: () => ({ class: "bar-cell" }), f: (l) => `<div class="fill" style="width:${((l.weight || 0) * 110).toFixed(0)}px"></div><span>${pctLevel(l.weight, 1)}</span>` },
+    { h: "Size", f: (l) => nf(l.size, l.size >= 1000 ? 0 : 2) },
+    { h: "Value", f: (l) => usd0(l.valueUsd) },
+    { h: "Entry", f: (l) => (l.entry != null ? `$${l.entry < 1 ? l.entry.toFixed(5) : nf(l.entry, 2)}` : "—") },
+    { h: "Open PnL", f: (l) => `<span class="${(l.upnlUsd || 0) >= 0 ? "up" : "down"}">${sgnUsd(l.upnlUsd)}</span>` },
+  ], a.legs);
 }
 
 function renderFlywheel() {
@@ -5334,6 +5365,7 @@ function renderRwa() {
   try { renderPerps(R, pending); } catch (e) { console.error("renderPerps", e); }
   try { renderFlywheel(); } catch (e) { console.error("renderFlywheel", e); }
   try { renderBaskets(); } catch (e) { console.error("renderBaskets", e); }
+  try { renderBasketLegs(); } catch (e) { console.error("renderBasketLegs", e); }
   try { renderFlywheelEngine(); } catch (e) { console.error("renderFlywheelEngine", e); }
 
   /* ── by stock, community vaults, trading share ───────────────────────────

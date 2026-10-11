@@ -27,6 +27,7 @@ import { indexTraders } from "./tasks/traders.mjs";
 import { classifyAccounts, CONTRACT } from "./tasks/accounts.mjs";
 import { indexFlywheel } from "./tasks/flywheel.mjs";
 import { indexBaskets } from "./tasks/baskets.mjs";
+import { indexLighter } from "./tasks/lighter.mjs";
 import { indexLong500 } from "./tasks/long500.mjs";
 import { indexVaultWatch, lpUnitsByToken } from "./tasks/vaultwatch.mjs";
 import { indexStockFees } from "./tasks/stockfees.mjs";
@@ -681,6 +682,15 @@ if (!flag("no-baskets")) {
       deadline: Date.now() + opt("baskets-budget", deep ? 300 : 90) * 1000,
     });
     store.set("baskets", out.state);
+    /* the legs themselves, from Lighter's public API; optional, never blocks the rest */
+    try {
+      const L = await indexLighter(latest, tm, { baskets: out.artifact.baskets, state: store.get("lighter"), deadline: Date.now() + opt("lighter-budget", 60) * 1000 });
+      store.set("lighter", L.state);
+      out.artifact.lighter = L.artifact;
+    } catch (e) {
+      softFail("Lighter positions", e, "the baskets card keeps its last Lighter block");
+      out.artifact.lighter = readData("baskets.json")?.lighter ?? null;
+    }
     writeData("baskets.json", { updatedAt: Math.floor(Date.now() / 1000), ...out.artifact });
     basketAiPools = out.artifact.aiPairPools;
   } catch (e) {
