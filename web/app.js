@@ -4882,17 +4882,19 @@ function renderBaskets() {
   const L7 = B.launches7d || { ai: 0, baskets: 0 };
   host.innerHTML = `<div class="tiles four">
     ${tile("Held in baskets", `$${compact(value)}`, `${live.length} live basket${live.length === 1 ? "" : "s"} of ${rows.length} found${live[0] ? ` · largest ${live[0].symbol}, $${compact(live[0].valueUsd)}` : ""} · shares at spot`, "", "hero")}
-    ${tile("LONG launches quoted in a basket", launches.toLocaleString(), `${L7.baskets.toLocaleString()} in the last 7 days, against ${L7.ai.toLocaleString()} quoted in AI`)}
+    ${tile("LONG launches quoted in a basket", launches.toLocaleString(), `by ordinary wallets in the last 7 days: ${L7.baskets.toLocaleString()} quoted in a basket, ${L7.ai.toLocaleString()} quoted in AI`)}
     ${tile("Traded in basket pools, last day", `$${compact(vol)}`, `$${compact(longVol)} of it in LONG launches · basket side at today's share price`)}
     ${tile("Basket pools paired with AI", aiPools.toLocaleString(), aiPools ? "counted in the flywheel above" : "none yet: no basket is absorbing AI", aiPools ? "" : "")}
   </div>`;
-  const census = new Map((S.launchpad?.launchesByDay || []).map((d) => [d.t, d.launched]));
-  const days = (B.launchesByDay || []).filter((d) => census.has(d.t)).map((d) => ({ t: d.t, all: census.get(d.t), ai: Math.min(d.ai, census.get(d.t)), b: Object.values(d.baskets || {}).reduce((s, n) => s + n, 0), per: d.baskets }));
-  if (days.length >= 2) stackedBars($("#cBkLaunch"), days, {
-    xKey: "t", totalKey: "all", partKey: "ai", totalColor: "var(--mid)", partColor: "var(--series-1)", fmt: (v) => compact(v, 0), xFmt: dayFmt,
-    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${r.all.toLocaleString()} LONG launches</div><div>${r.ai.toLocaleString()} quoted in AI (${pctLevel(r.all ? r.ai / r.all : null, 0)})</div><div class="k">${r.b.toLocaleString()} quoted in a basket${r.b ? ": " + Object.entries(r.per).filter(([, n]) => n).map(([s, n]) => `${s} ${n}`).join(", ") : ""}</div>`,
+  /* ordinary wallets only; older artifacts without the scripted split fall back to the raw counts */
+  const days = (B.launchesByDay || []).map((d) => {
+    const b = Object.values(d.baskets || {}).reduce((s, n) => s + n, 0);
+    return { t: d.t, ai: d.ai - (d.aiBots || 0), b: b - (d.basketBots || 0), aiBots: d.aiBots || 0, all: d.all ?? null, allBots: d.allBots ?? null, per: d.baskets };
   });
-  else $("#cBkLaunch").innerHTML = `<p class="muted" style="padding:12px 0">Fills in once the launchpad census and the basket scan share two complete days.</p>`;
+  if (days.length >= 2) groupedBars($("#cBkLaunch"), days, { xKey: "t", weekends: true, keys: ["ai", "b"], colors: ["var(--series-1)", "var(--series-3)"], fmt: (v) => compact(v, 0),
+    tip: (r) => `<div class="k">${dayFmt(r.t)}</div><div>${r.ai.toLocaleString()} quoted in AI</div><div>${r.b.toLocaleString()} quoted in a basket${r.b ? ": " + Object.entries(r.per).filter(([, n]) => n).map(([s, n]) => `${s} ${n}`).join(", ") : ""}</div><div class="k">${r.aiBots ? `plus ${r.aiBots.toLocaleString()} quoted in AI by scripts · ` : ""}${r.all != null ? `${r.all.toLocaleString()} LONG launches in all, ${r.allBots.toLocaleString()} by scripts` : ""}</div>`,
+  });
+  else $("#cBkLaunch").innerHTML = `<p class="muted" style="padding:12px 0">Fills in after two complete days of launches.</p>`;
   table($("#tBk"), [
     { h: "Basket", f: (r) => `<b>${r.symbol}</b>${r.name ? ` <span class="muted">${r.name}</span>` : ""}` },
     { h: "Value", f: (r) => (r.valueUsd != null ? `$${compact(r.valueUsd)}` : `<span class="muted">—</span>`) },
@@ -4903,12 +4905,13 @@ function renderBaskets() {
     { h: "Swaps, last day", f: (r) => r.swaps24h.toLocaleString() },
     { h: "AI pool", f: (r) => (r.aiPools.length ? `<b>${r.aiPools.length}</b>` : `<span class="muted">none</span>`) },
   ], rows);
-  const last = days.at(-1), first = days.find((d) => d.all > 0);
+  const last = days.at(-1), prior = days.slice(-8, -1).filter((d) => d.ai || d.b);
+  const avg = (k) => prior.length ? prior.reduce((s, d) => s + d[k], 0) / prior.length : null;
   const top = live[0];
   $("#readBk").innerHTML = takeEl(aiPools ? "neu" : "warn",
     `${top ? `<b>${top.symbol}</b> holds <b>$${compact(top.valueUsd)}</b> at spot and has <b>${top.longPools.toLocaleString()}</b> LONG launches quoted in it. ` : "No live basket yet. "}
      ${aiPools ? `${aiPools} basket pool${aiPools === 1 ? "" : "s"} pair${aiPools === 1 ? "s" : ""} with AI, so buying the basket there pays in AI.` : "No basket pairs with AI, so baskets absorb no AI today, and every launch quoted in a basket is buy demand that goes to the basket rather than to AI."}
-     ${last && first && first !== last ? `Launches quoted in AI were ${pctLevel(first.ai / first.all, 0)} of all LONG launches on ${dayFmt(first.t)} and ${pctLevel(last.all ? last.ai / last.all : null, 0)} on ${dayFmt(last.t)}.` : ""}
+     ${last ? `On ${dayFmt(last.t)}, ordinary wallets launched <b>${last.ai}</b> tokens quoted in AI and <b>${last.b}</b> quoted in a basket${avg("ai") != null ? `, against an average of ${avg("ai").toFixed(0)} in AI and ${avg("b").toFixed(0)} in baskets over the week before` : ""}.` : ""}
      <span class="muted">Baskets are LongX vaults whose name says basket, nexus or index; a new one raises an alert on the index run that first sees it.</span>`);
 }
 
