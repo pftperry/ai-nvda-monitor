@@ -113,7 +113,7 @@ export async function indexLighter(latest, tm, opts = {}) {
   }
   S.series = S.series.filter((p) => p.t >= now - KEEP_DAYS * 86400);
 
-  log(`  lighter: AI perp OI ${aiMarket ? Math.round(aiMarket.openInterest).toLocaleString() + " AI ($" + Math.round(aiMarket.openInterestUsd).toLocaleString() + "), 24h $" + Math.round(aiMarket.volume24hUsd || 0).toLocaleString() : "n/a"}; ${rows.map((r) => `${r.symbol} equity $${Math.round(r.equityUsd).toLocaleString()}, ${r.legs.length} legs, ${r.grossLeverage == null ? "2014" : r.grossLeverage.toFixed(2) + "x"}, AI ${r.aiLeg ? Math.round(r.aiLeg.size).toLocaleString() : 0}`).join("; ") || "no basket accounts"}`);
+  log(`  lighter: AI perp OI ${aiMarket ? Math.round(aiMarket.openInterest).toLocaleString() + " AI ($" + Math.round(aiMarket.openInterestUsd).toLocaleString() + "), 24h $" + Math.round(aiMarket.volume24hUsd || 0).toLocaleString() : "n/a"}; ${rows.map((r) => `${r.symbol} equity $${Math.round(r.equityUsd).toLocaleString()}, ${r.legs.length} legs, ${r.grossLeverage == null ? "n/a" : r.grossLeverage.toFixed(2) + "x"}, AI ${r.aiLeg ? Math.round(r.aiLeg.size).toLocaleString() : 0}`).join("; ") || "no basket accounts"}`);
   return {
     state: S,
     artifact: {
