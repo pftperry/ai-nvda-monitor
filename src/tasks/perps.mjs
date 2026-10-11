@@ -146,10 +146,19 @@ export async function indexPerps(latest, tm, opts = {}) {
   const today = tm.dayBucket(latest), d1 = today - 86400;
   const price = (a) => opts.anchorUsd?.get(a) ?? null;
   const vaultRows = vaults.map((a, i) => {
-    const dec = meta.get(a)?.decimals ?? 18, supply = num(res[i * 2], dec), pendingUsdg = num(res[i * 2 + 1], 6), px = price(a);
+    const dec = meta.get(a)?.decimals ?? 18, supply = num(res[i * 2], dec), pendingUsdg = num(res[i * 2 + 1], 6);
+    /* A backstop on the spot price: a vault share is USDG placed on Lighter, so a
+       price ten times away from the USDG behind each share (net deposits plus USDG
+       still waiting in the vault) is a broken pool, not a trade. A 99.66%-fee AINX
+       pool once priced the share at $301.80 against $1.00 of USDG behind it. Shown
+       as unpriced rather than at book value, because book value is not NAV. */
+    const net = (B.senders[a] || 0) - (B.receivers[a] || 0) + (pendingUsdg || 0);
+    const book = supply > 0 && net >= 1000 ? net / supply : null;
+    let px = price(a), priceRejected = null;
+    if (px != null && book != null && (px > book * 10 || px < book / 10)) { priceRejected = px; px = null; }
     const day = (d) => Sh.days[d]?.[a] || { mint: 0, burn: 0 };
     const mine = poolState[a]?.pools || [];
-    return { token: a, symbol: clean(meta.get(a)?.symbol) || a.slice(0, 8), name: meta.get(a)?.name || "", decimals: dec, supply, priceUsd: px, valueUsd: px != null && supply != null ? supply * px : null,
+    return { token: a, symbol: clean(meta.get(a)?.symbol) || a.slice(0, 8), name: meta.get(a)?.name || "", decimals: dec, supply, priceUsd: px, priceRejected, bookUsd: book, valueUsd: px != null && supply != null ? supply * px : null,
       pendingUsdg, mint24h: day(d1).mint, burn24h: day(d1).burn, mintToday: day(today).mint, burnToday: day(today).burn,
       depositedUsd: B.senders[a] || 0, withdrawnUsd: B.receivers[a] || 0,
       pools: mine.length, longPools: mine.filter((p) => p.long).length, poolsPartial: !!poolState[a]?.partial };

@@ -127,20 +127,34 @@ export async function rankByActivity(latest, windowBlocks, opts = {}) {
  * trusting any venue's own claim about itself. An anchor with no USDG pool simply
  * goes unpriced, and the tokens anchored to it are skipped rather than guessed.
  */
+/* A pool charging more than this per swap cannot be arbitraged back to the market,
+   so its price says nothing. Measured on 11 Oct 2026: an AINX/USDG pool with a
+   99.66% fee priced AINX at $301.80 against $1.04 everywhere else, and on the runs
+   where its 76 swaps a day outnumbered the real pool's in the two-hour window it
+   became AINX's anchor and put $60M of phantom value on the LongX vaults. */
+const MAX_ANCHOR_FEE = 100_000;   // pips: 10%
+
 export function anchorPrices(usdgPools, rank, decimals) {
   const out = new Map([[USDG, 1]]);
-  const best = new Map();
+  const cands = new Map();
   for (const p of usdgPools) {
     const other = p.c0 === USDG ? p.c1 : p.c0;
     if (other === USDG) continue;
     const swaps = rank.counts.get(p.id) || 0;
     if (!swaps) continue;
-    if (!best.has(other) || best.get(other).swaps < swaps) best.set(other, { p, swaps });
+    (cands.get(other) || cands.set(other, []).get(other)).push({ p, swaps });
   }
-  for (const [token, { p }] of best) {
-    const l = rank.last.get(p.id);
-    if (!l) continue;
-    const sw = decodeSwap(l);
+  for (const [token, list] of cands) {
+    /* the busiest pool whose last swap paid a fee a market could trade through */
+    let p = null, sw = null;
+    for (const c of list.sort((a, b) => b.swaps - a.swaps)) {
+      const l = rank.last.get(c.p.id);
+      if (!l) continue;
+      const s = decodeSwap(l);
+      if (s.fee > MAX_ANCHOR_FEE) continue;
+      p = c.p; sw = s; break;
+    }
+    if (!p) continue;
     const tokenIsC0 = p.c0 === token;
     const dT = decimals?.get(token) ?? 18, dU = decimals?.get(USDG) ?? 6;
     const raw = priceFromSqrt(sw.sqrtPriceX96, tokenIsC0 ? dT : dU, tokenIsC0 ? dU : dT);
