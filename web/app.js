@@ -4954,6 +4954,36 @@ function renderBasketLegs() {
 
 /* Lighter's AI perp and the chain: the hedger's two legs, hour by hour, on one
    scale so the sizes compare, and who trades the perp. */
+/* The AI perp market in four readings, each with its last seven days. */
+function renderPerpIndicators() {
+  const host = $("#pfInd");
+  if (!host) return;
+  const I = S.perpflow?.indicators;
+  if (!I) { host.innerHTML = `<p class="muted">Builds on the next index run.</p>`; $("#readPfInd").innerHTML = ""; return; }
+  const sTile = (lbl, val, note, sp = "", cls = "", extra = "") =>
+    `<div class="ctile ${extra}">${sp}<div class="lbl">${lbl}</div><div class="val ${cls}">${val}</div><div class="note">${note}</div></div>`;
+  const F = I.funding, O = I.oi, T = I.taker, V = I.volume;
+  const ph = (r) => (r == null ? "\u2014" : `${r < 0 ? "\u2212" : ""}${(Math.abs(r) * 100).toFixed(4)}%`);
+  const yr = (r) => (r == null ? "\u2014" : pctLevel(r * 24 * 365, 0));
+  const sg = (v, unit = "") => (v == null ? "\u2014" : `${v >= 0 ? "+" : "\u2212"}${compact(Math.abs(v))}${unit}`);
+  const chg = (a, b) => (a != null && b ? a / b - 1 : null);
+  const pc = (x) => (x == null ? "—" : `${x >= 0 ? "+" : "−"}${pctLevel(Math.abs(x), 1)}`);
+  const oi24 = chg(O?.now, O?.ago24h), oi7 = chg(O?.now, O?.ago7d);
+  const net24 = T ? T.buy24h - T.sell24h : null, net7 = T ? T.buy7d - T.sell7d : null;
+  const buyShare = T && T.buy24h + T.sell24h > 0 ? T.buy24h / (T.buy24h + T.sell24h) : null;
+  const vRatio = V?.avgDaily7d ? V.usd24h / V.avgDaily7d : null;
+  host.innerHTML = `<div class="tiles four">
+    ${sTile("Funding, longs pay", F ? ph(F.now) + "/h" : "\u2014", F ? `${yr(F.now)} a year at this rate \u00b7 24h average ${ph(F.avg24h)}/h, 7 days ${ph(F.avg7d)}/h \u00b7 longs paid in ${F.longsPaidHours} of ${F.hours.length} hours${F.vsSpot != null ? ` \u00b7 perp ${F.vsSpot >= 0 ? "+" : "\u2212"}${pctLevel(Math.abs(F.vsSpot), 2)} against AI on this chain` : ""}` : "", spark(F?.hours.map((h) => h.r), "var(--sell)"), "", "hero")}
+    ${sTile("Open interest", O ? `${compact(O.now)} AI` : "\u2014", O ? `${O.nowUsd ? "$" + compact(O.nowUsd) + " \u00b7 " : ""}<span class="${(oi24 ?? 0) >= 0 ? "up" : "down"}">${pc(oi24)}</span> in 24h, <span class="${(oi7 ?? 0) >= 0 ? "up" : "down"}">${pc(oi7)}</span> in 7 days` : "", spark(O?.hours.map((h) => h.oi), "var(--series-3)"))}
+    ${sTile("Net taker flow, 24h", T ? sg(net24, " AI") : "\u2014", T ? `${buyShare == null ? "" : pctLevel(buyShare, 0) + " of aggressive volume was buying \u00b7 "}${sg(net7, " AI")} over 7 days` : "", spark(T?.hours.map((h) => h.net), (net24 ?? 0) >= 0 ? "var(--buy)" : "var(--sell)"), net24 != null && net24 < 0 ? "bad" : "")}
+    ${sTile("Volume, last 24h", V ? "$" + compact(V.usd24h) : "\u2014", V ? `${vRatio == null ? "" : pctLevel(vRatio, 0) + " of the 7-day daily average"} ($${compact(V.avgDaily7d || 0)}/day)` : "", spark(V?.days.map((d) => d.usd), "var(--series-1)"))}
+  </div>`;
+  const crowd = F?.avg24h != null && F?.avg7d != null ? (F.avg24h > F.avg7d * 1.5 ? "Longs are paying more than usual to stay long" : F.avg24h < F.avg7d * 0.5 ? "Longs are paying less than usual to stay long" : "Funding is near its weekly norm") : null;
+  $("#readPfInd").innerHTML = takeEl("neu",
+    `${crowd ? `${crowd}. ` : ""}Open interest is ${oi7 == null ? "\u2014" : (oi7 >= 0 ? "up " : "down ") + pctLevel(Math.abs(oi7), 0)} on the week, aggressive flow is ${net24 == null ? "\u2014" : net24 >= 0 ? "net buying" : "net selling"} over the last day, and volume is running at ${vRatio == null ? "\u2014" : pctLevel(vRatio, 0)} of its weekly average.
+     <span class="muted">Rising open interest with longs paying funding means new longs are being added; when that unwinds, the hedger above sells AI on this chain. Open interest history is rebuilt from each trade's published positions, walked back from Lighter's current figure.</span>`);
+}
+
 function renderPerpFlow() {
   const P = S.perpflow, host = $("#pfTiles");
   if (!host) return;
@@ -5411,6 +5441,7 @@ function renderRwa() {
   try { renderBaskets(); } catch (e) { console.error("renderBaskets", e); }
   try { renderBasketLegs(); } catch (e) { console.error("renderBasketLegs", e); }
   try { renderPerpFlow(); } catch (e) { console.error("renderPerpFlow", e); }
+  try { renderPerpIndicators(); } catch (e) { console.error("renderPerpIndicators", e); }
   try { renderFlywheelEngine(); } catch (e) { console.error("renderFlywheelEngine", e); }
 
   /* ── by stock, community vaults, trading share ───────────────────────────

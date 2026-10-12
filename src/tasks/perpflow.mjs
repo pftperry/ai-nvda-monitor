@@ -42,7 +42,11 @@ export async function indexPerpFlow(latest, tm, opts = {}) {
   const log = opts.log || console.log;
   const deadline = opts.deadline || Date.now() + 60_000;
   const now = Math.floor(Date.now() / 1000);
-  const S = opts.state?.v === 1 ? opts.state : { v: 1, lastTradeId: null, perp: {}, chain: { cursor: null, h: {} }, wallets: {}, snaps: [] };
+  /* v2 folds aggressor side and open-interest change into each hour; a v1 state
+     keeps its chain stream, wallets and signal log and re-reads the trades */
+  const S = opts.state?.v === 2 ? opts.state
+    : opts.state?.v === 1 ? { ...opts.state, v: 2, lastTradeId: null, perp: {} }
+    : { v: 2, lastTradeId: null, perp: {}, chain: { cursor: null, h: {} }, wallets: {}, snaps: [] };
   const baskets = new Map((opts.basketAccounts || []).map((a) => [String(a.account), a.symbol]));
 
   /* 1. Every AI perp trade since the last run, newest first, folded into hourly
@@ -69,8 +73,18 @@ export async function indexPerpFlow(latest, tm, opts = {}) {
   if (done) {
     for (const t of fresh) {
       const h = hourOf(Math.floor(Number(t.timestamp) / 1000)), size = n(t.size), px = n(t.price);
-      const H = (S.perp[h] ||= { vol: 0, usd: 0, n: 0, acct: {} });
+      const H = (S.perp[h] ||= { vol: 0, usd: 0, n: 0, acct: {}, tb: 0, ts: 0, doi: 0 });
       H.vol += size; H.usd += size * px; H.n++;
+      /* The aggressor: when the resting order was the ask, the taker bought. Each
+         side's signed position before the trade is published, so the change in open
+         interest is exact: half the change in the two sides' absolute positions. */
+      const takerBuys = !!t.is_maker_ask;
+      if (takerBuys) H.tb = (H.tb || 0) + size; else H.ts = (H.ts || 0) + size;
+      const tB = n(t.taker_position_size_before), mB = n(t.maker_position_size_before);
+      if (tB != null && mB != null) {
+        const tA = tB + (takerBuys ? size : -size), mA = mB + (takerBuys ? -size : size);
+        H.doi = (H.doi || 0) + (Math.abs(tA) - Math.abs(tB) + Math.abs(mA) - Math.abs(mB)) / 2;
+      }
       H.acct[t.bid_account_id] = (H.acct[t.bid_account_id] || 0) + size;
       H.acct[t.ask_account_id] = (H.acct[t.ask_account_id] || 0) - size;
       read++;
@@ -134,6 +148,49 @@ export async function indexPerpFlow(latest, tm, opts = {}) {
   const sum = (rs, k) => rs.reduce((s, r) => s + r[k], 0);
   const d1 = rows.filter((r) => r.t >= hourOf(now) - 24 * HOUR);
 
+  /* 5b. Four indicators for the perp itself: funding, open interest, aggressor
+         flow and volume. Funding and hourly candles come from Lighter; open interest
+         is walked back from today's figure through each hour's measured change. */
+  const M0 = opts.aiMarket || null;
+  const from7 = now - 7 * 86400;
+  const [fund, candles] = await Promise.all([
+    get(`fundings?market_id=${AI_MARKET}&resolution=1h&start_timestamp=${from7}&end_timestamp=${now}&count_back=200`).then((j) => j.fundings || []).catch(() => null),
+    get(`candles?market_id=${AI_MARKET}&resolution=1h&start_timestamp=${from7}&end_timestamp=${now}&count_back=200`).then((j) => j.c || []).catch(() => null),
+  ]);
+  /* rate is percent per hour; direction "long" means longs pay shorts */
+  const fh = (fund || []).filter((f) => f.timestamp >= from7).map((f) => ({ t: f.timestamp, r: (f.direction === "short" ? -1 : 1) * Number(f.rate) / 100 }));
+  const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const fundingNow = M0?.fundingRate ?? fh.at(-1)?.r ?? null;
+  const ind = {
+    funding: fh.length || fundingNow != null ? {
+      now: fundingNow, avg24h: avg(fh.filter((f) => f.t >= now - 86400).map((f) => f.r)), avg7d: avg(fh.map((f) => f.r)),
+      longsPaidHours: fh.filter((f) => f.r > 0).length, hours: fh,
+      premium: M0?.mark && M0?.index ? M0.mark / M0.index - 1 : null,
+      vsSpot: M0?.mark && opts.aiUsd ? M0.mark / opts.aiUsd - 1 : null,
+    } : null,
+  };
+  const oiNow = M0?.openInterest ?? null;
+  if (oiNow != null) {
+    const hs = Object.keys(S.perp).map(Number).sort((a, b) => a - b);
+    let after = 0;
+    const end = new Map();
+    for (let i = hs.length - 1; i >= 0; i--) { end.set(hs[i], oiNow - after); after += S.perp[hs[i]].doi || 0; }
+    const at = (t) => { let v = null; for (const h of hs) { if (h + HOUR <= t) v = end.get(h); else break; } return v ?? (oiNow - after); };   // before the first folded hour: today less every change since
+    const series = hs.filter((h) => h >= hourOf(from7)).map((h) => ({ t: h + HOUR, oi: Math.max(0, end.get(h)) }));
+    ind.oi = { now: oiNow, nowUsd: M0?.openInterestUsd ?? null, ago24h: at(now - 86400), ago7d: at(from7), hours: series };
+  }
+  const tk = (since) => Object.entries(S.perp).filter(([h]) => +h >= since).reduce((a, [, H]) => ({ b: a.b + (H.tb || 0), s: a.s + (H.ts || 0) }), { b: 0, s: 0 });
+  const t24 = tk(hourOf(now) - 23 * HOUR), t7 = tk(hourOf(from7));
+  ind.taker = { buy24h: t24.b, sell24h: t24.s, buy7d: t7.b, sell7d: t7.s,
+    hours: Object.entries(S.perp).filter(([h]) => +h >= hourOf(from7)).map(([h, H]) => ({ t: +h, net: (H.tb || 0) - (H.ts || 0) })).sort((a, b) => a.t - b.t) };
+  const cd = (candles || []).map((c) => ({ t: Math.floor(c.t / 1000), usd: Number(c.V) || 0, close: Number(c.c) || null }));
+  const days = {};
+  for (const c of cd) { const d = Math.floor(c.t / 86400) * 86400; days[d] = (days[d] || 0) + c.usd; }
+  const today = Math.floor(now / 86400) * 86400;
+  const full = Object.entries(days).map(([d, v]) => ({ t: +d, usd: v })).filter((d) => d.t < today).sort((a, b) => a.t - b.t).slice(-7);
+  ind.volume = { usd24h: cd.filter((c) => c.t >= now - 86400).reduce((a, c) => a + c.usd, 0), avgDaily7d: avg(full.map((d) => d.usd)), days: full,
+    hours: cd.map((c) => ({ t: c.t, usd: Math.round(c.usd) })) };
+
   /* 6. The signal log, one point an hour: everything a lead-lag test needs. */
   const M = opts.aiMarket || null;
   const lastSnap = S.snaps.at(-1);
@@ -151,7 +208,7 @@ export async function indexPerpFlow(latest, tm, opts = {}) {
       chain24h: sum(d1, "chain"), perp24h: sum(d1, "perp"), chain7d: sum(last7, "chain"), perp7d: sum(last7, "perp") },
     llp: { account: LLP_ACCOUNT, perpAi: llp?.ai ?? null, equityUsd: llp?.equityUsd ?? null },
     test7d: test(last7), testAll: test(rows),
-    traders, hours: rows.slice(-24 * 14), snaps: S.snaps,
+    traders, hours: rows.slice(-24 * 14), snaps: S.snaps, indicators: ind,
     method: "Every trade in Lighter's AI perp (market 45 on api.rh.lighter.xyz), folded into hourly nets per account: a buyer adds the size, a seller subtracts it. The hedger is account 21809, owned by wallet 0x446c...8862, which trades AI on this chain as well; its on-chain flow is every AI transfer into or out of that wallet per hour. A hedging hour is one where both legs are at least 3,000 AI and point opposite ways. Positions are read from Lighter each run, the hedger's on-chain balance from AI's balanceOf. The hourly signal log (spot, mark, index, funding, open interest and the positions) is kept so a lead-lag test can be run once there are weeks of it.",
   };
   log(`  perp flow: ${read} new AI perp trade(s); hedger perp ${hedger?.ai != null ? Math.round(hedger.ai).toLocaleString() : "?"} AI, on chain ${hedgerChainAi != null ? Math.round(hedgerChainAi).toLocaleString() : "?"} AI; LLP ${llp?.ai != null ? Math.round(llp.ai).toLocaleString() : "?"} AI; hedging hours 7d ${out.test7d.opposite}/${out.test7d.both}`);
