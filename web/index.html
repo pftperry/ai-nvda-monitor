@@ -574,6 +574,21 @@
       <div id="traderNote"></div>
     </div>
     <div class="card">
+      <h3>Lighter's AI perp and the chain</h3>
+      <div class="agenote" data-age="perpflow" hidden></div>
+      <p class="sub">A perp trade on Lighter moves no AI by itself. It reaches AI's pools through whoever takes the other side and hedges. One wallet does: the Lighter AI perp hedger buys AI on this chain when it sells perps, and sells AI here when it buys them back. Lighter's own liquidity pool takes the rest and does not trade on this chain.</p>
+      <div id="pfTiles"></div>
+      <h4 class="subhead">The hedger, hour by hour: AI on this chain</h4>
+      <p class="sub">Both charts share one scale; the few hours larger than it are cut at the edge, and hovering shows the full number.</p>
+      <div class="legend"><span><i style="background:var(--buy)"></i>AI into its wallet</span><span><i style="background:var(--sell)"></i>AI out of its wallet</span></div>
+      <div class="chart small" id="cPfChain"></div>
+      <h4 class="subhead">The same hours: its AI perp on Lighter</h4>
+      <div class="legend"><span><i style="background:var(--buy)"></i>Perp bought</span><span><i style="background:var(--sell)"></i>Perp sold</span></div>
+      <div class="chart small" id="cPfPerp"></div>
+      <div class="scroll"><table id="tPfTraders"></table></div>
+      <div id="readPf"></div>
+    </div>
+    <div class="card">
       <h3>Recent tape</h3>
       <p class="sub">Most recent swaps across the indexed AI pools. Pool-side amounts: on LONG pools the trader receives 1% less than the pool pays out (LONG's output fee).</p>
       <div class="scroll"><table id="tTape"></table></div>

@@ -28,6 +28,7 @@ import { classifyAccounts, CONTRACT } from "./tasks/accounts.mjs";
 import { indexFlywheel } from "./tasks/flywheel.mjs";
 import { indexBaskets } from "./tasks/baskets.mjs";
 import { indexLighter } from "./tasks/lighter.mjs";
+import { indexPerpFlow } from "./tasks/perpflow.mjs";
 import { indexLong500 } from "./tasks/long500.mjs";
 import { indexVaultWatch, lpUnitsByToken } from "./tasks/vaultwatch.mjs";
 import { indexStockFees } from "./tasks/stockfees.mjs";
@@ -687,6 +688,13 @@ if (!flag("no-baskets")) {
       const L = await indexLighter(latest, tm, { baskets: out.artifact.baskets, state: store.get("lighter"), deadline: Date.now() + opt("lighter-budget", 60) * 1000 });
       store.set("lighter", L.state);
       out.artifact.lighter = L.artifact;
+      /* the perp's other side and its footprint in AI's pools */
+      try {
+        const P = await indexPerpFlow(latest, tm, { state: store.get("perpflow"), aiMarket: L.artifact.aiMarket, aiUsd: readData("prices.json")?.aiUsd ?? null,
+          basketAccounts: L.artifact.accounts.map((a) => ({ account: a.account, symbol: a.symbol })), deadline: Date.now() + opt("perpflow-budget", 90) * 1000 });
+        store.set("perpflow", P.state);
+        writeData("perpflow.json", P.artifact);
+      } catch (e) { softFail("Lighter perp flow", e, "the previous perpflow.json stays in place"); }
     } catch (e) {
       softFail("Lighter positions", e, "the baskets card keeps its last Lighter block");
       out.artifact.lighter = readData("baskets.json")?.lighter ?? null;

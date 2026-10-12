@@ -177,7 +177,8 @@ function _divergingBars(host, rows, o) {
      zero line, which reads as though the baseline itself were non-zero — fatal
      for a chart whose whole job is the sign of the imbalance. Equal arms also
      make "bought above" and "sold below" directly comparable by eye. */
-  const m = Math.max(1e-9, maxOf(pos), maxOf(neg));
+  /* o.max lets two charts share one scale, so their bars compare across charts */
+  const m = Math.max(1e-9, o.max ?? 0, maxOf(pos), maxOf(neg));
   const max = m, min = -m;
   yAxis(f, min, max, o.fmt || compact);
   const y0 = f.padT + f.ih - ((0 - min) / (max - min)) * f.ih;
@@ -607,7 +608,7 @@ function table(host, cols, rows) {
 /* ── data ───────────────────────────────────────────────────────────────── */
 const S = { meta: null, flow: null, burns: null, routing: null, bridges: null, tape: null, pools: null, depth: null, launchpad: null, holders: null, prices: null, names: null, poolIdx: 0, hours: 24 };
 // Everything but meta/flow/burns may be absent or lag; the page renders without it.
-const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json", "long500.json", "vault.json", "stockfees.json", "liquidity.json", "baskets.json"];
+const OPTIONAL_ARTIFACTS = ["routing.json", "bridges.json", "tape.json", "pools.json", "depth.json", "launchpad.json", "holders.json", "prices.json", "treasury.json", "rwa.json", "revenue.json", "names.json", "accounts.json", "flywheel.json", "long500.json", "vault.json", "stockfees.json", "liquidity.json", "baskets.json", "perpflow.json"];
 
 async function loadJSON(name) {
   const r = await fetch(`data/${name}?v=${Date.now()}`);
@@ -931,6 +932,7 @@ function renderWhaleLedger() {
   const names = S.names?.names || {};
   const px = H.snapshots?.at(-1)?.price ?? null;
   const nameOf = (a) => names[a.toLowerCase()] || null;
+  const tag = (a, n) => knownName(a) || (nameOf(a) ? "@" + nameOf(a).handle : a.slice(0, n));
 
   /* Distribution is counted among wallets that are actually big now. A wallet that
      was briefly large months ago and left is not evidence about today's tape. */
@@ -944,13 +946,13 @@ function renderWhaleLedger() {
 
   $("#ledgerKpis").innerHTML = `<div class="tiles four">
     ${tile("Wallets over 10% off their high", shrunk.length,
-      shrunk.length ? shrunk.slice(0, 3).map((r) => `${nameOf(r.address) ? "@" + nameOf(r.address).handle : r.address.slice(0, 8)} ${pctLevel(r.offPeak, 0)}`).join(" \u00b7 ") : "no wallet over 1M AI is meaningfully off its high",
+      shrunk.length ? shrunk.slice(0, 3).map((r) => `${tag(r.address, 8)} ${pctLevel(r.offPeak, 0)}`).join(" \u00b7 ") : "no wallet over 1M AI is meaningfully off its high",
       shrunk.length ? "bad" : "", "hero")}
     ${tile("Big-wallet position, 30 days", d(sum("d30")) + " AI",
       `across ${live.length.toLocaleString()} wallets holding over 1M AI \u00b7 ${d(sum("d7"))} over 7 days, ${d(sum("d1"))} over 24 hours`,
       sum("d30") < 0 ? "bad" : "")}
     ${tile("Largest realised profit", topReal ? "$" + compact(topReal.realizedUsd) : "—",
-      topReal ? `${nameOf(topReal.address) ? "@" + nameOf(topReal.address).handle : topReal.address.slice(0, 10)} \u00b7 bought around $${topReal.avgCost?.toFixed(4) ?? "?"}${topReal.offPeak == null ? "" : topReal.offPeak === 0 ? ", now at its high" : `, now ${pctLevel(Math.abs(topReal.offPeak), 1)} below its high`}` : "no realised selling among the large wallets")}
+      topReal ? `${tag(topReal.address, 10)} \u00b7 bought around $${topReal.avgCost?.toFixed(4) ?? "?"}${topReal.offPeak == null ? "" : topReal.offPeak === 0 ? ", now at its high" : `, now ${pctLevel(Math.abs(topReal.offPeak), 1)} below its high`}` : "no realised selling among the large wallets")}
     ${tile("Named wallets", `${L.filter((r) => nameOf(r.address)).length} of ${L.length}`,
       "verified handles from the FOMO trader leaderboard; the rest trade unlabelled")}
   </div>`;
@@ -959,8 +961,9 @@ function renderWhaleLedger() {
 
   const rows = L.slice(0, 50);
   const who = (r) => {
-    const n = nameOf(r.address);
-    const cell = n
+    const n = nameOf(r.address), k = knownName(r.address);
+    const cell = k ? `<b>${k}</b>`
+      : n
       ? `<b>@${n.handle}</b>${n.name && n.name !== n.handle ? ` <span class="muted">${n.name}</span>` : ""}`
       : `<span class="mono" title="${r.address}">${r.address.slice(0, 10)}…</span>`;
     /* a pool in a holder ranking is liquidity other people deposited, not a position */
@@ -1623,6 +1626,9 @@ function knownName(a) {
     [c.longHook || ""]: "LONG hook",
     [c.poolManager || ""]: "v4 pool manager",
     [c.feeSplitter || ""]: "fee splitter",
+    /* measured, not claimed: Lighter account 21809's owner, which hedges the AI perp
+       with AI bought and sold on this chain (perpflow.mjs) */
+    "0x446c759feb1da102cce53ce114aaf91451778862": "Lighter AI perp hedger",
   };
   const lc = (a || "").toLowerCase();
   const treasury = (S.treasury?.treasuryWallets || []).some((w) => w.address === lc);
@@ -4946,6 +4952,44 @@ function renderBasketLegs() {
   ], a.legs);
 }
 
+/* Lighter's AI perp and the chain: the hedger's two legs, hour by hour, on one
+   scale so the sizes compare, and who trades the perp. */
+function renderPerpFlow() {
+  const P = S.perpflow, host = $("#pfTiles");
+  if (!host) return;
+  if (!P?.hedger) { host.innerHTML = `<p class="muted">Builds on the next index run.</p>`; for (const id of ["#cPfChain", "#cPfPerp", "#tPfTraders", "#readPf"]) $(id).innerHTML = ""; return; }
+  const H = P.hedger, L = P.llp, T = P.test7d, px = S.prices?.aiUsd ?? null;
+  const ai = (v) => (v == null ? "—" : `${v < 0 ? "−" : ""}${compact(Math.abs(v))} AI`);
+  const sg = (v) => (v == null ? "—" : `${v >= 0 ? "+" : "−"}${compact(Math.abs(v))}`);
+  host.innerHTML = `<div class="tiles four">
+    ${tile("Hedger's AI on this chain", ai(H.chainAi), `${px && H.chainAi ? "$" + compact(H.chainAi * px) + " · " : ""}${sg(H.chain24h)} AI in 24h, ${sg(H.chain7d)} over 7 days`, "", "hero")}
+    ${tile("Hedger's AI perp", ai(H.perpAi), `${H.perpAi < 0 ? "short" : "long"} on Lighter${H.perpEntry ? " from $" + H.perpEntry.toFixed(5) : ""} · ${sg(H.perp24h)} AI traded net in 24h`)}
+    ${tile("Lighter's liquidity pool", ai(L.perpAi), `${L.perpAi < 0 ? "short" : "long"} AI perp, no wallet on this chain, so this side never reaches AI's pools`)}
+    ${tile("Hours it hedged, 7 days", T.both ? `${T.opposite} of ${T.both}` : "—", T.both ? `${pctLevel(T.share, 0)} of hours with both legs over 3K AI went opposite ways` : "not enough active hours yet")}
+  </div>`;
+  const rows = (P.hours || []).slice(-24 * 7);
+  /* one scale for both charts, at the 95th percentile of hourly size: a single
+     outsized hour (666K AI on 10 Oct) would otherwise flatten every other bar.
+     Bars past it are cut at the edge; the tooltip keeps the real number. */
+  const sizes = rows.flatMap((r) => [Math.abs(r.chain), Math.abs(r.perp)]).filter((v) => v > 0).sort((a, b) => a - b);
+  const max = Math.max(1, sizes[Math.floor(sizes.length * 0.95)] || 1);
+  const cut = (v) => Math.min(max, v);
+  const tip = (r) => `<div class="k">${tsFmt(r.t)}</div><div>${sg(r.chain)} AI on this chain</div><div>${sg(r.perp)} AI perp on Lighter</div><div class="k">LLP ${sg(r.llp)} · baskets ${sg(r.baskets)} · ${compact(r.vol)} AI perp traded in all</div>`;
+  if (rows.length >= 2) {
+    divergingBars($("#cPfChain"), rows.map((r) => ({ ...r, up: cut(Math.max(0, r.chain)), dn: cut(Math.max(0, -r.chain)) })), { xKey: "t", posKey: "up", negKey: "dn", max, fmt: (v) => compact(v), tip });
+    divergingBars($("#cPfPerp"), rows.map((r) => ({ ...r, up: cut(Math.max(0, r.perp)), dn: cut(Math.max(0, -r.perp)) })), { xKey: "t", posKey: "up", negKey: "dn", max, fmt: (v) => compact(v), tip });
+  }
+  table($("#tPfTraders"), [
+    { h: "Perp account", f: (r) => `<b>${r.label || "#" + r.account}</b>${r.label ? ` <span class="muted">#${r.account}</span>` : ""}` },
+    { h: "Wallet on this chain", f: (r) => (r.wallet ? addrCell(r.wallet) : `<span class="muted">none</span>`) },
+    { h: "Traded, 7d", f: (r) => ai(r.gross7d) },
+    { h: "Net, 7d", f: (r) => `<span class="${r.net7d >= 0 ? "up" : "down"}">${sg(r.net7d)}</span>` },
+  ], P.traders || []);
+  $("#readPf").innerHTML = takeEl("neu",
+    `The perp touches AI's pools through one wallet. It holds <b>${ai(H.chainAi)}</b> here and is <b>${H.perpAi < 0 ? "short" : "long"} ${ai(Math.abs(H.perpAi))}</b> on Lighter, and in ${T.opposite} of ${T.both} active hours this week its two legs went opposite ways. When perp buyers arrive, part of their demand becomes AI bought on this chain; when they leave, it becomes AI sold here. Lighter's liquidity pool is short ${ai(Math.abs(L.perpAi))} and that side stays on Lighter.
+     <span class="muted">Over a whole week the two legs need not match: the hedger also trades AI on this chain for its own book. The perp is small next to the pools, so this explains flow; it does not yet predict price.</span>`);
+}
+
 function renderFlywheel() {
   const F = S.flywheel, host = $("#tFly");
   if (!host) return;
@@ -5366,6 +5410,7 @@ function renderRwa() {
   try { renderFlywheel(); } catch (e) { console.error("renderFlywheel", e); }
   try { renderBaskets(); } catch (e) { console.error("renderBaskets", e); }
   try { renderBasketLegs(); } catch (e) { console.error("renderBasketLegs", e); }
+  try { renderPerpFlow(); } catch (e) { console.error("renderPerpFlow", e); }
   try { renderFlywheelEngine(); } catch (e) { console.error("renderFlywheelEngine", e); }
 
   /* ── by stock, community vaults, trading share ───────────────────────────
