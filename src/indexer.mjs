@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import * as C from "./config.mjs";
-import { blockNumber, rpcCalls } from "./rpc.mjs";
+import { blockNumber, rpcCalls, loadChunkMemo, chunkMemoState, logsReport } from "./rpc.mjs";
 import { hookPermissions } from "./decode.mjs";
 import { Store, writeData, readData } from "./store.mjs";
 import { loadTimeMap } from "./timemap.mjs";
@@ -86,6 +86,7 @@ const step = (m) => {
 };
 
 const store = new Store();
+loadChunkMemo(store.get("logsChunks"));
 const latest = await blockNumber();
 console.log(`Robinhood Chain (${C.CHAIN_ID}) head block ${latest.toLocaleString()}`);
 console.log(`AI genesis block ${C.GENESIS_BLOCK.toLocaleString()} -> ${(latest - C.GENESIS_BLOCK).toLocaleString()} blocks of history`);
@@ -1013,6 +1014,7 @@ try {
   softFail("kpi snapshot", e, "the panel keeps its previous rows");
 }
 
+store.set("logsChunks", chunkMemoState());
 store.save();
 
 /* Bridges run last, after everything else is already on disk, and cannot take the
@@ -1044,4 +1046,16 @@ if (!fast && !flag("no-bridges")) {
   }
 }
 
+/* Save again: the bridges step above runs after the first save and writes its
+   venue cache to the store, which was never persisted, so every run rediscovered
+   every venue from scratch (the heaviest log scanning in the indexer). */
+store.set("logsChunks", chunkMemoState());
+store.save();
+
+{
+  const L = logsReport();
+  const refused = L.cap + L.limited + L.failed;
+  console.log(`\neth_getLogs: ${L.calls} call(s), ${refused} refused (${L.calls ? (100 * refused / L.calls).toFixed(1) : 0}%: ${L.cap} range or log cap, ${L.limited} rate limited, ${L.failed} network)`);
+  for (const r of L.worst) console.log(`  ${r.refused} of ${r.calls} refused  ${r.stream}  (cap ${r.cap}, rate ${r.limited}, net ${r.failed})`);
+}
 console.log(`\nDone in ${((Date.now() - t0) / 1000).toFixed(0)}s using ${rpcCalls()} RPC calls.`);

@@ -10,6 +10,56 @@ const endpoint = () => RPCS[rpcIdx % RPCS.length];
 class TooManyLogs extends Error {}
 export { TooManyLogs };
 
+/* eth_getLogs outcomes per stream, and the range each stream may start at.
+
+   Alchemy reported 4.2% of this project's eth_getLogs calls failing in September
+   2026. Most were by design: every scan opened at its full chunk, the node refused
+   a dense range, and the scan halved and retried. Each run forgot what the last
+   one learned, so the same refusal was paid for again every fifteen minutes. A
+   stream is keyed by the shape of its filter (address, or how many addresses, and
+   each topic or the size of its OR-list), so streams of similar density share a
+   memory. Two kinds of refusal are remembered across runs:
+     - a hard limit ("only 100000 are allowed") is kept exactly as a ceiling;
+     - a log cap (too many results) depends on density, so the smallest refused
+       range is kept, the next run starts at 70% of it, and it is widened 25% after
+       any run in which that stream was not refused, so a stream whose density fell
+       is re-probed rather than held small forever. */
+const logStats = new Map();
+const streamKey = (f = {}) => {
+  const a = Array.isArray(f.address) ? `${f.address.length} addrs` : f.address ? String(f.address).slice(0, 10).toLowerCase() : "any";
+  const t = (f.topics || []).map((x) => (x == null ? "_" : Array.isArray(x) ? `[${x.length}]` : String(x).slice(0, 10))).join(",");
+  return `${a}|${t}`;
+};
+const stat = (f, k) => { const key = streamKey(f); const r = logStats.get(key) || { calls: 0, ok: 0, cap: 0, limited: 0, failed: 0 }; r[k]++; logStats.set(key, r); };
+let chunkMemo = {};
+const refusedThisRun = new Set();
+export function loadChunkMemo(m) {
+  chunkMemo = {};
+  for (const [k, v] of Object.entries(m || {})) {
+    const e = {};
+    if (v?.bad > 0) e.bad = v.bad;
+    if (v?.cap > 0) e.cap = v.cap;
+    if (e.bad || e.cap) chunkMemo[k] = e;
+  }
+}
+export function chunkMemoState() {
+  const out = {};
+  for (const [k, v] of Object.entries(chunkMemo)) {
+    const e = { ...v };
+    if (e.bad && !refusedThisRun.has(k)) e.bad = Math.round(e.bad * 1.25);
+    if (e.bad && e.bad > 50_000_000) delete e.bad;   // wide enough to be no constraint at all
+    if (e.bad || e.cap) out[k] = e;
+  }
+  return out;
+}
+/** Totals and the worst streams, for the run log. */
+export function logsReport(top = 8) {
+  const rows = [...logStats.entries()].map(([k, r]) => ({ stream: k, ...r, refused: r.cap + r.limited + r.failed }));
+  const sum = (k) => rows.reduce((s, r) => s + r[k], 0);
+  return { calls: sum("calls"), ok: sum("ok"), cap: sum("cap"), limited: sum("limited"), failed: sum("failed"),
+    worst: rows.filter((r) => r.refused).sort((a, b) => b.refused - a.refused).slice(0, top) };
+}
+
 /* Pacing is PER METHOD, because the limiter plainly is.
    Measured on a quiet connection: eth_call and eth_blockNumber sustain ~17/s with
    no throttling at all, while eth_getLogs allows only one or two before returning
@@ -96,6 +146,8 @@ export async function rpc(method, params, tries) {
     // Respect a cooldown another call may have started.
     if (cooldownUntil > Date.now()) await sleep(cooldownUntil - Date.now());
     callCount++;
+    const isLogs = method === "eth_getLogs";
+    if (isLogs) stat(params[0], "calls");
     let j;
     try {
       /* A timeout is not optional. fetch() waits forever by default, so one stalled
@@ -111,6 +163,7 @@ export async function rpc(method, params, tries) {
       });
       if (res.status === 429 || res.status === 503 || res.status === 502) {
         last = new Error(`HTTP ${res.status}`);
+        if (isLogs) stat(params[0], "limited");
         await noteRateLimited(method);
         const ra = Number(res.headers.get("retry-after"));
         await sleep(ra > 0 ? Math.min(30_000, ra * 1000) : backoff(i));
@@ -127,6 +180,7 @@ export async function rpc(method, params, tries) {
       }
     } catch (e) {
       last = e; rpcIdx++; slowDown(method);
+      if (isLogs) stat(params[0], "failed");
       await sleep(backoff(i));
       continue;
     }
@@ -135,9 +189,16 @@ export async function rpc(method, params, tries) {
       /* Every provider words the log cap differently. The public node says "exceeds
          limit"; Alchemy says "Log response size exceeded". Missing a phrasing means a
          range that should be split is retried whole until the attempts run out. */
-      if (/exceeds limit|response size exceeded|exceeds max results|more than \d+ results|too many logs/i.test(msg)) throw new TooManyLogs(msg);
+      /* A range limit is the same condition as a log cap from the caller's side:
+         split the range. The public node words it "query spans N blocks, but only
+         M are allowed". */
+      if (/exceeds limit|response size exceeded|exceeds max results|more than \d+ results|too many logs|only \d+ are allowed|block range (is )?too (large|wide)/i.test(msg)) {
+        if (isLogs) stat(params[0], "cap");
+        throw new TooManyLogs(msg);
+      }
       if (/timed out|too many|rate|capacity|busy/i.test(msg) || String(j.error.code) === "429") {
         last = new Error(msg);
+        if (isLogs) stat(params[0], "limited");
         await noteRateLimited(method);
         await sleep(backoff(i));
         continue;
@@ -145,6 +206,7 @@ export async function rpc(method, params, tries) {
       throw new Error(`${method}: ${JSON.stringify(j.error)}`);
     }
     noteOk(method);
+    if (isLogs) stat(params[0], "ok");
     const wait = isExpensive(method) ? logsPaceMs : paceMs;
     if (wait) await sleep(wait);
     return j.result;
@@ -215,7 +277,10 @@ export async function getLogsRange(filter, from, to, opts = {}) {
   out.reachedBlock = to;
   out.truncated = false;
   let cursor = from;
-  let size = chunk;
+  const memoKey = streamKey(filter), memo = chunkMemo[memoKey];
+  /* the stream's known hard limit is a ceiling; its last log cap is a starting point */
+  let ceiling = Math.min(chunk, memo?.cap ?? Infinity);
+  let size = memo?.bad ? Math.max(1, Math.min(ceiling, Math.floor(memo.bad * 0.7))) : ceiling;
   let seen = 0;
 
   /* The growth policy matters more than it looks. Doubling after every success
@@ -224,7 +289,7 @@ export async function getLogsRange(filter, from, to, opts = {}) {
      cap, so an eager retry loop spends most of its wall clock on queries that
      return nothing. Instead: remember the smallest size known to fail, stay well
      clear of it, and only grow after several consecutive successes. */
-  let minBad = Infinity;
+  let minBad = memo?.bad ?? Infinity;
   let wins = 0;
 
   while (cursor <= to) {
@@ -249,8 +314,10 @@ export async function getLogsRange(filter, from, to, opts = {}) {
          ceiling pins the scan to tiny chunks for the remaining tens of millions of
          sparse blocks, which is what made a 51-chunk scan take hundreds of queries.
          An occasional re-probe costs one wasted scan and buys back far more. */
-      if (wins >= 3 && size < chunk) {
-        size = Math.min(chunk, Math.floor(size * 1.6));
+      if (wins >= 3 && size < ceiling) {
+        /* grow, but stay under the smallest range refused so far; that memory decays
+           as the scan advances so a quieter stretch is still re-probed */
+        size = Math.min(ceiling, Math.floor(size * 1.6), minBad === Infinity ? Infinity : Math.max(size, Math.floor(minBad * 0.9)));
         minBad = minBad === Infinity ? Infinity : Math.floor(minBad * 1.5);
         wins = 0;
       }
@@ -258,11 +325,16 @@ export async function getLogsRange(filter, from, to, opts = {}) {
       if (!(e instanceof TooManyLogs) && !/timed out/i.test(e.message)) throw e;
       if (end === cursor) throw new Error(`single block ${cursor} exceeds the log cap`);
       minBad = Math.min(minBad, size);
+      refusedThisRun.add(memoKey);
       /* Alchemy's cap error names a range that will fit, starting at our fromBlock:
          "...this block range should work: [0x..., 0x...]". Taking it replaces a
          run of blind halvings -- each a full wasted scan -- with one exact jump. */
       const hint = /\[\s*(0x[0-9a-f]+)\s*,\s*(0x[0-9a-f]+)\s*\]/i.exec(e.message);
-      const hinted = hint ? parseInt(hint[2], 16) - parseInt(hint[1], 16) + 1 : 0;
+      const allowed = /only (\d+) are allowed/i.exec(e.message);
+      const hinted = hint ? parseInt(hint[2], 16) - parseInt(hint[1], 16) + 1 : allowed ? Number(allowed[1]) : 0;
+      const M = (chunkMemo[memoKey] ||= {});
+      if (allowed) { M.cap = Math.min(M.cap ?? Infinity, Number(allowed[1])); ceiling = Math.min(ceiling, M.cap); }
+      else M.bad = Math.min(M.bad ?? Infinity, size);
       size = hinted > 0 && hinted < size ? hinted : Math.max(1, Math.floor(size / 2));
       wins = 0;
       /* A server-side timeout is different from a log-cap breach: the node did real
