@@ -62,12 +62,50 @@ jobs:
       # makes exactly one run fall through to the committed files and re-adopt them,
       # while .cache keeps the expensive discovery state (pool catalogue, bridge
       # venues) intact.
+      #
+      # The resume state is restored and saved explicitly, never by the cache
+      # action's automatic save. On 30 Oct 2026 the 50 MB state download stalled at
+      # 0% during a weekly deep run; the action counted it as a miss, the run started
+      # from an empty state, and its automatic save then replaced every cursor and
+      # history with the empty one (the perp signal log lost three weeks, and every
+      # stream rebuilt from scratch on the paid endpoint). Now a stalled download
+      # gives up after three minutes and is retried once; if the state still is not
+      # there, indexing is skipped for that run, the last good data stays published,
+      # and nothing is saved over the state. Only an explicit rebuild may start empty.
       - name: Restore indexer resume state
-        uses: actions/cache@v4
+        id: state
+        uses: actions/cache/restore@v4
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
         with:
           path: .cache
           key: indexer-state-${{ github.run_id }}
           restore-keys: indexer-state-
+
+      - name: Retry the resume state
+        id: state2
+        if: steps.state.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@v4
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
+        with:
+          path: .cache
+          key: indexer-state-${{ github.run_id }}
+          restore-keys: indexer-state-
+
+      - name: Require the resume state
+        id: gate
+        run: |
+          KEY="${{ steps.state.outputs.cache-matched-key }}${{ steps.state2.outputs.cache-matched-key }}"
+          SIZE=$(stat -c %s .cache/state.json 2>/dev/null || echo 0)
+          if [ -n "$KEY" ] && [ "$SIZE" -gt 1000000 ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"; echo "resume state $KEY restored ($SIZE bytes)"
+          elif [ "${{ github.event.inputs.mode }}" = "rebuild" ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"; echo "::warning::No resume state; this rebuild starts from an empty one."
+          else
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::The resume state did not restore (key '$KEY', $SIZE bytes). Indexing is skipped so an empty state is not saved over it; the last good data stays published."
+          fi
 
       # Bump vN to force one run to re-adopt the committed web/data.
       - name: Restore generated artifacts
@@ -99,6 +137,7 @@ jobs:
       # the last committed data is still perfectly good, just older.
       - name: Index chain data
         id: index
+        if: steps.gate.outputs.ok == '1'
         continue-on-error: true
         timeout-minutes: 75
         # The dedicated endpoint's URL carries its API key, so it lives only in a
@@ -228,6 +267,30 @@ jobs:
             seed-holders) node tools/backfill-holders.mjs --rebuild ;;
             *)       node src/indexer.mjs --top 40 ;;
           esac
+
+      # Saved whether or not indexing finished: a run cut short leaves the cursors it
+      # reached, which is still progress. Never saved when the gate refused to run.
+      - name: Save indexer resume state
+        if: always() && steps.gate.outputs.ok == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache
+          key: indexer-state-${{ github.run_id }}
+
+      # Every run writes a new 50 MB state entry and a data entry, and nothing
+      # removed them: the repository sat over GitHub's 10 GB cache limit (10.3 GB in
+      # 392 entries on 9 Nov 2026), evicting under pressure. Keep the newest few of
+      # each; older ones are never restored anyway.
+      - name: Prune old caches
+        if: always() && steps.gate.outputs.ok == '1'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for prefix in indexer-state- indexer-data-v6-; do
+            gh cache list -R "${{ github.repository }}" --key "$prefix" --sort created_at --order desc --limit 100 --json id -q '.[6:][].id' \
+              | xargs -r -n1 gh cache delete -R "${{ github.repository }}" || true
+          done
 
       - name: Commit the holder seed
         if: github.event.inputs.mode == 'seed-holders' && steps.index.outcome == 'success'

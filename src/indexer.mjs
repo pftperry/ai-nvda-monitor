@@ -691,10 +691,12 @@ if (!flag("no-baskets")) {
       out.artifact.lighter = L.artifact;
       /* the perp's other side and its footprint in AI's pools */
       try {
-        const P = await indexPerpFlow(latest, tm, { state: store.get("perpflow"), aiMarket: L.artifact.aiMarket, aiUsd: readData("prices.json")?.aiUsd ?? null,
+        const P = await indexPerpFlow(latest, tm, { state: store.get("perpflow"), priorSignals: readData("perpsignals.json"), aiMarket: L.artifact.aiMarket, aiUsd: readData("prices.json")?.aiUsd ?? null,
           basketAccounts: L.artifact.accounts.map((a) => ({ account: a.account, symbol: a.symbol })), deadline: Date.now() + opt("perpflow-budget", 90) * 1000 });
         store.set("perpflow", P.state);
         writeData("perpflow.json", P.artifact);
+        /* not loaded by the page: the full signal log, and its backup in git */
+        writeData("perpsignals.json", P.signals);
       } catch (e) { softFail("Lighter perp flow", e, "the previous perpflow.json stays in place"); }
     } catch (e) {
       softFail("Lighter positions", e, "the baskets card keeps its last Lighter block");

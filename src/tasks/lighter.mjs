@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { getLogsRange } from "../rpc.mjs";
 
 /**
@@ -34,6 +35,15 @@ export async function indexLighter(latest, tm, opts = {}) {
   const deadline = opts.deadline || Date.now() + 60_000;
   const baskets = opts.baskets || [];
   const S = opts.state?.v === 1 ? opts.state : { v: 1, accounts: {}, nav: {}, series: [] };
+  /* the basket history lost in the 30 Oct 2026 state wipe, recovered from git, merged once */
+  if (!S.recovered) {
+    try {
+      const old = JSON.parse(fs.readFileSync(new URL("../../seed/perp-history-2026-10.json", import.meta.url), "utf8")).lighterSeries || [];
+      const have = new Set(S.series.map((p) => p.t));
+      S.series = [...old.filter((p) => !have.has(p.t)), ...S.series].sort((a, b) => a.t - b.t);
+    } catch { /* no seed */ }
+    S.recovered = true;
+  }
   const now = Math.floor(Date.now() / 1000);
 
   /* 1. Lighter's AI perp market. */

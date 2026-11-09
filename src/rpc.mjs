@@ -318,7 +318,9 @@ export async function getLogsRange(filter, from, to, opts = {}) {
         /* grow, but stay under the smallest range refused so far; that memory decays
            as the scan advances so a quieter stretch is still re-probed */
         size = Math.min(ceiling, Math.floor(size * 1.6), minBad === Infinity ? Infinity : Math.max(size, Math.floor(minBad * 0.9)));
-        minBad = minBad === Infinity ? Infinity : Math.floor(minBad * 1.5);
+        /* 1.2, not 1.5: on a uniformly dense stream (LONG's hook swap event, 84 of 524
+           calls refused in one November run) a fast decay re-tripped the cap every few calls */
+        minBad = minBad === Infinity ? Infinity : Math.floor(minBad * 1.2);
         wins = 0;
       }
     } catch (e) {

@@ -4881,13 +4881,18 @@ function renderBaskets() {
   const B = S.baskets, host = $("#bkTiles");
   if (!host) return;
   if (!B?.baskets) { host.innerHTML = `<p class="muted">The basket watch builds on the next index run.</p>`; for (const id of ["#tBk", "#cBkLaunch", "#readBk"]) $(id).innerHTML = ""; return; }
-  const rows = B.baskets, live = rows.filter((r) => (r.valueUsd || 0) >= 1000);
+  /* A basket whose pools stopped trading has no spot price (AINX in November 2026);
+     its Lighter account still marks it, so it is valued at live NAV, and says so. */
+  const navOf = new Map((B.lighter?.accounts || []).map((a) => [a.token, a.liveNav]));
+  const rows = B.baskets.map((r) => r.valueUsd != null || !navOf.get(r.token) || !r.supply ? r
+    : { ...r, priceUsd: navOf.get(r.token), valueUsd: r.supply * navOf.get(r.token), atNav: true });
+  const live = rows.filter((r) => (r.valueUsd || 0) >= 1000);
   const value = rows.reduce((s, r) => s + (r.valueUsd || 0), 0);
   const launches = rows.reduce((s, r) => s + r.longPools, 0), aiPools = rows.reduce((s, r) => s + r.aiPools.length, 0);
   const vol = rows.reduce((s, r) => s + (r.volume24hUsd || 0), 0), longVol = rows.reduce((s, r) => s + (r.longVolume24hUsd || 0), 0);
   const L7 = B.launches7d || { ai: 0, baskets: 0 };
   host.innerHTML = `<div class="tiles four">
-    ${tile("Held in baskets", `$${compact(value)}`, `${live.length} live basket${live.length === 1 ? "" : "s"} of ${rows.length} found${live[0] ? ` · largest ${live[0].symbol}, $${compact(live[0].valueUsd)}` : ""} · shares at spot`, "", "hero")}
+    ${tile("Held in baskets", `$${compact(value)}`, `${live.length} live basket${live.length === 1 ? "" : "s"} of ${rows.length} found${live[0] ? ` · largest ${live[0].symbol}, $${compact(live[0].valueUsd)}` : ""} · ${rows.some((r) => r.atNav) ? "shares at spot, or at live NAV where the pools have not traded" : "shares at spot"}`, "", "hero")}
     ${tile("LONG launches quoted in a basket", launches.toLocaleString(), `by ordinary wallets in the last 7 days: ${L7.baskets.toLocaleString()} quoted in a basket, ${L7.ai.toLocaleString()} quoted in AI`)}
     ${tile("Traded in basket pools, last day", `$${compact(vol)}`, `$${compact(longVol)} of it in LONG launches · basket side at today's share price`)}
     ${tile("Basket pools paired with AI", aiPools.toLocaleString(), aiPools ? "counted in the flywheel above" : "none yet: no basket is absorbing AI", aiPools ? "" : "")}
@@ -4904,7 +4909,7 @@ function renderBaskets() {
   table($("#tBk"), [
     { h: "Basket", f: (r) => `<b>${r.symbol}</b>${r.name ? ` <span class="muted">${r.name}</span>` : ""}` },
     { h: "Value", f: (r) => (r.valueUsd != null ? `$${compact(r.valueUsd)}` : `<span class="muted">—</span>`) },
-    { h: "Price", f: (r) => (r.priceUsd != null ? `$${r.priceUsd.toFixed(3)}` : `<span class="muted">—</span>`) },
+    { h: "Price", f: (r) => (r.priceUsd != null ? `$${r.priceUsd.toFixed(3)}${r.atNav ? ` <span class="muted" title="no recent pool trade; valued at live NAV from its Lighter account">NAV</span>` : ""}` : `<span class="muted">—</span>`) },
     { h: "To Lighter", f: (r) => `$${compact(r.depositedUsd)}` },
     { h: "Minted 24h", f: (r) => nf(r.mint24h, 0) },
     { h: "LONG launches", f: (r) => `${r.longPools.toLocaleString()}${r.launches7d && r.launches7d !== r.longPools ? ` <span class="muted">${r.launches7d} in 7d</span>` : ""}` },
@@ -4981,7 +4986,7 @@ function renderPerpIndicators() {
   const crowd = F?.avg24h != null && F?.avg7d != null ? (F.avg24h > F.avg7d * 1.5 ? "Longs are paying more than usual to stay long" : F.avg24h < F.avg7d * 0.5 ? "Longs are paying less than usual to stay long" : "Funding is near its weekly norm") : null;
   $("#readPfInd").innerHTML = takeEl("neu",
     `${crowd ? `${crowd}. ` : ""}Open interest is ${oi7 == null ? "\u2014" : (oi7 >= 0 ? "up " : "down ") + pctLevel(Math.abs(oi7), 0)} on the week, aggressive flow is ${net24 == null ? "\u2014" : net24 >= 0 ? "net buying" : "net selling"} over the last day, and volume is running at ${vRatio == null ? "\u2014" : pctLevel(vRatio, 0)} of its weekly average.
-     <span class="muted">Rising open interest with longs paying funding means new longs are being added; when that unwinds, the hedger above sells AI on this chain. Open interest history is rebuilt from each trade's published positions, walked back from Lighter's current figure.</span>`);
+     <span class="muted">Rising open interest with longs paying funding means new longs are being added; when that unwinds, any account hedging it with AI on this chain sells that AI here. Open interest history is rebuilt from each trade's published positions, walked back from Lighter's current figure.</span>`);
 }
 
 function renderPerpFlow() {
@@ -4991,11 +4996,18 @@ function renderPerpFlow() {
   const H = P.hedger, L = P.llp, T = P.test7d, px = S.prices?.aiUsd ?? null;
   const ai = (v) => (v == null ? "—" : `${v < 0 ? "−" : ""}${compact(Math.abs(v))} AI`);
   const sg = (v) => (v == null ? "—" : `${v >= 0 ? "+" : "−"}${compact(Math.abs(v))}`);
+  /* the hedger closed out on 15 Oct 2026; the card says so rather than showing zeros as if live */
+  const active = Math.abs(H.perpAi || 0) > 1000 || (H.chainAi || 0) > 1000 || (T.both || 0) > 0;
+  const since = H.lastActiveT ? dayFmt(H.lastActiveT) : "mid-October";
+  const holders = (P.traders || []).filter((r) => (r.chainAi || 0) > 1000);
+  const hedgeTile = active
+    ? tile("Hours it hedged, 7 days", T.both ? `${T.opposite} of ${T.both}` : "—", T.both ? `${pctLevel(T.share, 0)} of hours with both legs over 3K AI went opposite ways` : "not enough active hours yet")
+    : tile("Hedger", "closed out", `no AI on this chain and no perp since ${since} · ${holders.length ? holders.length + " busy perp account(s) now hold AI here" : "none of the busiest perp accounts holds AI here"}`, "warn");
   host.innerHTML = `<div class="tiles four">
     ${tile("Hedger's AI on this chain", ai(H.chainAi), `${px && H.chainAi ? "$" + compact(H.chainAi * px) + " · " : ""}${sg(H.chain24h)} AI in 24h, ${sg(H.chain7d)} over 7 days`, "", "hero")}
     ${tile("Hedger's AI perp", ai(H.perpAi), `${H.perpAi < 0 ? "short" : "long"} on Lighter${H.perpEntry ? " from $" + H.perpEntry.toFixed(5) : ""} · ${sg(H.perp24h)} AI traded net in 24h`)}
     ${tile("Lighter's liquidity pool", ai(L.perpAi), `${L.perpAi < 0 ? "short" : "long"} AI perp, no wallet on this chain, so this side never reaches AI's pools`)}
-    ${tile("Hours it hedged, 7 days", T.both ? `${T.opposite} of ${T.both}` : "—", T.both ? `${pctLevel(T.share, 0)} of hours with both legs over 3K AI went opposite ways` : "not enough active hours yet")}
+    ${hedgeTile}
   </div>`;
   const rows = (P.hours || []).slice(-24 * 7);
   /* one scale for both charts, at the 95th percentile of hourly size: a single
@@ -5014,7 +5026,15 @@ function renderPerpFlow() {
     { h: "Wallet on this chain", f: (r) => (r.wallet ? addrCell(r.wallet) : `<span class="muted">none</span>`) },
     { h: "Traded, 7d", f: (r) => ai(r.gross7d) },
     { h: "Net, 7d", f: (r) => `<span class="${r.net7d >= 0 ? "up" : "down"}">${sg(r.net7d)}</span>` },
+    { h: "AI on this chain", f: (r) => (r.wallet ? (r.chainAi == null ? "—" : ai(r.chainAi)) : `<span class="muted">n/a</span>`) },
   ], P.traders || []);
+  if (!active) {
+    const who = holders.length ? `only ${holders.map((r) => "#" + r.account).join(", ")} of the busiest perp accounts hold AI here` : "none of the busiest perp accounts holds AI here";
+    $("#readPf").innerHTML = takeEl("warn",
+      `Nothing visible connects Lighter's AI perp to AI's pools right now. The hedger unwound its AI on this chain and closed its perp by <b>${since}</b>, and ${who}. Perp positions now net out on Lighter, with its liquidity pool ${(L.perpAi || 0) < 0 ? "short" : "long"} <b>${ai(Math.abs(L.perpAi || 0))}</b>.
+       <span class="muted">If a new account starts taking the other side and hedging with AI here, it will show an AI balance in the table.</span>`);
+    return;
+  }
   $("#readPf").innerHTML = takeEl("neu",
     `The perp touches AI's pools through one wallet. It holds <b>${ai(H.chainAi)}</b> here and is <b>${H.perpAi < 0 ? "short" : "long"} ${ai(Math.abs(H.perpAi))}</b> on Lighter, and in ${T.opposite} of ${T.both} active hours this week its two legs went opposite ways. When perp buyers arrive, part of their demand becomes AI bought on this chain; when they leave, it becomes AI sold here. Lighter's liquidity pool is short ${ai(Math.abs(L.perpAi))} and that side stays on Lighter.
      <span class="muted">Over a whole week the two legs need not match: the hedger also trades AI on this chain for its own book. The perp is small next to the pools, so this explains flow; it does not yet predict price.</span>`);

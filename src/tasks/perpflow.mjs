@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { getLogsRange, padAddr, rpc } from "../rpc.mjs";
 import { AI } from "../config.mjs";
 import { TOPICS } from "../decode.mjs";
@@ -27,6 +28,22 @@ const API = "https://api.rh.lighter.xyz/api/v1";
 export const HEDGER = { account: 21809, wallet: "0x446c759feb1da102cce53ce114aaf91451778862", label: "Lighter AI perp hedger" };
 export const LLP_ACCOUNT = 281474976710654;
 const HOUR = 3600, KEEP_HOURS = 24 * 45, FIRST_DAYS = 7, MAX_PAGES = 120, SIGNAL = 3000;
+/* The signal log is the input to a lead-lag test that needs months, so it is kept a
+   year, apart from the 45-day working windows. */
+const KEEP_SIGNAL_HOURS = 24 * 365;
+const RECOVERED = new URL("../../seed/perp-history-2026-10.json", import.meta.url);
+
+/* Fill the signal log from what survives outside the state: the history recovered
+   after the 30 Oct 2026 state wipe (seed file) and the published perpsignals.json,
+   which is committed to git every couple of hours. Points are merged by time, so
+   this is harmless when the state is intact and a full restore when it is not. */
+function mergeSignals(S, prior) {
+  const have = new Map(S.snaps.map((p) => [p.t, p]));
+  const add = (arr) => { for (const p of arr || []) if (p?.t && !have.has(p.t)) have.set(p.t, p); };
+  if (!S.recovered) { try { add(JSON.parse(fs.readFileSync(RECOVERED, "utf8")).perpSnaps); } catch { /* no seed */ } S.recovered = true; }
+  add(prior?.snaps);
+  S.snaps = [...have.values()].sort((a, b) => a.t - b.t);
+}
 
 async function get(path) {
   const r = await fetch(`${API}/${path}`, { signal: AbortSignal.timeout(20_000), headers: { accept: "application/json" } });
@@ -130,6 +147,13 @@ export async function indexPerpFlow(latest, tm, opts = {}) {
   }
   const labelOf = (a) => String(a) === String(LLP_ACCOUNT) ? "Lighter liquidity pool (LLP)" : String(a) === String(HEDGER.account) ? HEDGER.label : baskets.get(String(a)) ? `${baskets.get(String(a))} basket` : null;
   const traders = topIds.map((a) => ({ account: Number(a), label: labelOf(a), wallet: S.wallets[a]?.l1 ?? null, gross7d: Math.round(gross7[a]), net7d: Math.round(vol7[a].net) }));
+  /* whether any busy perp account holds AI on this chain: the hedger left on 15 Oct
+     2026, and a replacement would show up here first */
+  for (const t of traders) {
+    if (!t.wallet || Date.now() > deadline) continue;
+    const h = await rpc("eth_call", [{ to: AI, data: "0x70a08231" + t.wallet.slice(2).padStart(64, "0") }, "latest"]).catch(() => null);
+    t.chainAi = h && h !== "0x" ? Number(BigInt(h)) / 1e18 : null;
+  }
 
   /* 5. Hourly rows for the chart and the hedge test. */
   const hours = [...new Set([...Object.keys(S.perp), ...Object.keys(C.h)])].map(Number).filter((h) => h >= hourOf(now) - KEEP_HOURS * HOUR).sort((a, b) => a - b);
@@ -193,24 +217,26 @@ export async function indexPerpFlow(latest, tm, opts = {}) {
 
   /* 6. The signal log, one point an hour: everything a lead-lag test needs. */
   const M = opts.aiMarket || null;
+  mergeSignals(S, opts.priorSignals);
   const lastSnap = S.snaps.at(-1);
   if (!lastSnap || now - lastSnap.t >= 3300) S.snaps.push({
     t: now, spot: opts.aiUsd ?? null, mark: M?.mark ?? null, index: M?.index ?? null, funding: M?.fundingRate ?? null, oi: M?.openInterest ?? null,
     hedgerPerp: hedger?.ai ?? null, hedgerChain: hedgerChainAi, llp: llp?.ai ?? null,
   });
-  S.snaps = S.snaps.filter((p) => p.t >= now - KEEP_HOURS * HOUR);
+  S.snaps = S.snaps.filter((p) => p.t >= now - KEEP_SIGNAL_HOURS * HOUR);
   for (const h of Object.keys(S.perp)) if (+h < hourOf(now) - KEEP_HOURS * HOUR) delete S.perp[h];
   for (const h of Object.keys(C.h)) if (+h < hourOf(now) - KEEP_HOURS * HOUR) delete C.h[h];
 
   const out = {
     updatedAt: now,
-    hedger: { ...HEDGER, perpAi: hedger?.ai ?? null, perpEntry: hedger?.entry ?? null, perpUpnlUsd: hedger?.upnlUsd ?? null, equityUsd: hedger?.equityUsd ?? null, chainAi: hedgerChainAi,
+    hedger: { ...HEDGER, lastActiveT: [...S.snaps].reverse().find((p) => Math.abs(p.hedgerChain || 0) > 1000 || Math.abs(p.hedgerPerp || 0) > 1000)?.t ?? null,
+      perpAi: hedger?.ai ?? null, perpEntry: hedger?.entry ?? null, perpUpnlUsd: hedger?.upnlUsd ?? null, equityUsd: hedger?.equityUsd ?? null, chainAi: hedgerChainAi,
       chain24h: sum(d1, "chain"), perp24h: sum(d1, "perp"), chain7d: sum(last7, "chain"), perp7d: sum(last7, "perp") },
     llp: { account: LLP_ACCOUNT, perpAi: llp?.ai ?? null, equityUsd: llp?.equityUsd ?? null },
     test7d: test(last7), testAll: test(rows),
-    traders, hours: rows.slice(-24 * 14), snaps: S.snaps, indicators: ind,
+    traders, hours: rows.slice(-24 * 14), snaps: S.snaps.slice(-24 * 14), indicators: ind,
     method: "Every trade in Lighter's AI perp (market 45 on api.rh.lighter.xyz), folded into hourly nets per account: a buyer adds the size, a seller subtracts it. The hedger is account 21809, owned by wallet 0x446c...8862, which trades AI on this chain as well; its on-chain flow is every AI transfer into or out of that wallet per hour. A hedging hour is one where both legs are at least 3,000 AI and point opposite ways. Positions are read from Lighter each run, the hedger's on-chain balance from AI's balanceOf. The hourly signal log (spot, mark, index, funding, open interest and the positions) is kept so a lead-lag test can be run once there are weeks of it.",
   };
   log(`  perp flow: ${read} new AI perp trade(s); hedger perp ${hedger?.ai != null ? Math.round(hedger.ai).toLocaleString() : "?"} AI, on chain ${hedgerChainAi != null ? Math.round(hedgerChainAi).toLocaleString() : "?"} AI; LLP ${llp?.ai != null ? Math.round(llp.ai).toLocaleString() : "?"} AI; hedging hours 7d ${out.test7d.opposite}/${out.test7d.both}`);
-  return { state: S, artifact: out };
+  return { state: S, artifact: out, signals: { updatedAt: now, note: "Hourly signal log for the perp lead-lag test: on-chain spot, Lighter mark, index, funding, open interest and the hedger's and LLP's positions.", snaps: S.snaps } };
 }
