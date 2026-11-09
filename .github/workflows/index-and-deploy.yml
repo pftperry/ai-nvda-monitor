@@ -287,10 +287,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # gh prints nothing on success when stdout is not a terminal, so count
+          # explicitly; the first version ran silently and deleted nothing.
           for prefix in indexer-state- indexer-data-v6-; do
-            gh cache list -R "${{ github.repository }}" --key "$prefix" --sort created_at --order desc --limit 100 --json id -q '.[6:][].id' \
-              | xargs -r -n1 gh cache delete -R "${{ github.repository }}" || true
+            ids=$(gh cache list -R "${{ github.repository }}" --key "$prefix" --sort created_at --order desc --limit 100 --json id -q '.[6:][].id')
+            n=$(printf '%s\n' "$ids" | grep -c . || true)
+            ok=0
+            for id in $ids; do gh cache delete "$id" -R "${{ github.repository }}" && ok=$((ok + 1)); done
+            echo "$prefix: $n older than the newest six, $ok deleted"
           done
+          gh api "repos/${{ github.repository }}/actions/cache/usage" -q '"cache now \((.active_caches_size_in_bytes/1048576)|floor) MB in \(.active_caches_count) entries"' || true
 
       - name: Commit the holder seed
         if: github.event.inputs.mode == 'seed-holders' && steps.index.outcome == 'success'
